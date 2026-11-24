@@ -1,6 +1,9 @@
 use crate::{triangulate::triangulate, wall::wall_mesh, TriMesh};
 use creabim_core::{assembly, csg, BoolOp, Element, ElementId, ElementKind, Model, Opening};
 use glam::{DVec2, DVec3};
+use std::collections::{hash_map::DefaultHasher, HashMap};
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 /// Roughness, metallic and opacity of an element without a material.
 pub const PLAIN_SURFACE: [f32; 3] = [creabim_core::element::DEFAULT_ROUGHNESS, 0.0, 1.0];
@@ -692,8 +695,8 @@ fn apply_cuts(model: &Model, items: &mut [SceneItem]) {
 /// through cuts the other (A4-6), so 3D, sections and plans agree: by the
 /// junction's own rule if it has one, else layer by layer (the lower join
 /// priority runs through: cores through finishes), then walls through
-/// slabs. As strong, they are left as they are. Each result is kept, keyed
-/// by the two shapes, so editing one wall redoes only its own joins.
+/// slabs. As strong, they are left as they are. Cached results let joins
+/// reuse the unchanged start of each sequence of cuts.
 fn apply_joins(model: &Model, items: &mut [SceneItem]) {
     let rules = creabim_core::joins::rules(model);
     let is = |id: ElementId, wall: bool| match model.get(id).map(|e| &e.kind) {
@@ -755,38 +758,55 @@ fn apply_joins(model: &Model, items: &mut [SceneItem]) {
     if pairs.is_empty() {
         return;
     }
-    // the cutters' shapes before any join cuts them
-    let originals: Vec<TriMesh> = items.iter().map(|i| i.mesh.clone()).collect();
+    // Keep the BSP polygons and their planes until the last cut. Triangulating
+    // and rounding to f32 between cuts feeds extra split planes into the BSP.
+    // Leaving the scene meshes in place also keeps cutter shapes unchanged.
+    let mut joined: Vec<Option<(u64, JoinedPolygons)>> = vec![None; items.len()];
     for (t, c) in pairs {
-        let key = (mesh_key(&items[t].mesh), mesh_key(&originals[c]));
-        let done = JOIN_CACHE.with(|m| m.borrow().get(&key).cloned());
-        let mesh = match done {
-            Some(m) => m,
-            None => {
-                let m = boolean_mesh(&items[t].mesh, &originals[c], BoolOp::Difference);
-                JOIN_CACHE.with(|cache| {
-                    let mut cache = cache.borrow_mut();
-                    if cache.len() > 4000 {
-                        cache.clear();
-                    }
-                    cache.insert(key, m.clone());
-                });
-                m
+        let previous = joined[t].as_ref();
+        if previous.is_some_and(|(_, polygons)| polygons.is_empty()) {
+            continue;
+        }
+        let target_key = previous.map_or_else(|| mesh_key(&items[t].mesh), |(key, _)| *key);
+        let key = (target_key, mesh_key(&items[c].mesh));
+        let polygons = JOIN_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() > 4000 {
+                cache.clear();
             }
-        };
-        items[t].mesh = mesh;
+            cache
+                .entry(key)
+                .or_insert_with(|| {
+                    let target = previous.map_or_else(
+                        || mesh_polygons(&items[t].mesh),
+                        |(_, polygons)| polygons.as_ref().clone(),
+                    );
+                    let cutter = mesh_polygons(&items[c].mesh);
+                    Rc::new(csg::boolean(target, cutter, BoolOp::Difference))
+                })
+                .clone()
+        });
+        let mut hash = DefaultHasher::new();
+        key.hash(&mut hash);
+        joined[t] = Some((hash.finish(), polygons));
+    }
+    for (item, result) in items.iter_mut().zip(joined) {
+        if let Some((_, polygons)) = result {
+            item.mesh = polygon_mesh(&polygons);
+        }
     }
 }
 
+type JoinedPolygons = Rc<Vec<csg::Polygon>>;
+
 thread_local! {
-    static JOIN_CACHE: std::cell::RefCell<std::collections::HashMap<(u64, u64), TriMesh>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static JOIN_CACHE: std::cell::RefCell<HashMap<(u64, u64), JoinedPolygons>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// A fingerprint of a mesh's shape.
 fn mesh_key(m: &TriMesh) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = DefaultHasher::new();
     m.indices.hash(&mut h);
     for p in &m.positions {
         for v in p {
@@ -798,21 +818,22 @@ fn mesh_key(m: &TriMesh) -> u64 {
 
 /// `a op b` for two closed triangle meshes.
 pub fn boolean_mesh(a: &TriMesh, b: &TriMesh, op: BoolOp) -> TriMesh {
-    let polys = |m: &TriMesh| -> Vec<csg::Polygon> {
-        m.indices
-            .chunks_exact(3)
-            .filter_map(|t| {
-                let p = |i: u32| {
-                    let v = m.positions[i as usize];
-                    DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
-                };
-                csg::Polygon::new(vec![p(t[0]), p(t[1]), p(t[2])])
-            })
-            .collect()
-    };
-    let result = csg::boolean(polys(a), polys(b), op);
+    polygon_mesh(&csg::boolean(mesh_polygons(a), mesh_polygons(b), op))
+}
+
+fn mesh_polygons(mesh: &TriMesh) -> Vec<csg::Polygon> {
+    mesh.indices
+        .chunks_exact(3)
+        .filter_map(|t| {
+            let point = |i: u32| glam::Vec3::from(mesh.positions[i as usize]).as_dvec3();
+            csg::Polygon::new(vec![point(t[0]), point(t[1]), point(t[2])])
+        })
+        .collect()
+}
+
+fn polygon_mesh(polygons: &[csg::Polygon]) -> TriMesh {
     let mut out = TriMesh::default();
-    for p in &result {
+    for p in polygons {
         let n = (p.points[1] - p.points[0])
             .cross(p.points[2] - p.points[0])
             .normalize_or_zero();
@@ -1171,6 +1192,107 @@ mod tests {
                 "a slab face at {c} is inside the wall ({lo}..{hi})"
             );
         }
+    }
+
+    #[test]
+    fn successive_wall_joins_keep_the_slab_mesh_compact() {
+        use creabim_core::{Element, Level, Slab, Transaction, Wall};
+        let level = Element::new(
+            "Level",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let mut slab = Slab::new(
+            level.id,
+            vec![
+                DVec2::ZERO,
+                DVec2::new(11.5, 0.0),
+                DVec2::new(11.5, 11.0),
+                DVec2::new(0.0, 11.0),
+            ],
+            0.14,
+        );
+        slab.top_offset = 1.30;
+        let slab = Element::new("Slab", ElementKind::Slab(slab));
+        let slab_id = slab.id;
+        let level_id = level.id;
+        let mut transaction = Transaction::new("setup").insert(level).insert(slab);
+        for i in 0..12 {
+            let p = 0.3 + 10.0 * f64::from(i) / 12.0;
+            let (start, end) = if i % 2 == 0 {
+                (DVec2::new(-0.2, p), DVec2::new(11.7, p))
+            } else {
+                (DVec2::new(p, -0.2), DVec2::new(p, 11.7))
+            };
+            let mut wall = Wall::new(level_id, start, end, 0.16, 3.1);
+            wall.disallow_join = [true; 2];
+            transaction = transaction.insert(Element::new("Wall", ElementKind::Wall(wall)));
+        }
+        let mut doc = creabim_core::document::Document::new();
+        doc.commit(transaction).unwrap();
+        let items = build_scene(doc.model());
+        let mesh = &items.iter().find(|item| item.id == slab_id).unwrap().mesh;
+        let triangles = mesh.indices.len() / 3;
+        assert!(
+            triangles < 1_000,
+            "the joined slab has {triangles} triangles"
+        );
+        let expected = (11.5 - 6.0 * 0.16) * (11.0 - 6.0 * 0.16) * 0.14;
+        assert!((mesh.volume() - expected).abs() < 1e-4);
+        let rebuilt = build_scene(doc.model());
+        let cached = &rebuilt.iter().find(|item| item.id == slab_id).unwrap().mesh;
+        assert_eq!(cached.positions, mesh.positions);
+        assert_eq!(cached.indices, mesh.indices);
+    }
+
+    #[test]
+    fn a_later_wall_join_keeps_a_fully_cut_slab_empty() {
+        use creabim_core::{Element, Level, Slab, Transaction, Wall};
+        let level = Element::new(
+            "Level",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let mut slab = Slab::new(
+            level.id,
+            vec![DVec2::ZERO, DVec2::X, DVec2::ONE, DVec2::Y],
+            0.14,
+        );
+        slab.top_offset = 1.30;
+        let slab = Element::new("Slab", ElementKind::Slab(slab));
+        let slab_id = slab.id;
+        let mut covering = Wall::new(
+            level.id,
+            DVec2::new(-1.0, 0.5),
+            DVec2::new(2.0, 0.5),
+            2.0,
+            3.1,
+        );
+        let mut crossing = Wall::new(
+            level.id,
+            DVec2::new(0.6, -1.0),
+            DVec2::new(0.6, 2.0),
+            0.16,
+            3.1,
+        );
+        covering.disallow_join = [true; 2];
+        crossing.disallow_join = [true; 2];
+        let mut doc = creabim_core::document::Document::new();
+        doc.commit(
+            Transaction::new("setup")
+                .insert(level)
+                .insert(slab)
+                .insert(Element::new("Covering", ElementKind::Wall(covering)))
+                .insert(Element::new("Crossing", ElementKind::Wall(crossing))),
+        )
+        .unwrap();
+        let items = build_scene(doc.model());
+        let mesh = &items.iter().find(|item| item.id == slab_id).unwrap().mesh;
+        assert!(mesh.is_empty());
     }
 
     #[test]
