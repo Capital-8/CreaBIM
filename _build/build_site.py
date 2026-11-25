@@ -1,6 +1,6 @@
 """Build the CreaBIM website (GitHub Pages, branch gh-pages).
 
-    python _build/build_site.py --creabim C:/Dev/creabim --ref official/main
+    python _build/build_site.py --creabim C:/Dev/creabim --ref official/main [--dev-ref dev/builder2b/wave4 --dev-label 1.2]
 
 Reads the in-app guide (crates/creabim-app/help/*.md, its pictures and the
 page order and key list in src/help.rs) from the given git ref of a CreaBIM
@@ -70,9 +70,10 @@ def keycaps(k: str) -> str:
 
 
 class Md:
-    def __init__(self, pages: dict, version: str):
+    def __init__(self, pages: dict, version: str, img_prefix: str = "../assets/help/"):
         self.pages = pages  # id -> title
         self.version = version
+        self.img_prefix = img_prefix  # from a guide page to its version's pictures
 
     def link(self, target: str) -> str:
         if re.match(r"^[a-z]+:", target):
@@ -114,7 +115,7 @@ class Md:
 
     def img_src(self, src):
         name = src.split("/")[-1]
-        return f"../assets/help/{name}"
+        return f"{self.img_prefix}{name}"
 
     def img_inline(self, alt, src):
         return f'<img src="{self.img_src(src)}" alt="{alt}" loading="lazy">'
@@ -259,7 +260,8 @@ ICONS = """<svg width="0" height="0" style="position:absolute" aria-hidden="true
 NAV = [("index.html", "Home"), ("features.html", "Features"), ("tutorials/index.html", "Tutorials"), ("guide/welcome.html", "Guide"), ("download.html", "Download"), ("support.html", "Support")]
 
 
-def layout(*, depth: int, current: str, title: str, desc: str, body: str, path: str) -> str:
+def layout(*, depth: int, current: str, title: str, desc: str, body: str, path: str, canonical: str = None, head: str = "") -> str:
+    canonical = path if canonical is None else canonical
     b = "../" * depth
     links = "".join(
         f'<a href="{b}{href}"{" aria-current=page" if label == current else ""}>{label}</a>' for href, label in NAV)
@@ -271,7 +273,7 @@ def layout(*, depth: int, current: str, title: str, desc: str, body: str, path: 
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{html.escape(full_title)}</title>
 <meta name="description" content="{html.escape(desc)}">
-<link rel="canonical" href="{SITE_URL}{path}">
+<link rel="canonical" href="{SITE_URL}{canonical}">{head}
 <meta property="og:title" content="{html.escape(full_title)}">
 <meta property="og:description" content="{html.escape(desc)}">
 <meta property="og:type" content="website">
@@ -924,7 +926,29 @@ def shortcuts_tables(help_rs: str):
     return "".join(out)
 
 
-def guide_page(pid, title, body, toc, order, pages):
+def version_bar(pid, here, up):
+    """The guide's version picker (as Blender's manual has): each version
+    of the guide, this page in it where it has one, else its first page.
+    `here` is this page's version label, `up` the way back to the site root."""
+    out = []
+    for v in GUIDES:
+        target = pid if pid in v["order"] else "welcome"
+        href = f'{up}{v["dir"]}/{target}.html'
+        cur = ' aria-current="true"' if v["label"] == here else ""
+        out.append(f'<a href="{href}"{cur}>{html.escape(v["label"])}{"<small>" + v["tag"] + "</small>" if v["tag"] else ""}</a>')
+    return f'<nav class="vpick" aria-label="Guide version"><span>Version</span>{"".join(out)}</nav>'
+
+
+def dev_banner(up):
+    rel = next(v for v in GUIDES if v["key"] == "latest")
+    return (f'<div class="devnote" role="note"><b>CreaBIM {GUIDES_DEV_LABEL} is in development.</b>'
+            f'<span>This guide follows the version being built and changes until it is released; some pictures still show {rel["label"]}. '
+            f'For the version you can download now, read the <a href="{up}guide/welcome.html">{rel["label"]} guide</a>.</span></div>')
+
+
+def guide_page(pid, title, body, toc, order, pages, gv=None):
+    gv = gv or {"label": "", "up": "../", "dev": False}
+    up = gv["up"]
     i = order.index(pid)
     sec = next(s for s, ids in SECTIONS.items() if pid in ids)
     prev = f'<a href="{order[i - 1]}.html"><span>Previous</span><b>{html.escape(pages[order[i - 1]])}</b></a>' if i > 0 else ""
@@ -941,7 +965,9 @@ def guide_page(pid, title, body, toc, order, pages):
     <button class="side-toggle" type="button" aria-expanded="false">Guide contents <span aria-hidden="true">▾</span></button>
     <nav class="side" aria-label="Guide">{guide_index(pages, "", pid, side=True)}</nav>
     <article class="doc">
-      <div class="crumbs"><a href="../tutorials/index.html">Tutorials</a><span>/</span><a href="../tutorials/index.html#guide">Guide</a><span>/</span><span>{html.escape(sec)}</span></div>
+      <div class="crumbs"><a href="{up}tutorials/index.html">Tutorials</a><span>/</span><a href="{up}tutorials/index.html#guide">Guide</a><span>/</span><span>{html.escape(sec)}</span></div>
+      {version_bar(pid, gv["label"], up)}
+      {dev_banner(up) if gv["dev"] else ""}
       {body.replace("</h1>", "</h1>" + inline_toc, 1)}
       <nav class="pager" aria-label="Pages">{prev}{nxt}</nav>
     </article>
@@ -952,29 +978,60 @@ def guide_page(pid, title, body, toc, order, pages):
 
 # ---------------------------------------------------------------- main
 
+GUIDES = []          # every version of the guide built, for the picker
+GUIDES_DEV_LABEL = ""
+
+
+def load_guide(repo, ref):
+    """One version of the guide, read from `ref`: its sections, page order,
+    texts and titles, and help.rs (for the shortcuts tables)."""
+    help_rs = git_show(repo, ref, "crates/creabim-app/src/help.rs")
+    sections, order = {}, []
+    for sec, pid in re.findall(r'page!\("([^"]+)",\s*"([\w-]+)"\)', help_rs):
+        sections.setdefault(sec, []).append(pid)
+        order.append(pid)
+    texts = {p: git_show(repo, ref, f"crates/creabim-app/help/{p}.md") for p in order}
+    pages = {p: re.match(r"#\s+(.*)", t).group(1).strip() for p, t in texts.items()}
+    return {"ref": ref, "help_rs": help_rs, "sections": sections, "order": order, "texts": texts, "pages": pages}
+
+
 def main():
+    global GUIDES_DEV_LABEL
     ap = argparse.ArgumentParser()
     ap.add_argument("--creabim", default=r"C:\Dev\creabim")
-    ap.add_argument("--ref", default="official/main")
+    ap.add_argument("--ref", default="official/main", help="the released guide: /guide/ and /guide/<label>/")
+    ap.add_argument("--dev-ref", default=None, help="the guide of the version in development, e.g. dev/builder2b/wave4")
+    ap.add_argument("--dev-label", default=None, help="its version, e.g. 1.2: built to /guide/<label>/")
     a = ap.parse_args()
     repo = Path(a.creabim)
-    subprocess.run(["git", "-C", str(repo), "fetch", "-q", a.ref.split("/")[0]], check=False)
+    for remote in {a.ref.split("/")[0]} | ({a.dev_ref.split("/")[0]} if a.dev_ref else set()):
+        subprocess.run(["git", "-C", str(repo), "fetch", "-q", remote], check=False)
 
     rels = releases()
     version = rels[0]["tag"].lstrip("v")
-    help_rs = git_show(repo, a.ref, "crates/creabim-app/src/help.rs")
-    order = []
-    for sec, pid in re.findall(r'page!\("([^"]+)",\s*"([\w-]+)"\)', help_rs):
-        SECTIONS.setdefault(sec, []).append(pid)
-        order.append(pid)
-    texts = {p: git_show(repo, a.ref, f"crates/creabim-app/help/{p}.md") for p in order}
-    pages = {p: re.match(r"#\s+(.*)", t).group(1).strip() for p, t in texts.items()}
+    rel_label = ".".join(version.split(".")[:2])      # 1.1.1 -> 1.1
+    latest = load_guide(repo, a.ref)
+    dev = load_guide(repo, a.dev_ref) if a.dev_ref else None
+    GUIDES_DEV_LABEL = a.dev_label or ""
+    # the picker, newest first; the released guide lives at /guide/
+    if dev:
+        GUIDES.append({"label": a.dev_label, "tag": "in development", "dir": f"guide/{a.dev_label}", "order": dev["order"], "key": "dev"})
+    GUIDES.append({"label": rel_label, "tag": "current", "dir": "guide", "order": latest["order"], "key": "latest"})
+    SECTIONS.clear()
+    SECTIONS.update(latest["sections"])
+    help_rs, order, texts, pages = latest["help_rs"], latest["order"], latest["texts"], latest["pages"]
     md = Md(pages, version)
 
-    # pictures: the guide's own, and the site's screenshots as JPEG
-    (SITE / "assets/help").mkdir(parents=True, exist_ok=True)
-    for name in git_ls(repo, a.ref, "crates/creabim-app/help/img"):
-        (SITE / "assets/help" / name).write_bytes(git_show(repo, a.ref, f"crates/creabim-app/help/img/{name}", binary=True))
+    # pictures: each guide's own (the released one in assets/help, a
+    # version in development in assets/help/<label>), and the site's
+    # screenshots as JPEG
+    def pictures(ref, folder):
+        (SITE / folder).mkdir(parents=True, exist_ok=True)
+        for name in git_ls(repo, ref, "crates/creabim-app/help/img"):
+            (SITE / folder / name).write_bytes(git_show(repo, ref, f"crates/creabim-app/help/img/{name}", binary=True))
+    pictures(a.ref, "assets/help")
+    if dev:
+        pictures(a.dev_ref, f"assets/help/{a.dev_label}")
     try:
         from PIL import Image
         for png in (SITE / "assets/img").glob("*.png"):
@@ -984,11 +1041,12 @@ def main():
     except ImportError:
         pass
 
-    def write(rel_path, depth, current, title, desc, body):
+    def write(rel_path, depth, current, title, desc, body, canonical=None, head=""):
         p = SITE / rel_path
         p.parent.mkdir(parents=True, exist_ok=True)
         path = rel_path.replace("index.html", "")
-        p.write_text(layout(depth=depth, current=current, title=title, desc=desc, body=body, path=path), encoding="utf-8")
+        p.write_text(layout(depth=depth, current=current, title=title, desc=desc, body=body, path=path,
+                            canonical=canonical, head=head), encoding="utf-8")
 
     write("index.html", 0, "Home", None,
           "Design-first BIM, modelled like Blender. CreaBIM is made for architects: one model for 3D, plans, sections, sheets, schedules, quantities and IFC. Free, open source, offline.",
@@ -1003,13 +1061,36 @@ def main():
           (Path(__file__).parent / "support_body.html").read_text(encoding="utf-8"))
     write("tutorials/index.html", 1, "Tutorials", "Tutorials",
           "Learn CreaBIM: build a first house in eight short steps, then the complete guide to every tool.", tutorials(md, texts, pages))
-    for pid in order:
-        title, body, toc = md.render(texts[pid])
-        if pid == "shortcuts":
-            body += shortcuts_tables(help_rs)
-        first_p = re.search(r"<p>(.*?)</p>", body)
-        desc = re.sub(r"<[^>]+>", "", first_p.group(1))[:155] if first_p else f"CreaBIM guide: {title}"
-        write(f"guide/{pid}.html", 1, "Guide", title, desc, guide_page(pid, title, body, toc, order, pages))
+    def guide(g, folder, gv, img_prefix, version_text, canonical_of=None, head=""):
+        """Write one version of the guide into `folder`."""
+        SECTIONS.clear()
+        SECTIONS.update(g["sections"])
+        gmd = Md(g["pages"], version_text, img_prefix)
+        depth = folder.count("/") + 1
+        for pid in g["order"]:
+            title, body, toc = gmd.render(g["texts"][pid])
+            if pid == "shortcuts":
+                body += shortcuts_tables(g["help_rs"])
+            first_p = re.search(r"<p>(.*?)</p>", body)
+            desc = re.sub(r"<[^>]+>", "", first_p.group(1))[:155] if first_p else f"CreaBIM guide: {title}"
+            write(f"{folder}/{pid}.html", depth, "Guide", title, desc,
+                  guide_page(pid, title, body, toc, g["order"], g["pages"], gv),
+                  canonical=canonical_of(pid) if canonical_of else None, head=head)
+
+    # the released guide at /guide/, and the same kept at /guide/<label>/
+    # so its links still work once a newer version takes /guide/ (the
+    # copy points search engines to /guide/ while they are the same)
+    guide(latest, "guide", {"label": rel_label, "up": "../", "dev": False}, "../assets/help/", version)
+    guide(latest, f"guide/{rel_label}", {"label": rel_label, "up": "../../", "dev": False}, "../../assets/help/", version,
+          canonical_of=lambda pid: f"guide/{pid}.html")
+    if dev:
+        # in development: marked on every page, and left out of search
+        # results so nobody lands on it thinking it is the current version
+        guide(dev, f"guide/{a.dev_label}", {"label": a.dev_label, "up": "../../", "dev": True},
+              f"../../assets/help/{a.dev_label}/", f"{a.dev_label} (in development)",
+              head='\n<meta name="robots" content="noindex">')
+    SECTIONS.clear()
+    SECTIONS.update(latest["sections"])
     write("404.html", 0, None, "Page not found", "This page does not exist.",
           '<section class="final gutter"><svg class="m" aria-hidden="true"><use href="#mark"/></svg><h1 style="font-size:clamp(34px,5vw,56px)">This page isn\'t <span class="acc">built yet.</span></h1><p class="lede">The link may be old. Try the home page or the guide.</p><div class="cta"><a class="btn primary" href="/CreaBIM/">Home</a><a class="btn" href="/CreaBIM/tutorials/">Tutorials</a></div></section>')
     # 404 is served from any depth: absolute asset paths
