@@ -428,3 +428,14 @@ td a{color:var(--sage-deep);font-weight:500;overflow-wrap:anywhere}
 .faq p{color:var(--ink-2);font-size:15px;margin-top:8px}
 @media (max-width:860px){.fund,.lanes{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}}
 @media (max-width:520px){.steps{grid-template-columns:1fr}}
+/* Guide versions: the picker under the crumbs, and the note on a guide in development */
+.vpick{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:10px 0 4px;font-size:13px}
+.vpick>span{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-right:4px}
+.vpick a{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--ink-2);text-decoration:none;background:var(--paper-2)}
+.vpick a small{font-size:11px;color:var(--muted)}
+.vpick a:hover{border-color:var(--sage);color:var(--sage-deep)}
+.vpick a[aria-current="true"]{background:var(--sage-wash);border-color:color-mix(in srgb,var(--sage) 45%,transparent);color:var(--sage-deep);font-weight:600}
+.vpick a[aria-current="true"] small{color:var(--sage-deep)}
+.devnote{border:1px solid color-mix(in srgb,var(--clay) 35%,transparent);background:var(--clay-wash);border-radius:10px;padding:12px 16px;margin:10px 0 18px;color:var(--ink-2);font-size:14.5px;display:grid;gap:4px}
+.devnote b{color:var(--ink)}
+.devnote a{color:var(--clay);font-weight:600}
