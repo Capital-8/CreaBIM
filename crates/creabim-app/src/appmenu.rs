@@ -588,14 +588,18 @@ impl CreaBimApp {
         let mut area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
         // Only borrow space from native Properties if Settings cannot fit between the panels.
         if area.width() < 264.0 {
-            area.max.x = self.shell.web.as_ref().map_or(ctx.content_rect().right(), |web| {
-                let help = web.rects[crate::webui::Pane::Help as usize];
-                if help.width() > 1.0 && help.left() >= area.right() {
-                    help.left()
-                } else {
-                    ctx.content_rect().right()
-                }
-            });
+            area.max.x = self
+                .shell
+                .web
+                .as_ref()
+                .map_or(ctx.content_rect().right(), |web| {
+                    let help = web.rects[crate::webui::Pane::Help as usize];
+                    if help.width() > 1.0 && help.left() >= area.right() {
+                        help.left()
+                    } else {
+                        ctx.content_rect().right()
+                    }
+                });
         }
         // as Blender's Preferences (MU39): its categories down the left, the
         // one picked on the right, scrolling, so it never grows past the
@@ -946,7 +950,12 @@ impl CreaBimApp {
             let factor = f32::from(interface_scale) / 100.0;
             let camera_ratio = ctx.zoom_factor() / factor;
             // Camera scales are in egui points; keep the 2D drawings the same screen size.
-            for (_, scale) in self.plan.cameras.values_mut().chain(self.plan.area_cameras.values_mut()) {
+            for (_, scale) in self
+                .plan
+                .cameras
+                .values_mut()
+                .chain(self.plan.area_cameras.values_mut())
+            {
                 *scale *= camera_ratio;
             }
             self.shell.settings.interface_scale = interface_scale;
