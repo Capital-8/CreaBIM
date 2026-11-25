@@ -4353,6 +4353,7 @@ impl CreaBimApp {
         let Some(web) = &mut self.shell.web else {
             return false;
         };
+        web.set_zoom(ctx.zoom_factor());
         for (pane, rect, state) in states {
             web.place(pane, rect, ppp);
             web.send(pane, &state);

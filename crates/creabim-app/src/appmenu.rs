@@ -569,6 +569,7 @@ impl CreaBimApp {
         }
         let mut open = true;
         let mut theme = self.shell.theme;
+        let mut interface_scale = self.shell.settings.interface_scale;
         let mut unit = self.doc.model().units().length;
         let mut keys = false;
         let mut grips = self.shell.settings.grips;
@@ -584,7 +585,18 @@ impl CreaBimApp {
         let mut vert_s = self.shell.settings.edit_vertex_size;
         let theme_accent = self.shell.theme.selection();
         let theme_logo = self.shell.theme.logo();
-        let area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
+        let mut area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
+        // Only borrow space from native Properties if Settings cannot fit between the panels.
+        if area.width() < 264.0 {
+            area.max.x = self.shell.web.as_ref().map_or(ctx.content_rect().right(), |web| {
+                let help = web.rects[crate::webui::Pane::Help as usize];
+                if help.width() > 1.0 && help.left() >= area.right() {
+                    help.left()
+                } else {
+                    ctx.content_rect().right()
+                }
+            });
+        }
         // as Blender's Preferences (MU39): its categories down the left, the
         // one picked on the right, scrolling, so it never grows past the
         // window as settings are added
@@ -598,21 +610,24 @@ impl CreaBimApp {
             ("Project", "folder"),
             ("Keymap", "keyboard"),
         ];
-        let height = (area.height() - 80.0).clamp(300.0, 560.0);
+        let height = (area.height() - 80.0).clamp(160.0, 560.0);
+        let width = (area.width() - 24.0).clamp(240.0, 620.0);
+        let tabs_width = (width * 0.35).clamp(104.0, 140.0);
+        let page_width = width - tabs_width - 20.0;
         crate::app::shell::window("Settings")
             .open(&mut open)
-            .default_pos(area.center() - Vec2::new(310.0, height / 2.0))
+            .default_pos(area.center() - Vec2::new(width / 2.0, height / 2.0))
             .constrain_to(area)
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.set_width(620.0);
+                ui.set_width(width);
                 ui.set_height(height);
                 let p = crate::theme::Palette::of(ui.ctx());
                 ui.horizontal_top(|ui| {
                     // the categories
                     ui.vertical(|ui| {
-                        ui.set_width(140.0);
+                        ui.set_width(tabs_width);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         // the logo, rising in once as Settings opens (MU39)
                         let t = {
@@ -625,7 +640,7 @@ impl CreaBimApp {
                             }
                             1.0 - (1.0 - t).powi(3)
                         };
-                        let (r, _) = ui.allocate_exact_size(Vec2::new(140.0, 46.0), egui::Sense::hover());
+                        let (r, _) = ui.allocate_exact_size(Vec2::new(tabs_width, 46.0), egui::Sense::hover());
                         let tex = logo_texture(ui.ctx());
                         let s = 36.0;
                         let at = egui::Rect::from_min_size(
@@ -644,7 +659,7 @@ impl CreaBimApp {
                         );
                         for (i, (name, icon)) in TABS.iter().enumerate() {
                             let (r, resp) = ui.allocate_exact_size(
-                                Vec2::new(140.0, 28.0),
+                                Vec2::new(tabs_width, 28.0),
                                 egui::Sense::click(),
                             );
                             let on = i == tab;
@@ -682,13 +697,13 @@ impl CreaBimApp {
                     );
                     // the category picked
                     ui.vertical(|ui| {
-                        ui.set_width(460.0);
+                        ui.set_width(page_width);
                         egui::ScrollArea::vertical()
                             .id_salt(("settings.page", tab))
                             .max_height(height)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
-                                ui.set_width(448.0);
+                                ui.set_width(page_width - 12.0);
                                 let yours = |ui: &mut egui::Ui| {
                                     ui.add_space(6.0);
                                     ui.label(
@@ -707,6 +722,20 @@ impl CreaBimApp {
                                                 .show_ui(ui, |ui| {
                                                     for t in crate::theme::Theme::ALL {
                                                         ui.selectable_value(&mut theme, t, t.label());
+                                                    }
+                                                });
+                                        });
+                                        crate::props::row(ui, "Interface scale", |ui| {
+                                            let label = |scale| match scale {
+                                                100 => "100% (default)".to_string(),
+                                                _ => format!("{scale}%"),
+                                            };
+                                            egui::ComboBox::from_id_salt("settings.interface_scale").icon(crate::props::combo_icon)
+                                                .selected_text(label(interface_scale))
+                                                .width(ui.available_width())
+                                                .show_ui(ui, |ui| {
+                                                    for scale in crate::files::Settings::INTERFACE_SCALES {
+                                                        ui.selectable_value(&mut interface_scale, scale, label(scale));
                                                     }
                                                 });
                                         });
@@ -912,6 +941,17 @@ impl CreaBimApp {
             self.shell.settings.snap_spacing_um = spacing;
             self.shell.settings.distance_marks = marks;
             self.shell.settings.store();
+        }
+        if interface_scale != self.shell.settings.interface_scale {
+            let factor = f32::from(interface_scale) / 100.0;
+            let camera_ratio = ctx.zoom_factor() / factor;
+            // Camera scales are in egui points; keep the 2D drawings the same screen size.
+            for (_, scale) in self.plan.cameras.values_mut().chain(self.plan.area_cameras.values_mut()) {
+                *scale *= camera_ratio;
+            }
+            self.shell.settings.interface_scale = interface_scale;
+            self.shell.settings.store();
+            ctx.set_zoom_factor(factor);
         }
         if theme != self.shell.theme {
             self.set_theme(ctx, theme);
