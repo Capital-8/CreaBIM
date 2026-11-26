@@ -201,7 +201,7 @@ pub fn badge(
     let mut toggle = false;
     let mut hovered_row = None;
     let area = egui::Area::new(egui::Id::new("hoverpick-badge"))
-        .order(egui::Order::Foreground)
+        .order(crate::app::overlay_order())
         .fixed_pos(pos)
         .interactable(true)
         .show(ctx, |ui| {

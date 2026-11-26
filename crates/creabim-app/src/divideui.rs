@@ -271,7 +271,7 @@ impl CreaBimApp {
             step(d, d.way == Way::Up, -1);
         }
         egui::Area::new(egui::Id::new("divide bar"))
-            .order(egui::Order::Foreground)
+            .order(crate::app::overlay_order())
             .pivot(egui::Align2::CENTER_TOP)
             .fixed_pos(egui::pos2(area.center().x, area.top() + 44.0) + self.divide.offset)
             .show(ctx, |ui| {
@@ -475,14 +475,19 @@ impl CreaBimApp {
                             }
                         });
                         if d.make == Make::Copies {
-                            ui.label(
-                                egui::RichText::new(match &item_name {
-                                    Some(n) => format!("Copies {n} into each part."),
-                                    None => "Shift+click what goes in each part.".into(),
-                                })
-                                .small()
-                                .weak(),
-                            );
+                            match &item_name {
+                                Some(n) => {
+                                    crate::props::worked_out(
+                                        ui,
+                                        "divide",
+                                        &[crate::props::Worked::new("Copies", n.clone())],
+                                    );
+                                }
+                                None => crate::props::howto(
+                                    ui,
+                                    "Divide: Shift+click what goes in each part.",
+                                ),
+                            }
                         }
                     });
             });

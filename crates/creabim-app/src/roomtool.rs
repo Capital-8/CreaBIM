@@ -131,7 +131,14 @@ pub fn drawn(
             let c = Ceiling::drawn(level, outline, ceiling_height(doc.model(), level));
             let e = Element::new("Ceiling", ElementKind::Ceiling(c));
             let id = e.id;
-            doc.commit(Transaction::new("Draw ceiling").insert(e))?;
+            // its height tagged in each ceiling plan, as a room is (MU142)
+            let tags = room::ceiling_tags_for(doc.model(), id, level);
+            let tx = tags
+                .into_iter()
+                .fold(Transaction::new("Draw ceiling").insert(e), |tx, t| {
+                    tx.insert(t)
+                });
+            doc.commit(tx)?;
             selection.only(id);
             Ok(format!(
                 "Ceiling added {} above the floor. Set its height, thickness and grid in Properties. Ctrl+Z to undo.",
@@ -198,7 +205,13 @@ pub fn fill(
             let follows = c.room.is_some();
             let e = Element::new("Ceiling", ElementKind::Ceiling(c));
             let id = e.id;
-            doc.commit(Transaction::new("Place ceiling").insert(e))?;
+            let tags = room::ceiling_tags_for(doc.model(), id, level);
+            let tx = tags
+                .into_iter()
+                .fold(Transaction::new("Place ceiling").insert(e), |tx, t| {
+                    tx.insert(t)
+                });
+            doc.commit(tx)?;
             selection.only(id);
             Ok(if follows {
                 format!("Ceiling added over the room, {} above the floor; it follows the room's walls. Ctrl+Z to undo.", crate::units::len(height))
@@ -352,11 +365,19 @@ pub fn check_layers(model: &Model) -> (Vec<ElementId>, String) {
 
 /// A text field with its label; true when it changed.
 fn text(ui: &mut egui::Ui, label: &str, v: &mut String) -> bool {
-    crate::props::flow(ui, |ui| {
-        ui.label(label);
-        ui.text_edit_singleline(v).changed()
+    // a row like every other (MU63: the label sat over its field)
+    crate::props::row(ui, label, |ui| {
+        crate::props::text_field(ui, egui::TextEdit::singleline(v), f32::INFINITY).changed()
     })
-    .inner
+}
+
+/// [`text`] with its whole name on hover.
+fn text_tip(ui: &mut egui::Ui, label: &str, tip: &str, v: &mut String) -> bool {
+    crate::props::row(ui, label, |ui| {
+        crate::props::text_field(ui, egui::TextEdit::singleline(v), f32::INFINITY)
+            .on_hover_text(tip)
+            .changed()
+    })
 }
 
 /// A length in the project's units, with its label; true when it changed.
@@ -372,19 +393,28 @@ pub fn room_fields(ui: &mut egui::Ui, model: &Model, r: &mut Room) -> &'static s
     let mut label = "";
     match room::shape_of(model, r) {
         Some(s) => {
-            ui.label(format!(
-                "Area {}   Perimeter {}",
-                crate::units::area(room::net_area(model, r, &s)),
-                crate::units::len(s.perimeter())
-            ));
-            ui.label(
-                egui::RichText::new(if r.is_drawn() {
-                    "Its outline is drawn; it doesn't follow the walls."
-                } else {
-                    "Measured to the walls' inner faces; it follows them as they move."
-                })
-                .weak(),
+            use crate::props::{Read, ReadRow};
+            let how = if r.is_drawn() {
+                "Its outline is drawn; it doesn't follow the walls."
+            } else {
+                "Measured to the walls' inner faces; it follows them as they move."
+            };
+            crate::props::read_rows(
+                ui,
+                &[
+                    ReadRow::new(
+                        "Area",
+                        Read::Text(crate::units::area(room::net_area(model, r, &s))),
+                        how,
+                    ),
+                    ReadRow::new(
+                        "Perimeter",
+                        Read::Text(crate::units::len(s.perimeter())),
+                        how,
+                    ),
+                ],
             );
+            crate::props::plain_note(ui, how);
         }
         None => {
             ui.colored_label(
@@ -396,14 +426,28 @@ pub fn room_fields(ui: &mut egui::Ui, model: &Model, r: &mut Room) -> &'static s
     if text(ui, "Number", &mut r.number) {
         label = "Room number";
     }
-    for (name, v) in [
-        ("Floor finish", &mut r.floor_finish),
-        ("Wall finish", &mut r.wall_finish),
-        ("Ceiling finish", &mut r.ceiling_finish),
-        ("Occupancy", &mut r.occupancy),
-        ("Department", &mut r.department),
+    // names short enough for the label column at the narrowest panel
+    // (MU63: "Floor fin…", "Occupa…"), the whole name on hover
+    crate::props::sub_box(ui, "room.finishes", "Finishes", None, true, |ui| {
+        for (name, full, v) in [
+            ("Floor", "Floor finish", &mut r.floor_finish),
+            ("Walls", "Wall finish", &mut r.wall_finish),
+            ("Ceiling", "Ceiling finish", &mut r.ceiling_finish),
+        ] {
+            if text_tip(ui, name, full, v) {
+                label = "Room data";
+            }
+        }
+    });
+    for (name, full, v) in [
+        (
+            "Use",
+            "Occupancy: what the room is used for",
+            &mut r.occupancy,
+        ),
+        ("Dept.", "Department", &mut r.department),
     ] {
-        if text(ui, name, v) {
+        if text_tip(ui, name, full, v) {
             label = "Room data";
         }
     }
@@ -429,10 +473,15 @@ pub fn room_fields(ui: &mut egui::Ui, model: &Model, r: &mut Room) -> &'static s
             }
         }
         None => {
-            ui.label(format!(
-                "Height {} (to its ceiling or the storey above)",
-                crate::units::len(found)
-            ));
+            use crate::props::{Read, ReadRow};
+            crate::props::read_rows(
+                ui,
+                &[ReadRow::new(
+                    "Height",
+                    Read::Text(crate::units::len(found)),
+                    "To its ceiling, or the storey above: tick Own height to set it",
+                )],
+            );
         }
     }
     if r.is_drawn()
@@ -453,14 +502,19 @@ pub fn ceiling_fields(ui: &mut egui::Ui, model: &Model, c: &mut Ceiling) -> &'st
     let mut label = "";
     match c.room.and_then(|r| model.get(r)) {
         Some(r) if c.boundary.is_empty() => {
-            ui.label(format!(
-                "Over {} {}: it follows the room's walls.",
-                number_of(model, r.id),
-                r.name
-            ));
+            let rel = crate::props::relation(
+                ui,
+                "Over",
+                &format!("{} {}", number_of(model, r.id), r.name),
+                "It follows the room's walls. Click to select the room",
+                None,
+            );
+            if rel.select {
+                crate::props::ask_select(ui, r.id);
+            }
         }
         _ => {
-            ui.label(egui::RichText::new("Its outline is drawn.").weak());
+            crate::props::readout(ui, "Outline", "Drawn", "Its own outline, not a room's");
         }
     }
     if length(ui, "Height", &mut c.height, 0.1, 50.0) {
@@ -495,7 +549,7 @@ pub fn tag_fields(ui: &mut egui::Ui, fields: &mut Vec<RoomField>) -> &'static st
     ui.label("Shows");
     for f in RoomField::ALL {
         let mut on = shown.contains(&f);
-        if ui.checkbox(&mut on, f.label()).changed() {
+        if crate::props::tickbox(ui, &mut on, f.label()).changed() {
             if on {
                 // keep the order fields are listed in
                 shown.push(f);

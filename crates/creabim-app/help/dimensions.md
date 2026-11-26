@@ -61,6 +61,27 @@ Pick a **Style** in the tool options for new dimensions; change a placed one's s
 
 How the numbers read (unit, decimals, zeros) comes from the style pack's **number format** for dimensions; one dimension can set its own in *Properties*. See [Units and number formats](units#number-formats).
 
+## Its text
+
+A linear dimension's **Text** section in *Properties* is folded away until you need it:
+
+- **Value**
+  - Left alone, it writes the measured length, kept up to date.
+  - Tick *Text instead* to write your own text, such as `EQ`. Put `<>` in it to bring the measure back: `<> MIN` reads 3′-11¼″ MIN.
+  - Unticking keeps what you typed for next time.
+- **Before** and **After** add short signs or words on the same line, such as ± 3 810 CLR. They follow the number when the model changes.
+- **Below** adds a line of smaller text under the dimension line, such as FACE OF STUD or VERIFY ON SITE.
+- **Place** puts the text where you want it:
+  - *Centre* is the usual place.
+  - *Left* and *Right* put the text past the line's ends, with the line running on under it. Use them where a dimension is too short for its number.
+  - *Moved* is where you dragged it.
+- **Move text** gives this dimension's text a grip: a small square just before it. Drag it anywhere to clear a cramped run. Only dimensions with Move text on have the grip, so no other text moves by mistake.
+- **Leader** decides when moved text draws a line back to the dimension's middle: when the text sits outside the witness lines (the usual), always, or never.
+
+The button beside each field offers the signs and words drawings often carry, such as ± Ø ° ² ℄ ′ ″, TYP., CLR, MIN, MAX, O.C., EQ and U.N.O., so you don't need to type them.
+
+While a dimension is selected, a small dot after its number shows that the number is your own text. Its real measure stays under *Worked out*, and the dot never prints. *Back to the plain number* clears the whole section.
+
 ## Breaking around tags
 
 A style with **Break dimension lines at tags** on leaves a gap in its dimension lines wherever a tag's bubble or a note's text sits across them, so a chain of dimensions stays readable past the door tags on it. Dimensions in other styles run straight through.

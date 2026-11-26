@@ -56,13 +56,19 @@ fn key(source: &RefSource) -> String {
         RefSource::View(v) => format!("view:{v:?}"),
         RefSource::Image { path, .. } => format!("image:{path}"),
         RefSource::Dxf { path } => format!("dxf:{path}"),
+        RefSource::Map { path } => format!("map:{path}"),
     }
 }
 
 impl RefCache {
     /// What reference `id` shows, read if not yet (or stale).
     pub fn get(&mut self, model: &Model, id: ElementId, r: &Reference) -> Shown {
-        let k = key(&r.source);
+        let mut k = key(&r.source);
+        // map data follows the project's place on the map
+        if let RefSource::Map { .. } = r.source {
+            let o = map_offset(model);
+            k.push_str(&format!(":{}:{}", o.x, o.y));
+        }
         let rev = match r.source {
             RefSource::View(_) => model.revision(),
             _ => 0,
@@ -103,7 +109,43 @@ pub fn read(model: &Model, source: &RefSource) -> Shown {
             Ok(l) => Shown::Lines(Arc::new(l)),
             Err(e) => Shown::Missing(e),
         },
+        RefSource::Map { path } => match map_lines(path, map_offset(model)) {
+            Ok(l) => Shown::Lines(Arc::new(l)),
+            Err(e) => Shown::Missing(e),
+        },
     }
+}
+
+/// Where the project's origin is on the map; nothing when it isn't placed.
+pub fn map_offset(model: &Model) -> DVec2 {
+    model
+        .project_info()
+        .and_then(|(_, p)| p.map.as_ref())
+        .map_or(DVec2::ZERO, |m| DVec2::new(m.easting, m.northing))
+}
+
+/// A map file's lines, less `offset`: in the project's coordinates when
+/// it is the project's place on the map.
+pub fn map_lines(path: &str, offset: DVec2) -> Result<Vec<Vec<DVec2>>, String> {
+    let d = creabim_exchange::gis::read(std::path::Path::new(path))?;
+    let lines: Vec<Vec<DVec2>> = d
+        .survey
+        .lines
+        .iter()
+        .map(|l| {
+            let mut pts: Vec<DVec2> = l.points.iter().map(|p| p.truncate() - offset).collect();
+            if l.closed {
+                if let Some(f) = pts.first().copied() {
+                    pts.push(f);
+                }
+            }
+            pts
+        })
+        .collect();
+    if lines.is_empty() {
+        return Err(format!("{path} holds no lines to show"));
+    }
+    Ok(lines)
 }
 
 /// What a source spans in its own coordinates, once read.
@@ -132,7 +174,9 @@ pub fn label(model: &Model, source: &RefSource) -> String {
     };
     match source {
         RefSource::View(v) => model.get(*v).map_or("a view".into(), |e| e.name.clone()),
-        RefSource::Image { path, .. } | RefSource::Dxf { path } => file(path),
+        RefSource::Image { path, .. } | RefSource::Dxf { path } | RefSource::Map { path } => {
+            file(path)
+        }
     }
 }
 
@@ -254,6 +298,17 @@ pub fn linework(items: &[PlanItem]) -> Vec<Vec<DVec2>> {
 
 /// A picture file's pixels.
 pub fn picture(path: &str) -> Result<Raster, String> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".tif") || lower.ends_with(".tiff") {
+        let b = std::fs::read(path).map_err(|e| format!("couldn't read {path}: {e}"))?;
+        let m = creabim_exchange::gis::map_picture(std::io::Cursor::new(b))?;
+        return Ok(Raster {
+            width: m.width,
+            height: m.height,
+            rgba: m.rgba,
+            key: path_key(path),
+        });
+    }
     let img = image::open(path).map_err(|e| format!("couldn't read {path}: {e}"))?;
     let rgba = img.to_rgba8();
     Ok(Raster {
@@ -294,6 +349,30 @@ fn path_key(path: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_lines_come_in_less_the_project_place_and_rings_close() {
+        let dir = std::env::temp_dir().join(format!("creabim-map-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lots.geojson");
+        std::fs::write(
+            &path,
+            r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:32613"}},"features":[
+              {"type":"Feature","properties":{"kind":"property"},"geometry":{"type":"Polygon","coordinates":[[[512350,4362130],[512370,4362130],[512370,4362150],[512350,4362150],[512350,4362130]]]}},
+              {"type":"Feature","properties":{"kind":"kerb"},"geometry":{"type":"LineString","coordinates":[[512340,4362120],[512380,4362120]]}}]}"#,
+        )
+        .unwrap();
+        let l = map_lines(path.to_str().unwrap(), DVec2::new(512360.0, 4362138.0)).unwrap();
+        assert_eq!(l.len(), 2);
+        let ring = l.iter().find(|r| r.len() >= 5).expect("the lot");
+        assert_eq!(ring.first(), ring.last(), "a closed lot is drawn closed");
+        assert!(ring
+            .iter()
+            .all(|p| p.x.abs() <= 10.0 + 1e-6 && (-8.0 - 1e-6..=12.0 + 1e-6).contains(&p.y)));
+        let kerb = l.iter().find(|r| r.len() == 2).unwrap();
+        assert!((kerb[0] - DVec2::new(-20.0, -18.0)).length() < 1e-6);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn a_view_reference_reads_its_linework_and_spans_it() {

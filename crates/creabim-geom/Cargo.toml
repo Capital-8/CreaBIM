@@ -10,7 +10,12 @@ rust-version.workspace = true
 creabim-core.workspace = true
 glam.workspace = true
 miniz_oxide = "0.8"
+ttf-parser = "0.25"
+spade = "2"
 rust_xlsxwriter = { version = "0.96", default-features = false }
-
-[dev-dependencies]
+# the paper textures' tiles (already in the build through `image`)
+png = "0.18"
+# the template sets come as data
+serde.workspace = true
 serde_json.workspace = true
+

@@ -64,7 +64,9 @@ impl DimensionKind {
     }
 }
 
-/// Typeface families every exporter can name: PDF has them built in.
+/// A text style's typeface: the three every PDF has built in, and the
+/// fonts CreaBIM ships (its own and the Classics, 2026-11-16), which go
+/// inside every SVG and PDF that uses them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Font {
     /// Helvetica or Arial.
@@ -74,17 +76,121 @@ pub enum Font {
     Serif,
     /// Courier.
     Mono,
+    // CreaBIM's own
+    Structa,
+    Vectra,
+    Spencer,
+    Chisel,
+    Kinetic,
+    TechHand,
+    AtelierHand,
+    // the Classics
+    Inter,
+    NotoSans,
+    IbmPlexSans,
+    IbmPlexSansCondensed,
+    IbmPlexMono,
+    ArchivoNarrow,
+    BarlowCondensed,
+    Jost,
+    Ubuntu,
+    Osifont,
+    ArchitectsDaughter,
+    Kalam,
+    PatrickHand,
+}
+
+/// Which list a font sits under in a picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontGroup {
+    /// In every PDF reader: nothing goes inside the file.
+    Standard,
+    CreaBim,
+    Classic,
 }
 
 impl Font {
-    pub const ALL: [Font; 3] = [Font::Sans, Font::Serif, Font::Mono];
+    pub const ALL: [Font; 23] = [
+        Font::Sans,
+        Font::Serif,
+        Font::Mono,
+        Font::Structa,
+        Font::Vectra,
+        Font::Spencer,
+        Font::Chisel,
+        Font::Kinetic,
+        Font::TechHand,
+        Font::AtelierHand,
+        Font::Inter,
+        Font::NotoSans,
+        Font::IbmPlexSans,
+        Font::IbmPlexSansCondensed,
+        Font::IbmPlexMono,
+        Font::ArchivoNarrow,
+        Font::BarlowCondensed,
+        Font::Jost,
+        Font::Ubuntu,
+        Font::Osifont,
+        Font::ArchitectsDaughter,
+        Font::Kalam,
+        Font::PatrickHand,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Font::Sans => "Sans (Helvetica)",
             Font::Serif => "Serif (Times)",
             Font::Mono => "Mono (Courier)",
+            _ => self.family(),
         }
+    }
+
+    /// The font's family name, as SVG and PDF name it.
+    pub fn family(self) -> &'static str {
+        match self {
+            Font::Sans => "Helvetica",
+            Font::Serif => "Times",
+            Font::Mono => "Courier",
+            Font::Structa => "CreaBIM Structa",
+            Font::Vectra => "CreaBIM Vectra",
+            Font::Spencer => "CreaBIM Spencer",
+            Font::Chisel => "CreaBIM Chisel",
+            Font::Kinetic => "CreaBIM Kinetic",
+            Font::TechHand => "CreaBIM TechHand",
+            Font::AtelierHand => "CreaBIM AtelierHand",
+            Font::Inter => "Inter",
+            Font::NotoSans => "Noto Sans",
+            Font::IbmPlexSans => "IBM Plex Sans",
+            Font::IbmPlexSansCondensed => "IBM Plex Sans Condensed",
+            Font::IbmPlexMono => "IBM Plex Mono",
+            Font::ArchivoNarrow => "Archivo Narrow",
+            Font::BarlowCondensed => "Barlow Condensed",
+            Font::Jost => "Jost",
+            Font::Ubuntu => "Ubuntu derivative CreaBIM",
+            Font::Osifont => "osifont",
+            Font::ArchitectsDaughter => "Architects Daughter",
+            Font::Kalam => "Kalam",
+            Font::PatrickHand => "Patrick Hand",
+        }
+    }
+
+    pub fn group(self) -> FontGroup {
+        match self {
+            Font::Sans | Font::Serif | Font::Mono => FontGroup::Standard,
+            Font::Structa
+            | Font::Vectra
+            | Font::Spencer
+            | Font::Chisel
+            | Font::Kinetic
+            | Font::TechHand
+            | Font::AtelierHand => FontGroup::CreaBim,
+            _ => FontGroup::Classic,
+        }
+    }
+
+    /// Shipped with CreaBIM, so it goes inside the files that use it.
+    pub fn bundled(self) -> bool {
+        self.group() != FontGroup::Standard
     }
 }
 
@@ -112,12 +218,16 @@ pub enum Terminator {
     Square,
     /// A tick with a dot on the point.
     TickDot,
+    /// A short thick stroke with round ends, as a pen leaves it: along a
+    /// leader at its end, at 45° on a dimension (the hand line, pens
+    /// stage 3).
+    Slug,
     /// Nothing: the line just stops.
     None,
 }
 
 impl Terminator {
-    pub const ALL: [Terminator; 11] = [
+    pub const ALL: [Terminator; 12] = [
         Terminator::Tick,
         Terminator::Slash,
         Terminator::Arrow,
@@ -128,6 +238,7 @@ impl Terminator {
         Terminator::DotOpen,
         Terminator::Square,
         Terminator::TickDot,
+        Terminator::Slug,
         Terminator::None,
     ];
 
@@ -143,6 +254,7 @@ impl Terminator {
             Terminator::DotOpen => "Open dot",
             Terminator::Square => "Square",
             Terminator::TickDot => "Tick and dot",
+            Terminator::Slug => "Slug (pen stroke)",
             Terminator::None => "None",
         }
     }
@@ -338,6 +450,117 @@ pub struct TextStyle {
     /// How a note's or tag's lines line up (MU31).
     #[serde(default, skip_serializing_if = "TextAlign::is_usual")]
     pub align: TextAlign,
+    /// A note's leader: one elbow, or a smooth curve to what it points at.
+    #[serde(default, skip_serializing_if = "LeaderShape::is_straight")]
+    pub leader_shape: LeaderShape,
+}
+
+/// What a linear dimension's text reads and where it sits (MU80, A on
+/// all three): its own text instead of the measure (`<>` brings the measure
+/// back), words before and after it, a short note below the line, and its
+/// place along the line or moved off it with a leader.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DimText {
+    /// Read `text` instead of the measure. Off keeps `text` for next time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instead: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub before: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub after: String,
+    /// A line of smaller text under the dimension line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub below: String,
+    #[serde(default, skip_serializing_if = "DimPlace::is_centre")]
+    pub place: DimPlace,
+    /// Where moved text sits from its centred place, in the view's plane
+    /// (metres), for [`DimPlace::Moved`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "DimLeader::is_when_outside")]
+    pub leader: DimLeader,
+    /// The text's grip shows, so this dimension's text can be dragged; off
+    /// on the rest, so none is moved by mistake (MU81).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub movable: bool,
+}
+
+impl DimText {
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Its own text is shown instead of the measure.
+    pub fn overridden(&self) -> bool {
+        self.instead && !self.text.trim().is_empty()
+    }
+
+    /// The line the dimension reads, given the `measured` value.
+    pub fn compose(&self, measured: &str) -> String {
+        let main = if self.overridden() {
+            self.text.replace("<>", measured)
+        } else {
+            measured.to_string()
+        };
+        [self.before.trim(), main.trim(), self.after.trim()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// Where a dimension's text sits along its line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimPlace {
+    #[default]
+    Centre,
+    /// Past the line's start, as read.
+    Left,
+    /// Past the line's end, as read.
+    Right,
+    /// Dragged off by its grip.
+    Moved,
+}
+
+impl DimPlace {
+    pub fn is_centre(&self) -> bool {
+        *self == DimPlace::Centre
+    }
+}
+
+/// When moved dimension text draws a leader back to its line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DimLeader {
+    /// Only when the text sits outside the witness lines.
+    #[default]
+    WhenOutside,
+    Always,
+    Never,
+}
+
+impl DimLeader {
+    pub fn is_when_outside(&self) -> bool {
+        *self == DimLeader::WhenOutside
+    }
+}
+
+/// The shape of a note's leader (pens stage 3, the owner's markup).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LeaderShape {
+    /// Straight runs, bent at the shoulder and the elbow.
+    #[default]
+    Straight,
+    /// A smooth curve from the shoulder to the end.
+    Curved,
+}
+
+impl LeaderShape {
+    pub fn is_straight(&self) -> bool {
+        *self == LeaderShape::Straight
+    }
 }
 
 /// How the lines of a note or tag line up: Usual is each kind's own
@@ -375,6 +598,7 @@ impl Default for TextStyle {
             purpose: StyleUse::Any,
             break_at_tags: false,
             align: TextAlign::Usual,
+            leader_shape: LeaderShape::Straight,
         }
     }
 }
@@ -446,11 +670,62 @@ pub fn text_style(model: &Model, style: Option<ElementId>, color: Option<[f32; 3
             ElementKind::TextStyle(s) => Some(*s),
             _ => None,
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| TextStyle {
+            font: crate::styles::active_pack(model)
+                .text_font
+                .unwrap_or_default(),
+            ..TextStyle::default()
+        });
     if color.is_some() {
         s.color = color;
     }
     s
+}
+
+/// The styles a project starts with, one for each kind of annotation, to
+/// show how styles work and to duplicate into one's own (MU85).
+pub fn starter_text_styles() -> Vec<(&'static str, TextStyle)> {
+    vec![
+        (
+            "Dimensions · Technical",
+            TextStyle {
+                size: 2.5,
+                terminator: Some(Terminator::Tick),
+                purpose: StyleUse::Dimensions,
+                ..TextStyle::default()
+            },
+        ),
+        // the sections of the project's notes placed on sheets (MU88)
+        (
+            "General notes",
+            TextStyle {
+                size: 2.5,
+                purpose: StyleUse::Notes,
+                ..TextStyle::default()
+            },
+        ),
+        (
+            "Notes · Hand",
+            TextStyle {
+                font: Font::TechHand,
+                size: 2.5,
+                leader_end: Some(Terminator::Dot),
+                leader_shape: LeaderShape::Curved,
+                purpose: StyleUse::Notes,
+                ..TextStyle::default()
+            },
+        ),
+        (
+            "Tags · Structa",
+            TextStyle {
+                font: Font::Structa,
+                size: 2.5,
+                tag_shape: TagShape::Hexagon,
+                purpose: StyleUse::Tags,
+                ..TextStyle::default()
+            },
+        ),
+    ]
 }
 
 /// A text note in a view (drawing units) or on a sheet (paper mm), with an
@@ -485,9 +760,203 @@ pub struct Note {
     /// Read the text as markdown: headings, bullets, numbers, checkboxes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub markdown: bool,
+    /// Drawn as a CreaBIM symbol placed with the Symbol tool, its text in
+    /// the symbol's slot (Mockup_Symbols_REV00).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<PlacedSymbol>,
+    /// Shows a section of the project's notes (its key, "general",
+    /// "todos"…) instead of its own text, read as Markdown: one text on
+    /// every sheet that shows it (Properties REV04, decision 9). Its own
+    /// text stays, shown again when the link goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    /// The block's height on paper, mm: where it stops when its text goes
+    /// on in another block (long notes, Mockup_Long_Notes_REV00). None,
+    /// it runs as long as its text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    /// A first block whose text goes on in the blocks that follow it
+    /// (Continued); off, it shows all of it and they show nothing (Whole).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continued: bool,
+    /// A block that carries on another block's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follows: Option<NoteFollow>,
+    /// A first block's next parts go to its left; off, to its right (MU91:
+    /// some read right to left, most left to right).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continue_left: bool,
+    /// The leader's point while the leader is turned off, so turning it
+    /// back on points where it pointed before (MU135: it came back at a
+    /// default spot, its direction lost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader_kept: Option<HostPoint>,
+    /// Reads its words from an object: `{Field}` in its text is filled
+    /// from what it is linked to (MU135, Mockup_Linked_Leaders_REV00).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<NoteReads>,
+}
+
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// What a note reads from an object: by default whatever its leader's
+/// arrow is attached to, so moving the arrow onto another object reads
+/// that one; with `follow` off, the object it was reading when it was
+/// turned off.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoteReads {
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub follow: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<ElementId>,
+    /// The read words in capitals, as notes on drawings often are.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caps: bool,
+}
+
+impl Default for NoteReads {
+    fn default() -> Self {
+        Self {
+            follow: true,
+            fixed: None,
+            caps: false,
+        }
+    }
+}
+
+/// The fields a note can read, by key and the word written in braces in
+/// its text (`{Mark}`); either spelling, in any case, is read.
+pub const NOTE_FIELDS: [(&str, &str); 8] = [
+    ("name", "Name"),
+    ("mark", "Mark"),
+    ("ifc", "IFC class"),
+    ("type", "Type"),
+    ("material", "Material"),
+    ("level", "Level"),
+    ("size", "Size"),
+    ("layers", "Layers"),
+];
+
+/// The field key a `{word}` names, if it names one.
+pub fn note_field_key(word: &str) -> Option<&'static str> {
+    let w = word.trim();
+    NOTE_FIELDS
+        .iter()
+        .find(|(k, l)| k.eq_ignore_ascii_case(w) || l.eq_ignore_ascii_case(w))
+        .map(|(k, _)| *k)
+}
+
+/// `text` with each `{Field}` filled by `value`; a field with no value
+/// reads "—", and braces around anything else are left as typed.
+pub fn fill_note_fields(text: &str, value: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        match after.find('}') {
+            Some(j) => {
+                let word = &after[..j];
+                match note_field_key(word) {
+                    Some(k) => out.push_str(&value(k).unwrap_or_else(|| "—".into())),
+                    None => {
+                        out.push('{');
+                        out.push_str(word);
+                        out.push('}');
+                    }
+                }
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push_str(&rest[i..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where a block that carries on a note's text sits in its chain.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoteFollow {
+    /// The first block of the chain.
+    pub first: ElementId,
+    /// Its place after the first: 1, 2…
+    pub part: u32,
+    #[serde(default)]
+    pub title: PartTitle,
+}
+
+/// What a carried-on block says above its text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PartTitle {
+    None,
+    #[default]
+    Continued,
+    Name,
+    NameContinued,
+}
+
+impl PartTitle {
+    pub const ALL: [PartTitle; 4] = [
+        PartTitle::None,
+        PartTitle::Continued,
+        PartTitle::Name,
+        PartTitle::NameContinued,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PartTitle::None => "None",
+            PartTitle::Continued => "(continued)",
+            PartTitle::Name => "The section's name",
+            PartTitle::NameContinued => "Name (continued)",
+        }
+    }
+
+    /// The title line for a section named `name`; None for no title.
+    pub fn line(self, name: &str) -> Option<String> {
+        let up = name.trim().to_uppercase();
+        match self {
+            PartTitle::None => None,
+            PartTitle::Continued => Some("(continued)".into()),
+            PartTitle::Name => Some(up),
+            PartTitle::NameContinued => Some(format!("{up} (continued)")),
+        }
+    }
+}
+
+/// A symbol placed with the Symbol tool: its kind, its style (none is the
+/// kind's pick in the view, else the kind's first) and its turn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlacedSymbol {
+    /// `points`, `slopes`, `centerlines`, `materials` or `mep`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    /// Degrees, anticlockwise.
+    #[serde(default)]
+    pub angle: f64,
 }
 
 impl Note {
+    /// A symbol of `kind` placed at `at`.
+    pub fn symbol(view: ElementId, at: DVec2, kind: &str) -> Self {
+        let mut n = Self::new(view, at, "");
+        n.symbol = Some(PlacedSymbol {
+            kind: kind.into(),
+            style: None,
+            angle: 0.0,
+        });
+        n
+    }
+
     pub fn new(view: ElementId, at: DVec2, text: impl Into<String>) -> Self {
         Self {
             view,
@@ -500,14 +969,61 @@ impl Note {
             leader_end: None,
             width: None,
             markdown: false,
+            symbol: None,
+            section: None,
+            height: None,
+            continued: false,
+            follows: None,
+            continue_left: false,
+            leader_kept: None,
+            reads: None,
         }
+    }
+
+    /// The object a reading note reads: its arrow's host, or the one it
+    /// was kept on when Follow the arrow was turned off.
+    pub fn reads_from(&self) -> Option<ElementId> {
+        let r = self.reads.as_ref()?;
+        if r.follow {
+            self.leader.and_then(|l| l.host)
+        } else {
+            r.fixed
+        }
+    }
+
+    /// Turn the leader on or off. Off keeps its point; on brings that
+    /// point back, or a new one at `fresh` when it never had one.
+    pub fn set_leader(&mut self, on: bool, fresh: DVec2) {
+        if on {
+            if self.leader.is_none() {
+                self.leader = Some(
+                    self.leader_kept
+                        .take()
+                        .unwrap_or_else(|| HostPoint::free(fresh)),
+                );
+            }
+        } else if let Some(l) = self.leader.take() {
+            self.leader_kept = Some(l);
+        }
+    }
+
+    /// A note showing the notes section `key`, wrapping at `width` mm.
+    pub fn linked(view: ElementId, at: DVec2, key: &str, width: f64) -> Self {
+        let mut n = Self::new(view, at, "");
+        n.section = Some(key.into());
+        n.width = Some(width);
+        n.markdown = true;
+        n
     }
 
     pub fn validate(&self) -> Result<(), String> {
         let leader_ok = self
             .leader
             .is_none_or(|p| p.local.is_finite() && p.body.is_none_or(|b| b.is_finite()));
-        if self.at.is_finite() && leader_ok && self.elbow.is_none_or(|p| p.is_finite()) {
+        let symbol_ok = self.symbol.as_ref().is_none_or(|s| s.angle.is_finite())
+            && self.height.is_none_or(|h| h.is_finite() && h > 0.0);
+        if self.at.is_finite() && leader_ok && symbol_ok && self.elbow.is_none_or(|p| p.is_finite())
+        {
             Ok(())
         } else {
             Err("note position must be finite".into())
@@ -519,6 +1035,75 @@ impl Note {
 mod tests {
     use super::*;
     use crate::{Dimension, Element, Transaction};
+
+    /// `{Field}` words are filled by name or key in any case; a missing
+    /// value reads "—"; other braces stay as typed (MU135).
+    #[test]
+    fn a_note_fills_its_fields_and_leaves_other_braces() {
+        let v = |k: &str| match k {
+            "mark" => Some("P-03".to_string()),
+            "size" => Some("Ø 14\"".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            fill_note_fields("{Size} piers · {mark} · {IFC class} · {x} · {Mark", v),
+            "Ø 14\" piers · P-03 · — · {x} · {Mark"
+        );
+        assert_eq!(note_field_key(" ifc class "), Some("ifc"));
+        assert_eq!(note_field_key("Colour"), None);
+    }
+
+    /// A leader turned off and on again points where it pointed before
+    /// (MU135: it came back at a default spot); a note that never had one
+    /// gets the fresh point.
+    #[test]
+    fn a_leader_turned_off_and_on_keeps_its_point() {
+        let mut n = Note::new(ElementId::new(), DVec2::ZERO, "Piers");
+        let aim = DVec2::new(2.0, 3.5);
+        n.leader = Some(HostPoint::free(aim));
+        n.set_leader(false, DVec2::new(-1.5, -1.0));
+        assert!(n.leader.is_none());
+        n.set_leader(true, DVec2::new(-1.5, -1.0));
+        assert_eq!(n.leader, Some(HostPoint::free(aim)));
+        assert!(n.leader_kept.is_none());
+        // a kept point survives saving
+        n.set_leader(false, DVec2::ZERO);
+        let back: Note = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
+        assert_eq!(back.leader_kept, Some(HostPoint::free(aim)));
+
+        let mut fresh = Note::new(ElementId::new(), DVec2::ZERO, "New");
+        fresh.set_leader(true, DVec2::new(-1.5, -1.0));
+        assert_eq!(fresh.leader, Some(HostPoint::free(DVec2::new(-1.5, -1.0))));
+    }
+
+    #[test]
+    fn a_dimension_reads_its_words_and_override() {
+        let mut t = DimText::default();
+        assert_eq!(t.compose("3810"), "3810");
+        t.before = "±".into();
+        t.after = "CLR".into();
+        assert_eq!(t.compose("3810"), "± 3810 CLR");
+        // typed text waits until Text instead is on, and <> keeps the measure
+        t.text = "<> MIN".into();
+        assert_eq!(t.compose("3810"), "± 3810 CLR");
+        t.instead = true;
+        assert_eq!(t.compose("3810"), "± 3810 MIN CLR");
+        assert!(t.overridden());
+        t = DimText {
+            instead: true,
+            text: "EQ".into(),
+            ..Default::default()
+        };
+        assert_eq!(t.compose("1200"), "EQ");
+        // a plain one writes nothing to the file
+        let d = Dimension::linear(
+            crate::ElementId::new(),
+            crate::element::HostPoint::free(DVec2::ZERO),
+            crate::element::HostPoint::free(DVec2::X),
+            0.5,
+        );
+        assert!(!serde_json::to_string(&d).unwrap().contains("label"));
+    }
 
     #[test]
     fn linear_dimensions_from_older_files_still_read() {

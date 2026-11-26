@@ -1,0 +1,13 @@
+3D View South-East | 476c0e507f551e80 polyline=686 rect=1 image=1
+Door Schedule | 3a732dc260fb579d polyline=15 rect=1 text=26
+East Elevation E | d347d71c66e97c2a polyline=119 polygon=18 rect=1 text=6
+Entrance plan | c4fda9cb25200ea5 polyline=602 polygon=29 rect=1 text=26
+First Floor plan | c8ee5ab84b68b179 polyline=305 polygon=28 rect=1 text=26
+Ground Floor plan | 4eb36754ccec31a1 polyline=402 polygon=35 rect=1 text=32
+North Elevation N | c104edb0a305ae4a polyline=161 polygon=18 rect=1 text=6
+Section A | 86f840c25d42bc7f polyline=494 polygon=32 rect=1 text=8
+Section B | 9be936541c1bdc33 polyline=866 polygon=46 rect=1 text=6
+South Elevation S | adef0c8152d8e6b6 polyline=249 polygon=18 rect=1 text=6 image=1
+Wall Schedule | 234bef7568905ffc polyline=21 rect=1 text=74
+West Elevation W | 4b4c60436013e4a3 polyline=119 polygon=18 rect=1 text=6
+Window Schedule | deaa948d703f223d polyline=23 rect=1 text=86

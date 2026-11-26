@@ -10,6 +10,80 @@ use std::collections::HashSet;
 
 const TOL: f64 = 1e-6;
 
+/// Round the building `p` is in (MU41, a pad's "Around walls"): the walls
+/// of the room round `p` and every wall joined to them, their outer faces
+/// wrapped in a convex outline grown by `margin`. `None` outside any room.
+pub fn building_outline(
+    model: &Model,
+    level: ElementId,
+    p: DVec2,
+    margin: f64,
+) -> Option<Vec<DVec2>> {
+    let room = room_outline(model, level, p)?;
+    let walls: Vec<&crate::Wall> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Wall(w) if w.level == level && w.length() > 1e-3 => Some(w),
+            _ => None,
+        })
+        .collect();
+    let near_segment = |q: DVec2, a: DVec2, b: DVec2| {
+        let d = b - a;
+        let t = ((q - a).dot(d) / d.length_squared().max(1e-12)).clamp(0.0, 1.0);
+        q.distance(a + d * t)
+    };
+    // the room's own walls: their middles on its outline
+    let n = room.len();
+    let mut taken: Vec<bool> = walls
+        .iter()
+        .map(|w| {
+            let mid = w.place(w.length() / 2.0, 0.0);
+            (0..n).any(|i| near_segment(mid, room[i], room[(i + 1) % n]) < w.thickness)
+        })
+        .collect();
+    // and every wall joined to one of those, end to anywhere along it
+    let reach = walls.iter().map(|w| w.thickness).fold(0.0, f64::max) + 0.05;
+    loop {
+        let mut grew = false;
+        for i in 0..walls.len() {
+            if taken[i] {
+                continue;
+            }
+            let w = walls[i];
+            let joined = (0..walls.len()).any(|j| {
+                taken[j]
+                    && [w.start, w.end]
+                        .iter()
+                        .any(|q| near_segment(*q, walls[j].start, walls[j].end) < reach)
+                    || taken[j]
+                        && [walls[j].start, walls[j].end]
+                            .iter()
+                            .any(|q| near_segment(*q, w.start, w.end) < reach)
+            });
+            if joined {
+                taken[i] = true;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // the faces' corners, round the arc of a curved wall
+    let mut pts = vec![];
+    for (w, _) in walls.iter().zip(&taken).filter(|(_, t)| **t) {
+        let t = w.thickness / 2.0;
+        let mut us = vec![0.0, w.length()];
+        us.extend(w.bends());
+        for u in us {
+            pts.push(w.place(u, t));
+            pts.push(w.place(u, -t));
+        }
+    }
+    let hull = crate::objects::hull(&pts);
+    (hull.len() >= 3).then(|| crate::members::offset_polygon(&hull, margin))
+}
+
 /// The outline, counter-clockwise, of the smallest space around `p` that
 /// the centre lines of the walls on `level` close off; `None` when `p` is
 /// not enclosed. Walls that stop at another wall's face (short of its centre
@@ -195,7 +269,24 @@ pub(crate) fn room_in_lines(segs: &[(DVec2, DVec2)], p: DVec2) -> Option<Vec<DVe
             }
         }
     }
-    best.map(|(_, face)| drop_straight_corners(face))
+    // from the same corner every time, the lowest-left: the walk starts at
+    // whichever edge comes first, and the same walls gave the same room
+    // from another corner from one call to the next, so a ceiling over it
+    // was a new shape to every build, its joins cut and kept again each
+    // time (MU143: the memory grew all session)
+    best.map(|(_, face)| {
+        let mut face = drop_straight_corners(face);
+        let first = (0..face.len())
+            .min_by(|&i, &j| {
+                let (a, b) = (face[i], face[j]);
+                (a.x, a.y)
+                    .partial_cmp(&(b.x, b.y))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0);
+        face.rotate_left(first);
+        face
+    })
 }
 
 /// Where segment ab meets segment cd, as a fraction along ab.
@@ -522,6 +613,14 @@ pub struct Shaft {
     pub top_level: Option<ElementId>,
     #[serde(default)]
     pub top_offset: f64,
+    /// A stair's well: its outline follows the stair, from where the
+    /// floor above would come too low over the head, to the top.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stair: Option<ElementId>,
+    /// How much further back down the stair the well runs than the
+    /// headroom asks for.
+    #[serde(default, skip_serializing_if = "crate::stairwell::is_zero")]
+    pub clearance: f64,
 }
 
 impl Shaft {
@@ -536,6 +635,8 @@ impl Shaft {
             base_offset: 0.0,
             top_level,
             top_offset: 0.0,
+            stair: None,
+            clearance: 0.0,
         }
     }
 

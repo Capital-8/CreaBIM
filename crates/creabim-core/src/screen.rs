@@ -13,7 +13,7 @@
 //! ([`crate::curtain::wall_openings`]), so plans, sections, 3D and exports
 //! show them wherever they show a wall's openings.
 
-use crate::{Element, ElementId, ElementKind, Model, Opening, OpeningFrame, OpeningKind, Wall};
+use crate::{Element, ElementId, ElementKind, Model, Opening, OpeningKind, Wall};
 use glam::DVec2;
 use serde::{Deserialize, Serialize};
 
@@ -192,9 +192,12 @@ pub fn holes(host: ElementId, w: &Wall, pattern: &ScreenPattern) -> Vec<Opening>
             width: u1 - u0,
             height: v1 - v0,
             material: None,
-            frame: OpeningFrame::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Hole),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         })
         .collect()
 }

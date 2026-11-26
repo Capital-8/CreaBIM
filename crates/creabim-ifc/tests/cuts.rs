@@ -33,6 +33,7 @@ fn a_cut_wall_exports_its_final_shape_without_the_cutter() {
             target: wall,
             cutter: cutter.id,
             op: BoolOp::Difference,
+            reach: Default::default(),
         }),
     );
     let guide = Element::new(

@@ -11,7 +11,8 @@ Pick which are on in the list next to **Snap** in the status bar. Each can be ti
 - **Intersection**: where two edges cross.
 - **Perpendicular**: square to an edge from the last point.
 - **Nearest**: any point on an edge.
-- **Centre** and **Quadrant**: circles and arcs.
+- **Centre** and **Quadrant**: circles and arcs. An object's middle snaps as a *Centre* too.
+- **Centre lines**: an object's two centre lines, front to back and side to side through its middle, reaching a little past its footprint (pink, as guides are). They are lines only, with no points of their own, and follow the *Centre* switch. Move's base point, Rotate's centre, Align and dimensions all take them.
 - **Grid and level lines**.
 - **Guides**: [guide lines](guides).
 - **Axis tracking**: in line with the last point along X or Y.

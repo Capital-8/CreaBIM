@@ -239,6 +239,7 @@ impl CreaBimApp {
             }
             "discard" if !busy => self.close_now(ctx),
             "cancel" if !busy => {
+                ctx.data_mut(|d| d.remove::<f64>(egui::Id::new("close-unsaved-since")));
                 self.close_ask = false;
                 self.close_state = CloseState::Ask;
                 self.hide_close_dialog();
@@ -250,6 +251,7 @@ impl CreaBimApp {
 
     /// Let the close through: saved, or the changes let go.
     fn close_now(&mut self, ctx: &egui::Context) {
+        ctx.data_mut(|d| d.remove::<f64>(egui::Id::new("close-unsaved-since")));
         self.close_ask = false;
         self.close_state = CloseState::Ask;
         self.hide_close_dialog();
@@ -335,13 +337,16 @@ impl CreaBimApp {
             return;
         }
         if self.shell.web.is_some() {
+            // the project behind waits, dimmed, and nothing in it can be
+            // clicked; the pages take the same shade as egui's
+            if let Some(web) = &mut self.shell.web {
+                web.shade(true);
+            }
+            crate::app::shell::card_shade(ctx, "close-unsaved");
+            // the card comes once the shade is on screen and its own page
+            // has drawn it (the popup's gate in `shell`): its window keeps
+            // what lay behind it when it came (MU99, MU103)
             self.show_close_dialog(ctx);
-            // the project behind waits: nothing in it can be clicked. Not
-            // dimmed: the web panes can't be, and half a shade looks broken
-            egui::Modal::new(egui::Id::new("close-unsaved"))
-                .frame(egui::Frame::NONE)
-                .backdrop_color(egui::Color32::TRANSPARENT)
-                .show(ctx, |_| {});
             // the keys, while the views have the keyboard
             if matches!(self.close_state, CloseState::Ask | CloseState::Failed(_)) {
                 let (enter, esc) = ctx.input(|i| {
@@ -441,6 +446,108 @@ pub(crate) const STARTS: [Start; 2] = [
     },
 ];
 
+/// A starter house: the complete project a version of CreaBIM ships to
+/// start from, or to look round.
+pub(crate) struct StarterHouse {
+    /// The version it came with.
+    pub version: &'static str,
+    pub name: &'static str,
+    /// The action that opens it.
+    pub id: &'static str,
+    /// One line on what it is.
+    pub line: &'static str,
+    pub holds: &'static str,
+    /// Its picture (a JPEG), for its tile.
+    pub picture: &'static [u8],
+}
+
+/// Every version's starter house, the newest first. The first is New
+/// project's large "Starter house"; the others stay below it as earlier
+/// ones, each under its own name (owner, MU109). A new version's house
+/// goes at the top of this list and the rest fall back by themselves.
+pub(crate) const STARTER_HOUSES: [StarterHouse; 2] = [
+    StarterHouse {
+        version: "1.2",
+        name: "Ridgeline House",
+        id: "new.sample",
+        line: "A timber house on a sloping lot, from the site survey to a permit set.",
+        holds: "A house on its lot · structure and details · 16 sheets",
+        picture: include_bytes!("../assets/starters/ridgeline-house-1.2.jpg"),
+    },
+    StarterHouse {
+        version: "1.1",
+        name: "Maple Lane House",
+        id: "new.maple",
+        line: "A complete two-storey house with drawings and sheets, ready to change.",
+        holds: "A two-storey house · drawings · sheets",
+        picture: include_bytes!("../assets/starters/maple-lane-house-1.1.jpg"),
+    },
+];
+
+/// The house the program opens on, being built on a thread of its own
+/// since the program started.
+static OPENING: std::sync::Mutex<Option<std::thread::JoinHandle<creabim_core::Model>>> =
+    std::sync::Mutex::new(None);
+
+/// Start building the house the program opens on, so that it is made
+/// while the window and its panels are: called first thing in `main`.
+pub(crate) fn start_opening_house() {
+    let thread = std::thread::Builder::new()
+        .name("opening house".into())
+        .spawn(ridgeline_house);
+    if let Ok(mut slot) = OPENING.lock() {
+        *slot = thread.ok();
+    }
+}
+
+/// The house the program opens on behind the splash: this version's
+/// starter house. Taken from the thread that has been building it, or
+/// built now when there is none.
+pub(crate) fn opening_house() -> creabim_core::Model {
+    OPENING
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .and_then(|thread| thread.join().ok())
+        .unwrap_or_else(ridgeline_house)
+}
+
+/// Ridgeline House as New project opens it: the house `creabim_core`
+/// builds, and its hero views sheet with the pictures kept here (they are
+/// path traced, so code cannot draw them on a click).
+pub(crate) fn ridgeline_house() -> creabim_core::Model {
+    use creabim_core::ridgeline::{self, HeroPicture};
+    let model = ridgeline::ridgeline_house();
+    let pictures: [&[u8]; 3] = [
+        include_bytes!("../assets/starters/ridgeline-hero-dusk-arrival.jpg"),
+        include_bytes!("../assets/starters/ridgeline-hero-daylight-south-west.jpg"),
+        include_bytes!("../assets/starters/ridgeline-hero-daylight-arrival.jpg"),
+    ];
+    let mut decoded = Vec::new();
+    for jpeg in pictures {
+        // a picture that will not open leaves the house without the sheet
+        let Ok(img) = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg) else {
+            return model;
+        };
+        let img = img.to_rgba8();
+        decoded.push(HeroPicture {
+            width: img.width(),
+            height: img.height(),
+            rgba: creabim_geom::raster::store_image(img.as_raw()),
+        });
+    }
+    let Ok(pictures) = <[HeroPicture; 3]>::try_from(decoded) else {
+        return model;
+    };
+    let Some(tx) = ridgeline::hero_views_sheet(&model, pictures) else {
+        return model;
+    };
+    let mut doc = creabim_core::Document::from_model(model);
+    // a refused sheet leaves the house as it was, which still opens
+    let _ = doc.commit(tx);
+    doc.model().clone()
+}
+
 /// The samples to learn from, each showing one thing.
 pub(crate) const SAMPLES: [Start; 6] = [
     Start {
@@ -481,6 +588,95 @@ pub(crate) const SAMPLES: [Start; 6] = [
     },
 ];
 
+#[cfg(test)]
+mod starter_house_tests {
+    use super::*;
+
+    /// The large "Starter house" opens the newest house, every house has
+    /// its own action and a picture, and the versions run newest first.
+    #[test]
+    fn the_newest_starter_house_leads_and_each_has_a_picture() {
+        assert_eq!(STARTS[1].id, STARTER_HOUSES[0].id);
+        let version = |h: &StarterHouse| -> Vec<u32> {
+            h.version.split('.').map(|n| n.parse().unwrap()).collect()
+        };
+        for (i, h) in STARTER_HOUSES.iter().enumerate() {
+            // a JPEG, and small enough to stay a tile's picture
+            assert_eq!(&h.picture[..3], &[0xFF, 0xD8, 0xFF], "{}", h.name);
+            assert!(
+                h.picture.len() < 120_000,
+                "{}: {} bytes",
+                h.name,
+                h.picture.len()
+            );
+            for other in &STARTER_HOUSES[i + 1..] {
+                assert_ne!(h.id, other.id);
+                assert!(
+                    version(h) > version(other),
+                    "{} before {}",
+                    h.name,
+                    other.name
+                );
+            }
+        }
+    }
+
+    /// Ridgeline House opens whole: the house the core builds and the hero
+    /// views sheet with its three pictures, sixteen sheets in all.
+    #[test]
+    fn ridgeline_house_opens_with_its_sixteen_sheets_and_hero_pictures() {
+        use creabim_core::titleblock::TitleItem;
+        use creabim_core::ElementKind;
+        let m = ridgeline_house();
+        let sheets: Vec<_> = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Sheet(s) => Some(s.number.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sheets.len(), 16, "{sheets:?}");
+        assert!(sheets.iter().any(|n| n == "A-902"), "{sheets:?}");
+        let pictures = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::SheetTemplate(t) if e.name == "Ridgeline hero views" => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| &t.items)
+            .filter(|i| {
+                matches!(
+                    i,
+                    TitleItem::Image {
+                        width: 1400,
+                        height: 875,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(pictures, 3);
+    }
+
+    /// Both starter houses open by their own action, each under its name.
+    #[test]
+    fn each_starter_house_opens_under_its_own_name() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::test_app();
+        for h in &STARTER_HOUSES {
+            app.run_action(&ctx, h.id);
+            assert_eq!(app.path, format!("{}.creabim", h.name));
+            let project = app.doc.model().iter().count();
+            assert!(project > 300, "{}: {project} elements", h.name);
+        }
+        // the newest is far the larger: its lot, structure and details
+        app.run_action(&ctx, "new.sample");
+        let ridgeline = app.doc.model().iter().count();
+        app.run_action(&ctx, "new.maple");
+        assert!(ridgeline > app.doc.model().iter().count());
+    }
+}
+
 /// A short name for a unit, as the status bar shows it.
 pub(crate) fn unit_short(u: LengthUnit) -> &'static str {
     match u {
@@ -519,6 +715,10 @@ impl CreaBimApp {
     /// The CreaBIM menu, first in the menu bar.
     pub(super) fn app_menu(&self) -> Vec<Item> {
         vec![
+            // as Blender's logo menu: the splash again, any time
+            Item::new("app.splash", "Splash screen")
+                .icon("image")
+                .hint("The start screen: new, open, recent projects and your setup"),
             Item::new("app.about", "About CreaBIM")
                 .icon("info")
                 .hint("The version, the licence and the guide"),
@@ -598,6 +798,7 @@ impl CreaBimApp {
         let tx = creabim_core::units::set_units(self.doc.model(), units);
         let r = self.doc.commit(tx);
         crate::units::set(units);
+        self.plan.members.suit_units(units.is_imperial());
         self.report(
             r,
             format!(
@@ -611,6 +812,7 @@ impl CreaBimApp {
     pub(super) fn app_action(&mut self, ctx: &egui::Context, head: &str, arg: &str) -> bool {
         match head {
             "app.about" => self.open_help("about"),
+            "app.splash" => self.splash_open = true,
             "app.updates" => {
                 ctx.open_url(egui::OpenUrl::new_tab(RELEASES));
                 self.status = format!(
@@ -665,7 +867,13 @@ impl CreaBimApp {
         let mut spacing = self.plan.snap.step_um;
         let mut marks = self.plan.snap.marks;
         let mut paper = self.shell.settings.drawing_paper.clone();
+        let mut hints = self.shell.settings.colour_hints;
+        let mut splash = self.shell.settings.show_splash;
+        let mut buttons = self.shell.settings.window_buttons.clone();
         let mut navigation = self.shell.settings.navigation.clone();
+        let mut wheel = self.shell.settings.wheel.clone();
+        let mut background = self.shell.settings.background.clone();
+        let mut own_keys = self.shell.settings.keymap.clone();
         let mut grip_hover = None;
         let mut edit_bar = self.shell.settings.edit_bar.clone();
         let mut axis_lines = self.shell.settings.axis_lines;
@@ -799,11 +1007,7 @@ impl CreaBimApp {
                                 ui.set_width(page_width - 12.0);
                                 let yours = |ui: &mut egui::Ui| {
                                     ui.add_space(6.0);
-                                    ui.label(
-                                        egui::RichText::new("Yours alone: it never changes anyone's drawings, and goes with you, not with the project.")
-                                            .weak()
-                                            .small(),
-                                    );
+                                    crate::props::info(ui, "Yours alone: it never changes anyone's drawings, and goes with you, not with the project.", "");
                                 };
                                 match tab {
                                     0 => {
@@ -848,6 +1052,32 @@ impl CreaBimApp {
                                                 })
                                                 .response
                                                 .on_hover_text("Plans, sections and the 3D view on light or dark paper. Prints and PDFs are always on white.");
+                                        });
+                                        crate::props::row(ui, "Colour hints", |ui| {
+                                            crate::props::tickbox(ui, &mut hints, "Tint Properties tabs by subject")
+                                                .on_hover_text("A quiet colour per group of Properties tabs, on their icons and the title line: the element and how it is made, its IFC data, the view, the project. Never on fields.")
+                                        });
+                                        // the same row and tickbox as Colour hints, so the
+                                        // two line up (owner markup 2026-11-18)
+                                        crate::props::row(ui, "Splash", |ui| {
+                                            crate::props::tickbox(ui, &mut splash, "Show it at start")
+                                                .on_hover_text("The start screen, as Blender's: new, open, recent projects and your setup. Help › Splash screen opens it any time")
+                                        });
+                                        crate::props::row_tip(ui, "Buttons", "Window buttons: which side the window's close, minimise and maximise buttons sit on", |ui| {
+                                            let label = |k: &str| match k {
+                                                "left" => "On the left, main button first",
+                                                _ => "On the right",
+                                            };
+                                            egui::ComboBox::from_id_salt("settings.buttons").icon(crate::props::combo_icon)
+                                                .selected_text(label(&buttons))
+                                                .width(ui.available_width())
+                                                .show_ui(ui, |ui| {
+                                                    for k in ["right", "left"] {
+                                                        ui.selectable_value(&mut buttons, k.to_string(), label(k));
+                                                    }
+                                                })
+                                                .response
+                                                .on_hover_text("Where Save, Export, Done and the other buttons sit in CreaBIM's own windows.");
                                         });
                                         crate::props::section(ui, "Move, Rotate and Scale bar");
                                         for (k, name, note) in [
@@ -900,7 +1130,7 @@ impl CreaBimApp {
                                             ui.add(egui::Slider::new(&mut vert_s, 2.0..=10.0).step_by(1.0).suffix(" px"))
                                         });
                                         crate::props::section(ui, "3D view");
-                                        ui.checkbox(&mut axis_lines, "X and Y axes on the grid")
+                                        crate::props::tickbox(ui, &mut axis_lines, "X and Y axes on the grid")
                                             .on_hover_text("The model's X axis in red and Y in green through its origin. Z shows, in blue, only while a move keeps to it.");
                                         yours(ui);
                                     }
@@ -909,13 +1139,14 @@ impl CreaBimApp {
                                         crate::props::row(ui, "Mouse", |ui| {
                                             let label = |k: &str| match k {
                                                 "classic" => "Classic: left drag orbits",
+                                                "cad" => "Revit, ArchiCAD, AutoCAD: middle pans",
                                                 _ => "CreaBIM: middle orbits, left boxes",
                                             };
                                             egui::ComboBox::from_id_salt("settings.navigation").icon(crate::props::combo_icon)
                                                 .selected_text(label(&navigation))
                                                 .width(ui.available_width())
                                                 .show_ui(ui, |ui| {
-                                                    for k in ["creabim", "classic"] {
+                                                    for k in ["creabim", "cad", "classic"] {
                                                         ui.selectable_value(&mut navigation, k.to_string(), label(k));
                                                     }
                                                 });
@@ -924,6 +1155,31 @@ impl CreaBimApp {
                                             egui::RichText::new("CreaBIM (recommended): left click selects, a left drag on empty space draws a box, a middle drag orbits (Alt + left drag without one), a right drag or Shift + middle pans, a right click opens the menu, the wheel zooms. Classic: a left drag orbits in 3D.")
                                                 .weak()
                                                 .small(),
+                                        );
+                                        // what a roll of the wheel does (issue #78)
+                                        crate::props::row(ui, "Wheel", |ui| {
+                                            let label = |k: &str| match k {
+                                                "zoom" => "Always zooms",
+                                                "pan" => "Always pans",
+                                                _ => "Automatic",
+                                            };
+                                            egui::ComboBox::from_id_salt("settings.wheel").icon(crate::props::combo_icon)
+                                                .selected_text(label(&wheel))
+                                                .width(ui.available_width())
+                                                .show_ui(ui, |ui| {
+                                                    for k in ["auto", "zoom", "pan"] {
+                                                        ui.selectable_value(&mut wheel, k.to_string(), label(k));
+                                                    }
+                                                });
+                                        });
+                                        ui.label(
+                                            egui::RichText::new(if crate::touchpad::present() {
+                                                "Automatic: a mouse wheel zooms and two fingers on the touchpad pan (a pinch zooms). If your mouse wheel pans instead, choose Always zooms."
+                                            } else {
+                                                "Automatic: the wheel zooms. This computer has no touchpad, so nothing is taken for one."
+                                            })
+                                            .weak()
+                                            .small(),
                                         );
                                         yours(ui);
                                     }
@@ -944,7 +1200,7 @@ impl CreaBimApp {
                                                     }
                                                 });
                                         });
-                                        ui.checkbox(&mut marks, "Distance marks while dragging")
+                                        crate::props::tickbox(ui, &mut marks, "Distance marks while dragging")
                                             .on_hover_text("Faint marks every spacing from where you grabbed; a mark holds the drag only when the pointer is near it.");
                                         ui.label(
                                             egui::RichText::new("Drags and points are free. Grid snap (Alt+S, or the status bar) lands them on a grid of this spacing; it starts off each time.")
@@ -965,21 +1221,64 @@ impl CreaBimApp {
                                                     }
                                                 });
                                         });
-                                        ui.label(
-                                            egui::RichText::new("Saved with the project: everyone who opens it works in these units.")
-                                                .weak()
-                                                .small(),
-                                        );
+                                        crate::props::info(ui, "Saved with the project: everyone who opens it works in these units.", "");
                                     }
                                     _ => {
                                         crate::props::section(ui, "Shortcuts");
-                                        ui.label(
-                                            egui::RichText::new("Every key, by what it does. Ctrl+/ opens the list any time.")
-                                                .weak()
-                                                .small(),
-                                        );
+                                        crate::props::info(ui, "Every key, by what it does. Ctrl+/ opens the list any time.", "");
                                         ui.add_space(4.0);
                                         keys = ui.button("Keyboard shortcuts…").clicked();
+                                        // where you come from, and each command's key
+                                        // (first-run setup, decisions 2–4)
+                                        crate::props::section(ui, "Working style");
+                                        crate::props::row(ui, "I come from", |ui| {
+                                            egui::ComboBox::from_id_salt("settings.background").icon(crate::props::combo_icon)
+                                                .selected_text(crate::app::splash::BACKGROUNDS.iter().find(|b| b.0 == background).map_or("CreaBIM", |b| b.1))
+                                                .width(ui.available_width())
+                                                .show_ui(ui, |ui| {
+                                                    for (k, l) in crate::app::splash::BACKGROUNDS {
+                                                        ui.selectable_value(&mut background, k.to_string(), l);
+                                                    }
+                                                })
+                                                .response
+                                                .on_hover_text("Sets the keys below and the mouse to that program's. Your own keys stay.");
+                                        });
+                                        crate::props::section(ui, "Keys");
+                                        crate::props::plain_note(ui, "Type a key (M, Shift+D, Ctrl+E) or letters typed one after the other (MV, as Revit's). Empty: no key.");
+                                        let defaults = crate::keymap::defaults(&background);
+                                        for act in crate::keymap::Act::ALL {
+                                            let def = defaults.get(&act).copied().unwrap_or("");
+                                            let mut text = own_keys.get(act.id()).cloned().unwrap_or_else(|| def.to_string());
+                                            let mine = own_keys.contains_key(act.id());
+                                            crate::props::row(ui, act.label(), |ui| {
+                                                let w = ui.available_width() - if mine { 26.0 } else { 0.0 };
+                                                let r = crate::props::text_field(ui, egui::TextEdit::singleline(&mut text).hint_text("none"), w)
+                                                    .on_hover_text(format!("{}: {}", act.label(), if def.is_empty() { "no key by default".to_string() } else { format!("{def} by default") }));
+                                                if r.changed() {
+                                                    let t = text.trim().to_string();
+                                                    if t == def {
+                                                        own_keys.remove(act.id());
+                                                    } else {
+                                                        own_keys.insert(act.id().to_string(), t);
+                                                    }
+                                                }
+                                                if mine && crate::props::icon_button(ui, "undo-2", &format!("Back to {}", if def.is_empty() { "none" } else { def })).clicked() {
+                                                    own_keys.remove(act.id());
+                                                }
+                                            });
+                                        }
+                                        let binds = crate::keymap::bindings(&background, &own_keys);
+                                        for (a, b) in crate::keymap::clashes(&binds) {
+                                            crate::props::warning(ui, format!("{} and {} share a key: the first one runs.", a.label(), b.label()), None);
+                                        }
+                                        for (a, k) in &binds {
+                                            if !k.trim().is_empty() && crate::keymap::parse(k).is_none() {
+                                                crate::props::warning(ui, format!("{}: \"{}\" isn't a key CreaBIM reads.", a.label(), k), None);
+                                            }
+                                        }
+                                        if !own_keys.is_empty() && ui.button("Reset all keys to the background's").clicked() {
+                                            own_keys.clear();
+                                        }
                                     }
                                 }
                             });
@@ -1015,12 +1314,39 @@ impl CreaBimApp {
             self.shell.settings.edit_bar = edit_bar;
             self.shell.settings.store();
         }
+        if background != self.shell.settings.background {
+            // the background brings its mouse too
+            navigation = crate::keymap::mouse_of(&background).to_string();
+            self.shell.settings.background = background;
+            self.shell.settings.store();
+            self.status = "Working style changed: keys and the mouse follow it.".into();
+        }
+        if own_keys != self.shell.settings.keymap {
+            self.shell.settings.keymap = own_keys;
+            self.shell.settings.store();
+        }
         if navigation != self.shell.settings.navigation {
             self.shell.settings.navigation = navigation;
             self.shell.settings.store();
         }
+        if wheel != self.shell.settings.wheel {
+            self.shell.settings.wheel = wheel;
+            self.shell.settings.store();
+        }
         if paper != self.shell.settings.drawing_paper {
             self.shell.settings.drawing_paper = paper;
+            self.shell.settings.store();
+        }
+        if splash != self.shell.settings.show_splash {
+            self.shell.settings.show_splash = splash;
+            self.shell.settings.store();
+        }
+        if hints != self.shell.settings.colour_hints {
+            self.shell.settings.colour_hints = hints;
+            self.shell.settings.store();
+        }
+        if buttons != self.shell.settings.window_buttons {
+            self.shell.settings.window_buttons = buttons;
             self.shell.settings.store();
         }
         if grips != self.shell.settings.grips {
@@ -1067,6 +1393,25 @@ impl CreaBimApp {
     /// New project with the classic panels: the same choices as the web
     /// window, as a list.
     pub(super) fn new_project_window(&mut self, ctx: &egui::Context) {
+        // the web window is a card: the app is shaded behind it
+        let open = self.shell.new_project_open();
+        let shaded = egui::Id::new("new-project.shaded");
+        let was = ctx.data(|d| d.get_temp::<bool>(shaded)).unwrap_or(false);
+        if open {
+            // (its own panels too, as under the other cards)
+            if let Some(web) = &mut self.shell.web {
+                web.shade(true);
+            }
+            crate::app::shell::card_shade(ctx, "new-project");
+        } else if was {
+            // closed: the panels' shade is lifted, once
+            if let Some(web) = &mut self.shell.web {
+                web.shade(false);
+            }
+        }
+        if open != was {
+            ctx.data_mut(|d| d.insert_temp(shaded, open));
+        }
         if !self.new_project_classic {
             return;
         }
@@ -1151,16 +1496,13 @@ impl CreaBimApp {
                 ];
                 for (b, title, what) in choices {
                     ui.add_space(4.0);
-                    ui.radio_value(&mut body, b, egui::RichText::new(title).strong());
+                    crate::props::radio_tick(ui, &mut body, b, egui::RichText::new(title).strong());
                     ui.indent(("ifc", key(b)), |ui| {
                         ui.label(egui::RichText::new(what).weak());
                     });
                 }
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new("Doors, windows, openings and everything else go out the same way in all three.")
-                        .weak(),
-                );
+                crate::props::info(ui, "Doors, windows, openings and everything else go out the same way in all three.", "");
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     go = ui.button("Export…").clicked();
@@ -1182,115 +1524,6 @@ impl CreaBimApp {
             let r = std::fs::write(&out, creabim_ifc::export_ifc4(self.doc.model(), &opts));
             self.report(r, format!("Exported {out}"));
         }
-    }
-
-    /// Project information (Manage › Project information, A7-5): a copy is
-    /// edited, and Apply makes it one undo step.
-    pub(super) fn project_window(&mut self, ctx: &egui::Context) {
-        if !self.project_open {
-            self.project_draft = None;
-            return;
-        }
-        let current = self
-            .doc
-            .model()
-            .project_info()
-            .map(|(_, p)| p.clone())
-            .unwrap_or_default();
-        let mut draft = self.project_draft.take().unwrap_or_else(|| current.clone());
-        let mut open = true;
-        let mut apply = false;
-        let mut close = false;
-        let area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
-        crate::app::shell::window("Project information")
-            .open(&mut open)
-            .default_pos(area.center() - Vec2::new(200.0, 220.0))
-            .constrain_to(area)
-            .resizable(false)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.set_width(400.0);
-                let text = |ui: &mut egui::Ui, label: &str, v: &mut String, hint: &str| {
-                    crate::props::row(ui, label, |ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(v).vertical_align(egui::Align::Center)
-                                .hint_text(hint)
-                                .desired_width(ui.available_width()),
-                        );
-                    });
-                };
-                crate::props::section(ui, "Project");
-                text(ui, "Name", &mut draft.name, "Maple Lane House");
-                text(ui, "Number", &mut draft.number, "Job number");
-                text(ui, "Client", &mut draft.client, "");
-                text(ui, "Status", &mut draft.status, "Planning application");
-                text(ui, "Issue date", &mut draft.issue_date, "");
-                crate::props::section(ui, "Site");
-                text(ui, "Site name", &mut draft.site_name, "");
-                text(ui, "Address", &mut draft.address, "");
-                let degrees = |ui: &mut egui::Ui, label: &str, v: &mut Option<f64>, range: f64| {
-                    crate::props::row(ui, label, |ui| {
-                        let mut on = v.is_some();
-                        if ui.checkbox(&mut on, "").changed() {
-                            *v = on.then_some(0.0);
-                        }
-                        if let Some(d) = v {
-                            ui.add(
-                                egui::DragValue::new(d)
-                                    .range(-range..=range)
-                                    .speed(0.0001)
-                                    .max_decimals(6)
-                                    .suffix("°"),
-                            );
-                        }
-                    });
-                };
-                degrees(ui, "Latitude", &mut draft.latitude, 90.0);
-                degrees(ui, "Longitude", &mut draft.longitude, 180.0);
-                crate::props::row(ui, "Elevation", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut draft.elevation)
-                            .speed(0.01)
-                            .suffix(" m"),
-                    )
-                    .on_hover_text("The project's zero above sea level");
-                });
-                crate::props::row(ui, "True north", |ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut draft.true_north)
-                            .range(-180.0..=180.0)
-                            .speed(0.5)
-                            .suffix("°"),
-                    )
-                    .on_hover_text("How far true north turns from the drawings' up, anticlockwise");
-                });
-                crate::props::section(ui, "Building");
-                text(ui, "Name", &mut draft.building_name, "");
-                text(ui, "Use", &mut draft.building_use, "Dwelling");
-                ui.label(
-                    egui::RichText::new(
-                        "These fill the title blocks of every sheet (a value a sheet sets itself still wins) and name the project, site and building in IFC exports.",
-                    )
-                    .weak(),
-                );
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    apply = ui
-                        .add_enabled(draft != current, egui::Button::new("Apply"))
-                        .clicked();
-                    close = ui.button("Close").clicked();
-                });
-            });
-        if apply {
-            let tx = creabim_core::set_project(self.doc.model(), draft.clone());
-            let r = self.doc.commit(tx);
-            self.report(
-                r,
-                "Project information applied: the title blocks show it now.".to_string(),
-            );
-        }
-        self.project_open = open && !close;
-        self.project_draft = self.project_open.then_some(draft);
     }
 }
 

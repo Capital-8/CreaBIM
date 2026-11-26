@@ -12,6 +12,19 @@ Every change can be undone: `Ctrl+Z` undoes, `Ctrl+Y` (or `Ctrl+Shift+Z`) redoes
 
 `Shift+D` (duplicate) copies and starts moving the copy in one go. In Move, `Ctrl` leaves a copy behind at each click.
 
+## Create similar, pick up and apply
+
+**Create similar** (`Shift+C`, or the button under *Mark* in *Properties*) starts the tool that made the selected element, set like it: the same type, sizes, sill, frame, make and material. Everything you place with that tool is like it until you pick another tool, or click the lit *Like …* chip in the tool's bar, which gives the tool its own settings back. It works for walls, doors, windows, wall openings, slabs, columns, beams and footings.
+
+**Pick up settings** (`Ctrl+Shift+C`) holds how the selected element is made and how it looks. With nothing selected, click the element to take them from. A chip in the status bar shows what is held.
+
+**Apply settings** (`Ctrl+Shift+V`) gives what is held to the selected elements in one step. With nothing selected, click elements or drag a box over them; beside the pointer you see what would change before you click. `Esc` stops.
+
+- The chip's menu chooses which groups go across: size, sill, frame and panes, make and trim, declared ratings, a wall's build-up, height and location line, material, type, phase. They are remembered for each kind of element. Phase is off at first.
+- An element takes only what it has too: a door takes a window's size and ratings, but not its frame.
+- Mark, name, where it is and which group it is in never go across.
+- *Make a type of these…* turns what is held into a type, to keep it.
+
 ## Split
 
 **Split** cuts an element in two along a line you choose, where [Divide](divide) cuts it into even parts.

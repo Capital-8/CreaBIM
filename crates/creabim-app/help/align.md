@@ -1,4 +1,4 @@
-# Align, Extend and Stretch
+# Align, Extend, Stretch and Corner
 
 The **Align** tool lines things up against a reference, the way Revit's Align does. It sits beside **Select** at the start of the tool row on every tab, and is in *Edit › Align to a reference…* and the right-click menu of a 2D view.
 
@@ -26,7 +26,22 @@ Click the reference, then an edge: only that face moves to the reference, and th
 
 The edge must be parallel to the reference, within 5°. Stretch measures from the point of the edge nearest your click.
 
+A drawn line or outline has no faces, but in a plan its edges stretch too: the edge you click moves onto the reference and the edges beside it get longer or shorter. **Extend to it** slides the end of the edge nearer your click along the edge until it meets the reference.
+
 ![Stretch in a section: the wing roof's top edge, lit, before (above) and after it is taken down to the first floor's line (below)](img/stretch.jpg)
+
+## Corner
+
+**Corner** trims or extends two things so they meet at a corner, with no reference. Press `J` from any tool, or pick *Corner* in the strip.
+
+1. Click the part of the first wall, beam, line or grid line that should stay.
+2. Click the part of the second that should stay.
+
+Both run to where their lines meet: what is past the corner goes, and what falls short is extended. Hold `Shift` on the second click to go on round: the next click makes the next corner with the one you just did, so four walls close into a room in five clicks.
+
+With two selected, the right-click menu's **Trim to corner** does the same, each keeping its longer part.
+
+It works on walls, beams, room separators, grid lines and drawn lines of one straight piece, in plans and in 3D. Once the first part is picked, pointing at the second shows the result as a dashed ghost before you click. Each corner is one undo step.
 
 ## Centre lines
 

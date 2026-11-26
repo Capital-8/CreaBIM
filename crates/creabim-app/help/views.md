@@ -33,6 +33,15 @@ The header of the area showing a view holds its settings, and *Properties* (the 
 
 With nothing selected, *Properties* shows the same and more, such as the view's scale.
 
+## Which way a plan looks
+
+A plan is cut at its *Cut height*, then it **looks down** or **looks up**. Set it with **Looks: Down | Up** in the plan's *Properties*, or *Ceiling plan* in its view options.
+
+- **Down** is a floor plan: cut at about 1.2 m, through the doors and windows, and seen from above.
+- **Up** is a **reflected ceiling plan**: cut above the door heads (2.3 m), then seen looking up to the level above. It shows the ceilings with their grids and heights, the bulkheads, the beams, and the lights and fixtures that hang from them; furniture, floors and stairs are left out. It isn't mirrored, so it lines up with the floor plan, as if the floor were a mirror.
+
+The cut height never needs to be negative: a ceiling plan is cut above the floor and looks the other way. With *Plan ranges* on in a section, each plan's band shows its cut and an arrow: down in blue, up in orange. The starter house has both, on sheet A105.
+
 ## How plans are drawn
 
 Plans follow the usual conventions of permit drawings:

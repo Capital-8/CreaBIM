@@ -17,6 +17,20 @@ impl TriMesh {
         self.indices.is_empty()
     }
 
+    /// A number for this mesh's content (triangles and positions, bit for
+    /// bit): what caches of things worked out from a mesh key on.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.indices.hash(&mut h);
+        for p in &self.positions {
+            for c in p {
+                c.to_bits().hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+
     /// Add a planar polygon (convex, or with a supplied triangulation) facing `normal`.
     pub fn add_polygon(&mut self, points: &[DVec3], triangles: &[[usize; 3]], normal: DVec3) {
         let base = self.positions.len() as u32;

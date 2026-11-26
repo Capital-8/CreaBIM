@@ -205,9 +205,16 @@ pub fn fit(
                 width: u1 - u0,
                 height,
                 material,
-                frame: Default::default(),
+                frame: creabim_core::OpeningFrame::for_kind(if *kind == Assign::Door {
+                    OpeningKind::Door
+                } else {
+                    OpeningKind::Window
+                }),
                 flip_hand: false,
                 flip_facing: false,
+                roof_at: None,
+                roof_build: Default::default(),
+                arrangement: None,
             }))
         }
         Assign::Class(_) => Err("A class is not a shape.".into()),

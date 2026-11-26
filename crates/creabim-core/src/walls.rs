@@ -262,11 +262,27 @@ pub struct TopFace {
     pub outline: Vec<DVec2>,
     pub g: DVec2,
     pub c: f64,
+    /// The lowest layers of a roof that stop short of its eaves, from the
+    /// bottom up: each one's own outline and how thick it is, measured
+    /// upright. Outside a layer's outline the underside is that much
+    /// higher: the wall under it rises to the layer above (MU128: a roof's
+    /// lining stopped at the wall's inner face, and the wall stopped at
+    /// the lining's underside, a gap the lining's thickness over it).
+    pub lift: Vec<(Vec<DVec2>, f64)>,
 }
 
 impl TopFace {
     pub fn z(&self, p: DVec2) -> f64 {
-        self.c + self.g.dot(p)
+        let mut z = self.c + self.g.dot(p);
+        for (outline, rise) in &self.lift {
+            // on a layer's edge counts as past it: the wall's own face
+            // is where such a layer is usually stopped
+            if inside_by(outline, p, 0.002) {
+                break;
+            }
+            z += rise;
+        }
+        z
     }
 
     fn contains(&self, p: DVec2) -> bool {
@@ -284,6 +300,55 @@ impl TopFace {
         }
         inside
     }
+}
+
+/// Is `p` inside `poly` and further than `eps` from its edge?
+fn inside_by(poly: &[DVec2], p: DVec2, eps: f64) -> bool {
+    let n = poly.len();
+    if n < 3 || !crate::polygon::contains(poly, p) {
+        return false;
+    }
+    (0..n).all(|i| {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        let d = b - a;
+        let t = if d.length_squared() < 1e-18 {
+            0.0
+        } else {
+            ((p - a).dot(d) / d.length_squared()).clamp(0.0, 1.0)
+        };
+        (a + d * t).distance(p) > eps
+    })
+}
+
+/// A roof's lowest layers that stop short of its eaves, from the bottom
+/// up, each with its own outline and its thickness measured upright: what
+/// [`TopFace::lift`] holds. Empty for a roof of one material, or one whose
+/// lowest layer runs to the eaves.
+fn roof_lift(model: &Model, r: &crate::Roof) -> Vec<(Vec<DVec2>, f64)> {
+    let Some(ElementKind::Assembly(a)) = r.assembly.and_then(|a| model.get(a)).map(|e| &e.kind)
+    else {
+        return vec![];
+    };
+    if r.layer_edges.is_empty() || r.thickness < 1e-9 {
+        return vec![];
+    }
+    let upright = r.vertical_thickness() / r.thickness;
+    let eaves = r.eave_outline();
+    let mut out = vec![];
+    for (i, layer) in a.layers.iter().enumerate().rev() {
+        let outline = r.layer_eaves(i);
+        // the first layer up that runs to the eaves ends it
+        let full = outline.len() == eaves.len()
+            && outline
+                .iter()
+                .zip(&eaves)
+                .all(|(p, q)| p.distance(*q) < 1e-6);
+        if full {
+            break;
+        }
+        out.push((outline, layer.thickness * upright));
+    }
+    out
 }
 
 /// The undersides over a wall that its top follows.
@@ -337,10 +402,12 @@ pub fn undersides(model: &Model, ids: &[ElementId]) -> Vec<TopFace> {
         match model.get(*id).map(|e| &e.kind) {
             Some(ElementKind::Roof(r)) => {
                 let base = r.base(model);
+                let lift = roof_lift(model, r);
                 out.extend(r.faces().into_iter().map(|f| TopFace {
                     outline: f.outline,
                     g: f.g,
                     c: base + f.c,
+                    lift: lift.clone(),
                 }));
             }
             Some(ElementKind::Slab(s)) => {
@@ -349,6 +416,7 @@ pub fn undersides(model: &Model, ids: &[ElementId]) -> Vec<TopFace> {
                     outline: s.outline(),
                     g: DVec2::ZERO,
                     c: s.top(elevation) - s.thickness,
+                    lift: vec![],
                 });
             }
             // a ceiling stops at the walls' faces: it holds up the
@@ -359,6 +427,7 @@ pub fn undersides(model: &Model, ids: &[ElementId]) -> Vec<TopFace> {
                         outline: grown(&outline, CEILING_REACH),
                         g: DVec2::ZERO,
                         c: c.span(model).0,
+                        lift: vec![],
                     });
                 }
             }
@@ -555,6 +624,13 @@ pub fn clamp_opening(model: &Model, o: &mut Opening) {
     let Some(ElementKind::Wall(w)) = model.get(o.host).map(|e| &e.kind) else {
         return;
     };
+    // a window round a corner stays on it, into the corner (part 9)
+    if o.arrangement
+        .is_some_and(|a| a.corner_start || a.corner_end)
+    {
+        crate::arrangement::keep_on_corner(w.length(), o);
+        return;
+    }
     let (lo, hi) = clear_span(model, o.host);
     if hi - lo >= o.width - 1e-9 {
         o.offset = o.offset.clamp(lo, hi - o.width);
@@ -964,9 +1040,12 @@ mod widen_tests {
             width: 0.9,
             height: 2.1,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         };
         (m, host, o)
     }
@@ -1036,5 +1115,57 @@ mod widen_tests {
         assert!(opening_crosses_join(&m, ElementId::new(), &o).is_some());
         let (m, _, o) = wall_and_door(1.0);
         assert!(opening_crosses_join(&m, ElementId::new(), &o).is_none());
+    }
+}
+
+#[cfg(test)]
+mod lift_tests {
+    use super::*;
+
+    #[test]
+    fn a_wall_rises_past_roof_layers_that_stop_short_of_it() {
+        let mut m = crate::starter::starter_house();
+        let e = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::Roof(r) if r.assembly.is_some() && r.pitch > 1.0 && r.overhang > 0.0))
+            .expect("the starter's layered pitched roof")
+            .clone();
+        let ElementKind::Roof(r) = &e.kind else {
+            unreachable!()
+        };
+        let Some(ElementKind::Assembly(a)) = r.assembly.and_then(|a| m.get(a)).map(|e| &e.kind)
+        else {
+            panic!("its assembly")
+        };
+        let last = a.layers.len() - 1;
+        let rise = a.layers[last].thickness * r.vertical_thickness() / r.thickness;
+        // a point just inside the eaves and one well inside the roof
+        let eaves = r.eave_outline();
+        let mid = eaves.iter().fold(DVec2::ZERO, |s, p| s + *p) / eaves.len() as f64;
+        let edge = (eaves[0] + eaves[1]) / 2.0;
+        let near = edge + (mid - edge).normalize() * 0.2;
+        let plain = TopProfile {
+            faces: undersides(&m, &[e.id]),
+        };
+        let (z_near, z_mid) = (plain.z_at(near).unwrap(), plain.z_at(mid).unwrap());
+        assert!(plain.faces.iter().all(|f| f.lift.is_empty()));
+        // its lowest layer pulled 0.6 m in from every eave
+        let mut cut = e.clone();
+        if let ElementKind::Roof(r) = &mut cut.kind {
+            for edge in 0..eaves.len() {
+                crate::set_layer_edge(&mut r.layer_edges, last, edge, -0.6);
+            }
+        }
+        crate::Transaction::new("t")
+            .replace(e.clone(), cut)
+            .apply(&mut m)
+            .unwrap();
+        let top = TopProfile {
+            faces: undersides(&m, &[e.id]),
+        };
+        // past the layer's edge the underside is that layer higher; under
+        // it, as before
+        assert!((top.z_at(near).unwrap() - (z_near + rise)).abs() < 1e-9);
+        assert!((top.z_at(mid).unwrap() - z_mid).abs() < 1e-9);
     }
 }

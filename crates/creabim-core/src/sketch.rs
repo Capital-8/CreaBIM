@@ -129,6 +129,11 @@ pub struct Sketch {
     /// Dimensions and relations kept by [`Sketch::solve`].
     #[serde(default)]
     pub constraints: Vec<Constraint>,
+    /// A closed outline kept as lines only: no face inside it, and pulled
+    /// it gives walls, open at both ends, not a solid (MU46). Closing an
+    /// outline gives a face; this is the switch back.
+    #[serde(default)]
+    pub wire: bool,
 }
 
 impl Sketch {
@@ -147,6 +152,7 @@ impl Sketch {
             kinds: vec![],
             circle: None,
             constraints: vec![],
+            wire: false,
         }
     }
 
@@ -332,8 +338,14 @@ impl Sketch {
         Ok(())
     }
 
+    /// Is it a face: closed, and not kept as a wire?
+    pub fn is_face(&self) -> bool {
+        self.closed && !self.wire
+    }
+
     /// The profile pushed `distance` along the plane's normal: a closed solid
-    /// for a closed sketch, a surface (to solidify) for an open one. Arcs
+    /// for a face, a surface (to solidify) for an open line or a closed
+    /// wire, whose walls then run all the way round. Arcs
     /// become flat faces of at most [`ARC_STEP`] each. Vertices are relative
     /// to the plane's origin, ready for a mass placed there.
     pub fn extrude(&self, distance: f64) -> EditMesh {
@@ -352,7 +364,7 @@ impl Sketch {
             let j = (i + 1) % m;
             mesh.faces.push(vec![i, j, j + m, i + m]);
         }
-        if self.closed {
+        if self.is_face() {
             mesh.faces.insert(0, (0..m).rev().collect());
             mesh.faces.insert(1, (m..2 * m).collect());
         }
@@ -393,6 +405,24 @@ mod tests {
         assert!(p.to_model(p.to_plane(q)).distance(q) < 1e-12);
         let hit = p.intersect(DVec3::new(0.0, -5.0, 0.0), DVec3::Y).unwrap();
         assert!((hit.y - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_closed_wire_extrudes_into_walls_all_round_with_no_ends() {
+        let mut sk = l_shape(Workplane::ground(0.0), true);
+        assert!(sk.is_face());
+        assert_eq!(sk.extrude(3.0).faces.len(), 8);
+        sk.wire = true;
+        assert!(!sk.is_face());
+        let walls = sk.extrude(3.0);
+        assert_eq!(walls.faces.len(), 6, "six walls, no floor and no top");
+        assert_eq!(walls.kind(), crate::shape::Kind::Surface);
+        // an older file has no such field: a face, as it was
+        let old = serde_json::to_value(l_shape(Workplane::ground(0.0), true)).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("wire");
+        let back: Sketch = serde_json::from_value(old.into()).unwrap();
+        assert!(back.is_face());
     }
 
     #[test]

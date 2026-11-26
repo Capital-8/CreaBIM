@@ -163,6 +163,7 @@ pub fn detail_items(id: ElementId, d: &DetailItem, mm: f64, look: MembraneLook) 
                         points: pts.clone(),
                         hatch,
                         rgb: None,
+                        material: None,
                     });
                 }
                 for i in 0..pts.len() {

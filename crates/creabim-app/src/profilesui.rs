@@ -40,6 +40,9 @@ pub enum ProfTool {
     Calibrate,
     /// Click a face: a fill made void, a void filled back (MU37).
     Void,
+    /// The picked shape copied beside itself, out or in by the pointer or
+    /// a typed distance (O; Mockup_Patterns_Area_REV01, E).
+    Offset,
 }
 
 /// What is picked in the Profile view (MU37: move, rotate and align work
@@ -116,6 +119,8 @@ pub struct ProfilesUi {
     align_ref: Option<(DVec2, DVec2)>,
     /// Calibrate's two points and the distance being typed.
     calib: Option<(DVec2, DVec2, String)>,
+    /// Offset's distance being typed.
+    offset_text: String,
 }
 
 /// What the profiles' trace references show, read once (a file's pixels
@@ -380,8 +385,10 @@ impl CreaBimApp {
                     "align" => ProfTool::Align,
                     "calibrate" => ProfTool::Calibrate,
                     "void" => ProfTool::Void,
+                    "offset" => ProfTool::Offset,
                     _ => ProfTool::Select,
                 };
+                self.profiles.offset_text.clear();
                 self.profiles.drawing.clear();
                 self.profiles.guide_from = None;
                 self.profiles.op.clear();
@@ -403,6 +410,7 @@ impl CreaBimApp {
                     ProfTool::Align => "Align: click the line to align to (an edge, a guide or an insertion axis), then the edge or guide to lie on it.".into(),
                     ProfTool::Calibrate => "Calibrate: click two points on the trace a known distance apart, then type that distance.".into(),
                     ProfTool::Void => "Pick void: click a face where shapes cross or nest to empty it; click a void to fill it back.".into(),
+                    ProfTool::Offset => "Offset: pick a shape (or keep what is picked), move out or in and click, or type a distance and press Enter. Ctrl keeps going.".into(),
                 };
             }
             "prof.shape" => self.edit_current("Profile open or closed", |p, s| {
@@ -790,12 +798,14 @@ impl CreaBimApp {
             ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
             ui.label(egui::RichText::new("Name").size(12.0).color(pal.muted));
             let r = ui
-                .add_enabled(
-                    mine,
-                    egui::TextEdit::singleline(&mut self.profiles.name)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(84.0),
-                )
+                .add_enabled_ui(mine, |ui| {
+                    crate::props::text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut self.profiles.name),
+                        84.0,
+                    )
+                })
+                .inner
                 .on_hover_text(if mine {
                     "The profile's name: type a new one, then Enter"
                 } else {
@@ -820,7 +830,7 @@ impl CreaBimApp {
     pub(super) fn profile_props(&mut self, ui: &mut egui::Ui) {
         let Some(cur) = self.profiles.current.clone() else {
             crate::props::section(ui, "Profile");
-            crate::props::note(
+            crate::props::empty(
                 ui,
                 "Pick a profile in the view's header, or make a New one.",
             );
@@ -831,7 +841,8 @@ impl CreaBimApp {
             .into_iter()
             .find(|p| p.name == cur);
         let users = profiles::users(model, &cur).len();
-        if self.prop_header(ui, "prof_about", "Profile", true, Some("profiles")) {
+        let open = self.prop_header(ui, "prof_about", "Profile", true, Some("profiles"));
+        crate::props::fold(ui, open, |ui| {
             crate::props::row(ui, "Name", |ui| self.profile_name_field_bare(ui));
             let pts: Vec<DVec2> = match &mine {
                 Some(p) => p.shapes().iter().flat_map(|s| s.points.clone()).collect(),
@@ -842,9 +853,12 @@ impl CreaBimApp {
                     .iter()
                     .fold((*first, *first), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
                 let d = hi - lo;
-                crate::props::row(ui, "Size", |ui| {
-                    ui.label(format!("{:.0} × {:.0} mm", d.x * 1000.0, d.y * 1000.0))
-                });
+                crate::props::readout(
+                    ui,
+                    "Size",
+                    format!("{:.0} × {:.0} mm", d.x * 1000.0, d.y * 1000.0),
+                    "Worked out from its shape",
+                );
             }
             crate::props::row(ui, "Used by", |ui| {
                 ui.label(match users {
@@ -854,12 +868,21 @@ impl CreaBimApp {
                 })
             });
             if mine.is_none() {
-                crate::props::note(
+                crate::props::worked_out(
+                    ui,
+                    "profile",
+                    &[crate::props::Worked::new(
+                        "Kind",
+                        "Preset, can't be changed",
+                    )],
+                );
+                crate::props::info(
                     ui,
                     "A preset: Duplicate it in the header to make one of your own to change.",
+                    "",
                 );
             }
-        }
+        });
         let Some(p) = mine else {
             return;
         };
@@ -872,14 +895,18 @@ impl CreaBimApp {
             .map(|f| f.sample)
             .collect();
         let filled = faces.len() - voids.len();
-        if self.prop_header(ui, "prof_faces", "Faces", true, None) {
-            crate::props::row(ui, "Faces", |ui| {
-                ui.label(format!(
+        let open = self.prop_header(ui, "prof_faces", "Faces", true, None);
+        crate::props::fold(ui, open, |ui| {
+            crate::props::readout(
+                ui,
+                "Faces",
+                format!(
                     "{filled} filled, {} void{}",
                     voids.len(),
                     if voids.len() == 1 { "" } else { "s" }
-                ))
-            });
+                ),
+                "Worked out from its shape",
+            );
             let (fill, pick) = crate::props::actions2(
                 ui,
                 "",
@@ -894,9 +921,10 @@ impl CreaBimApp {
                     true,
                 ),
             );
-            crate::props::note(
+            crate::props::info(
                 ui,
                 "A void is white in the view and a hole in what it makes. Offset all, or a shape inside another, makes one.",
+                "",
             );
             if fill {
                 let n = voids.len();
@@ -916,8 +944,9 @@ impl CreaBimApp {
                 self.status =
                     "Click a face to turn it over: a void filled, a fill made void.".into();
             }
-        }
-        if self.prop_header(ui, "prof_flip", "Flip", true, None) {
+        });
+        let open = self.prop_header(ui, "prof_flip", "Flip", true, None);
+        crate::props::fold(ui, open, |ui| {
             let (across, up) = crate::props::actions2(
                 ui,
                 "",
@@ -953,24 +982,19 @@ impl CreaBimApp {
                     format!("{cur} flipped.")
                 };
             }
-        }
+        });
         // the corner picked: its place, to type (mm from the insertion point)
         if let Some(PSel::Corner(si, ci)) = self.profiles.sel {
             let at = p.shapes().get(si).and_then(|s| s.points.get(ci)).copied();
             if let Some(at) = at {
-                if self.prop_header(ui, "prof_picked", "Picked corner", true, None) {
+                let open = self.prop_header(ui, "prof_picked", "Picked corner", true, None);
+                crate::props::fold(ui, open, |ui| {
                     let (mut x, mut y) = (at.x * 1000.0, at.y * 1000.0);
                     let cx = crate::props::row(ui, "X", |ui| {
-                        crate::props::fill(
-                            ui,
-                            egui::DragValue::new(&mut x).suffix(" mm").speed(1.0),
-                        )
+                        crate::props::fill(ui, crate::units::model_mm(&mut x))
                     });
                     let cy = crate::props::row(ui, "Y", |ui| {
-                        crate::props::fill(
-                            ui,
-                            egui::DragValue::new(&mut y).suffix(" mm").speed(1.0),
-                        )
+                        crate::props::fill(ui, crate::units::model_mm(&mut y))
                     });
                     if cx.changed() || cy.changed() {
                         let to = DVec2::new(x, y) / 1000.0;
@@ -980,7 +1004,7 @@ impl CreaBimApp {
                             }
                         });
                     }
-                }
+                });
             }
         }
     }
@@ -1189,6 +1213,8 @@ impl CreaBimApp {
                    "hint": "Move (M): what is picked, from a base point to another"}),
             json!({"kind": "toggle", "id": "prof.tool:rotate", "icon": "rotate-cw", "label": "Rotate", "on": t == ProfTool::Rotate,
                    "hint": "Rotate (R): what is picked, about a centre"}),
+            json!({"kind": "toggle", "id": "prof.tool:offset", "icon": "offset", "label": "Offset", "on": t == ProfTool::Offset,
+                   "hint": "Offset (O): the picked shape copied beside itself, out or in, by the pointer or a typed distance"}),
             json!({"kind": "toggle", "id": "prof.tool:align", "icon": "align-tool", "label": "Align", "on": t == ProfTool::Align,
                    "hint": "Align: an edge or a guide onto a line (an edge, a guide or an axis)"}),
             json!({"kind": "toggle", "id": "prof.dims", "icon": "dimension", "label": "Dimensions", "on": !self.profiles.hide_dims,
@@ -2121,6 +2147,9 @@ impl CreaBimApp {
                 if item(ui, "Duplicate", "Shift D", has_pick) {
                     menu_act = Some("copy");
                 }
+                if item(ui, "Offset…", "O", has_pick) {
+                    menu_act = Some("offset");
+                }
                 if item(ui, "Align", "", true) {
                     menu_act = Some("align");
                 }
@@ -2602,6 +2631,126 @@ impl CreaBimApp {
                     self.profiles.guide_from = None;
                 }
             }
+            ProfTool::Offset if editable => {
+                // the shape picked, then out or in and a click, or a typed
+                // distance and Enter (REV01, E): a new shape beside it
+                let tap = response.clicked();
+                let si = picked.iter().find_map(|p| match *p {
+                    PSel::Corner(s, _) | PSel::Edge(s, _) | PSel::Shape(s) => Some(s),
+                    _ => None,
+                });
+                match si.and_then(|si| shapes.get(si).cloned()) {
+                    None => {
+                        if let (true, Some(q)) = (tap, pointer) {
+                            self.profiles.sel = pick(q);
+                            self.profiles.extra.clear();
+                        }
+                    }
+                    Some(sh) => {
+                        let (text, enter, back, esc) = ui.input(|i| {
+                            let text: String = i
+                                .events
+                                .iter()
+                                .filter_map(|e| match e {
+                                    egui::Event::Text(t) => Some(t.clone()),
+                                    _ => None,
+                                })
+                                .collect();
+                            (
+                                text,
+                                i.key_pressed(egui::Key::Enter),
+                                i.key_pressed(egui::Key::Backspace),
+                                i.key_pressed(egui::Key::Escape),
+                            )
+                        });
+                        let buf = &mut self.profiles.offset_text;
+                        for c in text.chars() {
+                            match c {
+                                '0'..='9' | '.' | '-' => buf.push(c),
+                                ',' => buf.push('.'),
+                                'm' | 'c' | 'f' | 't' | 'i' | 'n' | '\'' | '"' | ' '
+                                    if !buf.is_empty() =>
+                                {
+                                    buf.push(c)
+                                }
+                                _ => {}
+                            }
+                        }
+                        if back {
+                            buf.pop();
+                        }
+                        if esc {
+                            if buf.is_empty() {
+                                self.profiles.sel = None;
+                                self.profiles.extra.clear();
+                            }
+                            buf.clear();
+                        }
+                        let typed =
+                            crate::units::parse(buf).filter(|v| v.is_finite() && v.abs() > 1e-9);
+                        let raw = here.map_or(0.0, |(w, _)| {
+                            creabim_core::offset::side_of(&sh.points, !sh.open, w)
+                        });
+                        let by = match typed {
+                            Some(v) => v.abs() * if raw < 0.0 { -1.0 } else { 1.0 },
+                            None => (raw * 1000.0).round() / 1000.0,
+                        };
+                        let out = if sh.open {
+                            creabim_core::offset::offset_path(&sh.points, by)
+                        } else {
+                            creabim_core::members::offset_polygon(&sh.points, by)
+                        };
+                        if by.abs() > 1e-9 && out.len() >= 2 {
+                            let mut pts: Vec<egui::Pos2> = out.iter().map(|q| to_s(*q)).collect();
+                            if !sh.open {
+                                pts.push(pts[0]);
+                            }
+                            crate::snaps::dashed_clipped(
+                                &painter,
+                                &pts,
+                                egui::Stroke::new(1.6, accent),
+                                6.0,
+                                4.0,
+                            );
+                            if let Some(hp) = pointer {
+                                let shown = if buf.is_empty() {
+                                    crate::units::len(by.abs())
+                                } else {
+                                    format!("{buf}|")
+                                };
+                                painter.text(
+                                    hp + egui::vec2(14.0, -16.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    format!("Offset {shown}"),
+                                    egui::FontId::proportional(12.0),
+                                    accent,
+                                );
+                            }
+                            if tap || (enter && typed.is_some()) {
+                                let n = shapes.len();
+                                let (open, thickness) = (sh.open, sh.thickness);
+                                write = Some((
+                                    edit(&mut |x| {
+                                        x.more.push(ProfileShape {
+                                            points: out.clone(),
+                                            open,
+                                            thickness,
+                                        })
+                                    }),
+                                    "Offset in profile",
+                                    false,
+                                ));
+                                self.profiles.offset_text.clear();
+                                // Ctrl keeps going, from the new one
+                                self.profiles.sel =
+                                    ui.input(|i| i.modifiers.command).then_some(PSel::Shape(n));
+                                self.profiles.extra.clear();
+                                self.status = format!("Offset by {}.", crate::units::len(by.abs()));
+                            }
+                        }
+                    }
+                }
+            }
             ProfTool::Move | ProfTool::Rotate
                 if editable
                     || picked
@@ -2872,16 +3021,16 @@ impl CreaBimApp {
                         painter.line_segment([to_s(a), to_s(b)], egui::Stroke::new(1.6, accent));
                         let mut done = false;
                         egui::Area::new(egui::Id::new("prof.calib"))
-                            .order(egui::Order::Foreground)
+                            .order(crate::app::overlay_order())
                             .fixed_pos(to_s((a + b) / 2.0) + egui::vec2(10.0, -12.0))
                             .show(ui.ctx(), |ui| {
                                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.label("Really");
-                                        let r = ui.add(
-                                            egui::TextEdit::singleline(&mut text)
-                                                .vertical_align(egui::Align::Center)
-                                                .desired_width(70.0),
+                                        let r = crate::props::text_field(
+                                            ui,
+                                            egui::TextEdit::singleline(&mut text),
+                                            70.0,
                                         );
                                         r.request_focus();
                                         if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -2982,17 +3131,17 @@ impl CreaBimApp {
                 let (sa, sb) = (to_s(*a), to_s(*b));
                 let away = egui::vec2(-(sb - sa).y, (sb - sa).x).normalized() * 46.0;
                 egui::Area::new(egui::Id::new(("prof.len", si, e)))
-                    .order(egui::Order::Foreground)
+                    .order(crate::app::overlay_order())
                     .movable(true)
                     .default_pos(mid + away - egui::vec2(60.0, 14.0))
                     .show(ui.ctx(), |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label("Length");
-                                let r = ui.add(
-                                    egui::TextEdit::singleline(&mut text)
-                                        .vertical_align(egui::Align::Center)
-                                        .desired_width(70.0),
+                                let r = crate::props::text_field(
+                                    ui,
+                                    egui::TextEdit::singleline(&mut text),
+                                    70.0,
                                 );
                                 r.request_focus();
                                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -3036,6 +3185,10 @@ impl CreaBimApp {
                 self.profiles.align_ref = None;
             }
             Some("void") => self.profiles.tool = ProfTool::Void,
+            Some("offset") => {
+                self.profiles.tool = ProfTool::Offset;
+                self.profiles.offset_text.clear();
+            }
             Some("copy") => {
                 self.profiles.tool = ProfTool::Move;
                 self.profiles.op.clear();
@@ -3044,7 +3197,12 @@ impl CreaBimApp {
             }
             _ => {}
         }
-        let keys_here = response.hovered() && !ui.ctx().egui_wants_keyboard_input();
+        // a distance being typed for Offset keeps the letter keys (its
+        // units: 10mm) from switching tools
+        let typing_offset =
+            self.profiles.tool == ProfTool::Offset && !self.profiles.offset_text.is_empty();
+        let keys_here =
+            response.hovered() && !ui.ctx().egui_wants_keyboard_input() && !typing_offset;
         if keys_here || menu_act.is_some() {
             if keys_here && ui.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::D)) {
                 self.profiles.hide_dims = !self.profiles.hide_dims;
@@ -3088,6 +3246,10 @@ impl CreaBimApp {
                     .min((body.height() - 120.0).max(60.0) as f64 / span.y)
                     as f32;
                 self.profiles.camera = Some(((lo + hi) / 2.0, k.clamp(1.0, 1e6)));
+            }
+            if keys_here && ui.input(|i| !i.modifiers.any() && i.key_pressed(egui::Key::O)) {
+                self.profiles.tool = ProfTool::Offset;
+                self.profiles.offset_text.clear();
             }
             if m || r {
                 self.profiles.tool = if m { ProfTool::Move } else { ProfTool::Rotate };
@@ -3264,134 +3426,135 @@ impl CreaBimApp {
             .and_then(|n| profiles::find(model, n))
             .is_some_and(|p| Some(p) != shape);
         let mut pick: Option<Option<String>> = None;
-        if !self.prop_header(ui, "profile", "Profile", true, None) {
-            return true;
-        }
-        crate::props::row(ui, "Profile", |ui| {
-            let w = ui.available_width();
-            let pal = crate::theme::Palette::of(ui.ctx());
-            egui::ComboBox::from_id_salt(("member.profile", id))
-                .icon(crate::props::combo_icon)
-                .width(w)
-                .truncate()
-                .selected_text(link.clone().unwrap_or_else(|| {
-                    if member {
-                        "Its own (width × depth)".into()
-                    } else {
-                        "Its own".into()
-                    }
-                }))
-                .show_ui(ui, |ui| {
-                    if member
-                        && ui
-                            .selectable_label(link.is_none(), "Its own (width × depth)")
-                            .clicked()
-                    {
-                        pick = Some(None);
-                    }
-                    for n in &all {
-                        let pts = profiles::find(self.doc.model(), n).unwrap_or_default();
-                        let r = crate::props::picture_option(
-                            ui,
-                            link.as_deref() == Some(n.as_str()),
-                            n,
-                            |p, rr, _| {
-                                paint_thumb(p, rr, &pts, pal.text);
-                            },
-                        );
-                        if r.clicked() {
-                            pick = Some(Some(n.clone()));
+        let open = self.prop_header(ui, "profile", "Profile", true, None);
+        crate::props::fold(ui, open, |ui| {
+            crate::props::row(ui, "Profile", |ui| {
+                let w = ui.available_width();
+                let pal = crate::theme::Palette::of(ui.ctx());
+                egui::ComboBox::from_id_salt(("member.profile", id))
+                    .icon(crate::props::combo_icon)
+                    .width(w)
+                    .truncate()
+                    .selected_text(link.clone().unwrap_or_else(|| {
+                        if member {
+                            "Its own (width × depth)".into()
+                        } else {
+                            "Its own".into()
                         }
-                    }
-                });
-        });
-        if stale {
-            crate::props::note(
-                ui,
-                "Its profile was changed: Update gives it the new shape.",
-            );
-        }
-        let has = link.is_some();
-        let (open_it, upd) = crate::props::actions2(
-            ui,
-            "",
-            ("Edit in a view", "Open its profile in a Profile view", has),
-            ("Update", "Take its profile's current shape", stale),
-        );
-        let (save, dup) = crate::props::actions2(
-            ui,
-            "",
-            (
-                "Save as new",
-                "Its shape as a new profile of the project",
-                shape.is_some(),
-            ),
-            (
-                "Duplicate",
-                "A copy of its profile to change slightly, given to it",
-                has,
-            ),
-        );
-        let n = link.clone().unwrap_or_default();
-        if open_it {
-            self.open_profile(&n);
-        }
-        if upd {
-            if let Some(p) = profiles::find(self.doc.model(), &n) {
-                let r = self
-                    .doc
-                    .edit(id, "Update profile", |e| set_section(e, &n, &p));
-                self.report(r, format!("Updated from {n}."));
-            }
-        }
-        if save {
-            if let Some(pts) = shape.clone() {
-                let name = self
-                    .doc
-                    .model()
-                    .get(id)
-                    .map_or("Profile".into(), |e| e.name.clone());
-                self.new_profile(
-                    Some(NamedProfile {
-                        points: pts,
-                        ..Default::default()
-                    }),
-                    &name,
+                    }))
+                    .show_ui(ui, |ui| {
+                        if member
+                            && ui
+                                .selectable_label(link.is_none(), "Its own (width × depth)")
+                                .clicked()
+                        {
+                            pick = Some(None);
+                        }
+                        for n in &all {
+                            let pts = profiles::find(self.doc.model(), n).unwrap_or_default();
+                            let r = crate::props::picture_option(
+                                ui,
+                                link.as_deref() == Some(n.as_str()),
+                                n,
+                                |p, rr, _| {
+                                    paint_thumb(p, rr, &pts, pal.text);
+                                },
+                            );
+                            if r.clicked() {
+                                pick = Some(Some(n.clone()));
+                            }
+                        }
+                    });
+            });
+            if stale {
+                crate::props::warning(
+                    ui,
+                    "Its profile was changed: Update gives it the new shape.",
+                    None,
                 );
             }
-        }
-        if dup {
-            self.profiles.current = Some(n.clone());
-            self.profiles_action("profiles.duplicate", "");
-            if let Some(newname) = self.profiles.current.clone() {
-                if let Some(p) = profiles::find(self.doc.model(), &newname) {
+            let has = link.is_some();
+            let (open_it, upd) = crate::props::actions2(
+                ui,
+                "",
+                ("Edit in a view", "Open its profile in a Profile view", has),
+                ("Update", "Take its profile's current shape", stale),
+            );
+            let (save, dup) = crate::props::actions2(
+                ui,
+                "",
+                (
+                    "Save as new",
+                    "Its shape as a new profile of the project",
+                    shape.is_some(),
+                ),
+                (
+                    "Duplicate",
+                    "A copy of its profile to change slightly, given to it",
+                    has,
+                ),
+            );
+            let n = link.clone().unwrap_or_default();
+            if open_it {
+                self.open_profile(&n);
+            }
+            if upd {
+                if let Some(p) = profiles::find(self.doc.model(), &n) {
                     let r = self
                         .doc
-                        .edit(id, "Duplicate profile", |e| set_section(e, &newname, &p));
-                    self.report(
-                        r,
-                        format!(
-                            "It takes {newname} now: change it in the Profile view, then Apply."
-                        ),
+                        .edit(id, "Update profile", |e| set_section(e, &n, &p));
+                    self.report(r, format!("Updated from {n}."));
+                }
+            }
+            if save {
+                if let Some(pts) = shape.clone() {
+                    let name = self
+                        .doc
+                        .model()
+                        .get(id)
+                        .map_or("Profile".into(), |e| e.name.clone());
+                    self.new_profile(
+                        Some(NamedProfile {
+                            points: pts,
+                            ..Default::default()
+                        }),
+                        &name,
                     );
                 }
             }
-        }
-        if let Some(choice) = pick {
-            let r = match choice {
-                Some(n) => {
-                    let p = profiles::find(self.doc.model(), &n).unwrap_or_default();
-                    self.doc
-                        .edit(id, "Change profile", |e| set_section(e, &n, &p))
+            if dup {
+                self.profiles.current = Some(n.clone());
+                self.profiles_action("profiles.duplicate", "");
+                if let Some(newname) = self.profiles.current.clone() {
+                    if let Some(p) = profiles::find(self.doc.model(), &newname) {
+                        let r = self
+                            .doc
+                            .edit(id, "Duplicate profile", |e| set_section(e, &newname, &p));
+                        self.report(
+                            r,
+                            format!(
+                            "It takes {newname} now: change it in the Profile view, then Apply."
+                        ),
+                        );
+                    }
                 }
-                None => self.doc.edit(id, "Own section", |e| match &mut e.kind {
-                    ElementKind::Column(c) => c.section = None,
-                    ElementKind::Beam(b) => b.section = None,
-                    _ => {}
-                }),
-            };
-            self.report(r, "Profile changed. Ctrl+Z puts it back.");
-        }
+            }
+            if let Some(choice) = pick {
+                let r = match choice {
+                    Some(n) => {
+                        let p = profiles::find(self.doc.model(), &n).unwrap_or_default();
+                        self.doc
+                            .edit(id, "Change profile", |e| set_section(e, &n, &p))
+                    }
+                    None => self.doc.edit(id, "Own section", |e| match &mut e.kind {
+                        ElementKind::Column(c) => c.section = None,
+                        ElementKind::Beam(b) => b.section = None,
+                        _ => {}
+                    }),
+                };
+                self.report(r, "Profile changed. Ctrl+Z puts it back.");
+            }
+        });
         true
     }
 }

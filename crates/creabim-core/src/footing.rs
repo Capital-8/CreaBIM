@@ -304,21 +304,33 @@ fn strip_outlines_now(model: &Model) -> HashMap<ElementId, Vec<Vec<DVec2>>> {
     let walls: Vec<(ElementId, Wall)> = lines.iter().map(|(id, w, _)| (*id, w.clone())).collect();
     let joins = plain_joins(&walls);
     let mut out = HashMap::new();
-    let mut curved = HashMap::new();
+    let mut curved: Vec<ElementId> = vec![];
     for (id, w, proud) in &lines {
         if w.length() < 1e-6 {
             continue;
         }
         if w.is_arc() {
-            // a band round the arc, its ends square; kept out of the
-            // trimming below, which cuts convex pieces only
-            let t = w.thickness / 2.0;
+            // round the arc in convex pieces, one per bend, so the trimming
+            // below can cut it and cut others with it (MU42: crossing
+            // circles); its ends as its joins put them
+            let ends: WallEnds = joins.get(id).cloned().unwrap_or_default();
+            let (t, len) = (w.thickness / 2.0, w.length());
+            let at = |u: f64, s: f64| {
+                if u <= 1e-9 || u >= len - 1e-9 {
+                    w.place_end(u > 1e-9, ends.place(w, u, s, false), s)
+                } else {
+                    w.place(u, s)
+                }
+            };
             let mut us = vec![0.0];
             us.extend(w.bends());
-            us.push(w.length());
-            let mut band: Vec<DVec2> = us.iter().map(|u| w.place(*u, -t)).collect();
-            band.extend(us.iter().rev().map(|u| w.place(*u, t)));
-            curved.insert(*id, vec![band]);
+            us.push(len);
+            let quads: Vec<Vec<DVec2>> = us
+                .windows(2)
+                .map(|k| vec![at(k[0], -t), at(k[1], -t), at(k[1], t), at(k[0], t)])
+                .collect();
+            out.insert(*id, quads);
+            curved.push(*id);
             continue;
         }
         let mut ends: WallEnds = joins.get(id).cloned().unwrap_or_default();
@@ -352,10 +364,80 @@ fn strip_outlines_now(model: &Model) -> HashMap<ElementId, Vec<Vec<DVec2>>> {
             .collect();
         out.insert(*id, pieces);
     }
-    let straight: Vec<_> = lines.iter().filter(|l| !l.1.is_arc()).cloned().collect();
-    trim_overlaps(model, &straight, &mut out);
-    out.extend(curved);
+    trim_overlaps(model, &lines, &mut out);
+    // a curved strip's pieces back into one outline where they still meet
+    // edge to edge, so its solid has no seams
+    for id in curved {
+        if let Some(pieces) = out.get_mut(&id) {
+            *pieces = merge_pieces(std::mem::take(pieces));
+        }
+    }
     out
+}
+
+/// Pieces that meet edge to edge, as the outlines of what they cover: the
+/// edges two pieces share go, the rest chain into loops. Left as they are
+/// when that doesn't come out whole (pieces meeting part way along an
+/// edge, after a cut).
+fn merge_pieces(pieces: Vec<Vec<DVec2>>) -> Vec<Vec<DVec2>> {
+    if pieces.len() < 2 {
+        return pieces;
+    }
+    let key = |p: DVec2| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64);
+    let mut edges: Vec<(DVec2, DVec2)> = vec![];
+    for p in &pieces {
+        let mut p = p.clone();
+        if crate::polygon::signed_area2(&p) < 0.0 {
+            p.reverse();
+        }
+        let n = p.len();
+        for i in 0..n {
+            let (a, b) = (p[i], p[(i + 1) % n]);
+            if key(a) == key(b) {
+                continue;
+            }
+            // a shared edge runs the other way in the neighbour
+            if let Some(k) = edges
+                .iter()
+                .position(|(c, d)| key(*c) == key(b) && key(*d) == key(a))
+            {
+                edges.swap_remove(k);
+            } else {
+                edges.push((a, b));
+            }
+        }
+    }
+    let mut loops: Vec<Vec<DVec2>> = vec![];
+    while let Some((a, b)) = edges.pop() {
+        let mut ring = vec![a];
+        let mut at = b;
+        let mut guard = 0;
+        while key(at) != key(a) {
+            guard += 1;
+            let Some(k) = edges.iter().position(|(c, _)| key(*c) == key(at)) else {
+                return pieces;
+            };
+            if guard > 100_000 {
+                return pieces;
+            }
+            ring.push(at);
+            at = edges.swap_remove(k).1;
+        }
+        loops.push(ring);
+    }
+    let area = |ps: &[Vec<DVec2>]| -> f64 {
+        ps.iter()
+            .map(|p| crate::polygon::signed_area2(p).abs() / 2.0)
+            .sum()
+    };
+    // one outline per lump, holding what the pieces did
+    if loops.iter().all(|l| crate::polygon::signed_area2(l) > 0.0)
+        && (area(&loops) - area(&pieces)).abs() < 1e-6 * area(&pieces).max(1.0)
+    {
+        loops
+    } else {
+        pieces
+    }
 }
 
 /// Strips whose ends run into each other without joining (walls of
@@ -613,6 +695,56 @@ mod tests {
 
     fn area(p: &[DVec2]) -> f64 {
         crate::polygon::signed_area2(p).abs() / 2.0
+    }
+
+    #[test]
+    fn strips_under_crossing_circles_do_not_overlap() {
+        // two circles of radius 3, their centres 4 apart, each two halves
+        let mut m = Model::new();
+        let level = Element::new(
+            "L0",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let lid = level.id;
+        let mut tx = Transaction::new("t").insert(level);
+        let mut ids = vec![];
+        for cx in [0.0, 4.0] {
+            let (a, b) = (DVec2::new(cx - 3.0, 0.0), DVec2::new(cx + 3.0, 0.0));
+            for (s, e) in [(a, b), (b, a)] {
+                let mut w = Wall::new(lid, s, e, 0.3, 3.0);
+                w.bulge = 1.0;
+                let we = Element::new("W", ElementKind::Wall(w));
+                ids.push(we.id);
+                tx = tx.insert(we);
+            }
+        }
+        tx.apply(&mut m).unwrap();
+        let (tx, fids) = under(&m, &ids, &|_| {});
+        tx.apply(&mut m).unwrap();
+        let strips = strip_outlines(&m);
+        let pieces: Vec<&Vec<DVec2>> = fids.iter().flat_map(|id| &strips[id]).collect();
+        // sampled: no point in two pieces
+        let mut twice = 0;
+        let mut covered = 0;
+        for i in 0..400 {
+            for j in 0..240 {
+                let p = DVec2::new(-3.6 + i as f64 * 0.028, -3.6 + j as f64 * 0.03);
+                let n = pieces
+                    .iter()
+                    .filter(|q| crate::polygon::contains(q, p))
+                    .count();
+                covered += usize::from(n > 0);
+                twice += usize::from(n > 1);
+            }
+        }
+        assert!(covered > 1000, "{covered}");
+        assert!(
+            twice * 200 < covered,
+            "{twice} of {covered} points in two strips"
+        );
     }
 
     #[test]

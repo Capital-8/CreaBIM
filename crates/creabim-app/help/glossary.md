@@ -54,7 +54,7 @@
 
 **Profile**: a cross-section drawn once and used for sweeps, extrusions, columns, beams and railings. See [Profiles](profiles).
 
-**Revision cloud**: a scalloped outline on a sheet round what changed, with its revision letter. See [Sheets](sheets#revisions).
+**Revision cloud**: a scalloped outline on a sheet round what changed, with its revision letter. See [Sheets](sheets#revisions-and-the-key-plan).
 
 **Schedule**: a table of elements made from the model. See [Schedules](schedules).
 

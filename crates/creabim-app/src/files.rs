@@ -161,6 +161,9 @@ pub struct Settings {
     /// The browser folded to a rail of its groups (MU27).
     #[serde(default)]
     pub left_folded: bool,
+    /// Project time's card pinned as a strip at the browser's foot (MU101).
+    #[serde(default)]
+    pub time_pinned: bool,
     /// Properties folded to its tab column (MU27).
     #[serde(default)]
     pub right_folded: bool,
@@ -171,13 +174,23 @@ pub struct Settings {
     /// The ground grid in the 3D view, and its spacing in metres.
     pub ground_grid: bool,
     pub ground_grid_spacing: f64,
+    /// Grid lines in the 3D view (MU42): on demand, flat on the working
+    /// level; off, only a selected one shows.
+    #[serde(default)]
+    pub grids_3d: bool,
     /// The drawings' paper and the 3D background (A4-3): "theme" follows
     /// the theme (dark paper in a dark theme), "light" or "dark" always.
     /// Prints and PDFs are always on white.
     pub drawing_paper: String,
+    /// Where the buttons sit in CreaBIM's own windows: "right" (the main
+    /// button last, the default) or "left" (the main button first).
+    pub window_buttons: String,
     /// The mouse (MU19): "creabim" (left selects and boxes, middle
     /// orbits, right or Shift + middle pans) or "classic" (left orbits).
     pub navigation: String,
+    /// What rolling a wheel does in a view (issue #78): "auto" (a mouse
+    /// wheel zooms, a touchpad's two fingers pan), "zoom" or "pan".
+    pub wheel: String,
     /// How the last IFC export wrote walls, slabs and roofs: "modelled"
     /// (recommended), "joined" or "layers" (MU20).
     pub ifc_body: String,
@@ -192,12 +205,27 @@ pub struct Settings {
     /// The 3D view shows what is hidden inside walls, slabs and roofs in its
     /// own colours, faintly through what hides it.
     pub hidden_colour_3d: bool,
+    /// The ground the 3D view shows: after its works, before, or both
+    /// (the ground as it was see-through over them).
+    pub ground_3d: creabim_core::GroundState,
+    /// With both grounds shown in 3D, how solid the ground as it was is
+    /// over the works: 0 is clear, 1 hides them.
+    pub ground_3d_was: f32,
+    /// The 3D view leaves out a property's envelope (the space its rules
+    /// leave to build in).
+    pub envelope_3d_off: bool,
+    /// The property's boundary and setback lines on the ground in 3D, off.
+    #[serde(default)]
+    pub lot_lines_3d_off: bool,
     /// Guides hidden everywhere (they are kept, and come back when shown).
     pub guides_hidden: bool,
     /// How the 3D view draws: shaded, with edges, hidden line or wireframe.
     pub render_3d: crate::render3d::RenderMode,
     /// Width of the Help panel, in points.
     pub help_width: f32,
+    /// The name this computer signs project time with (empty: the
+    /// system's user name).
+    pub time_name: String,
     /// Which sections of Properties are open, by key, where it differs
     /// from how each opens at first.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -207,6 +235,9 @@ pub struct Settings {
     /// The workspace last picked, by name, and the areas as they were left.
     pub workspace: String,
     pub areas: Option<crate::areas::Node>,
+    /// The areas standing at a phase of their own (MU133).
+    #[serde(default)]
+    pub area_phases: Vec<(crate::areas::Shows, usize, u32)>,
     /// Layouts saved with *Save current layout*.
     pub workspaces: Vec<crate::areas::Workspace>,
     /// How grips look (brief 02, 2.13): a personal choice.
@@ -216,6 +247,9 @@ pub struct Settings {
     /// The grid snap's and the distance marks' spacing, micrometres. Grid
     /// snap itself always starts off.
     pub snap_spacing_um: u32,
+    /// The last two Divisions typed, newest first, to pick again (MU102).
+    #[serde(default)]
+    pub recent_divisions: Vec<u8>,
     /// Where Move, Rotate, Scale and the like show their bar: a slim pill
     /// at the top of the view, or a small palette by the pointer (MU38).
     pub edit_bar: String,
@@ -225,12 +259,67 @@ pub struct Settings {
     /// The light millimetre grid behind plans, sections and details; off,
     /// plain paper (MU40).
     pub plan_grid: bool,
+    /// A quiet colour per Properties tab group on the tab icons and the
+    /// title line's bar, as Blender's (Properties order REV04 §1b).
+    pub colour_hints: bool,
+    /// Each tool family's last tool used, by family key: its button
+    /// brings it back (tool families REV04).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub family_last: std::collections::BTreeMap<String, String>,
+    /// Family tools pinned to the tools row beside their family, by
+    /// their action id.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub family_pins: Vec<String>,
     /// The colour of what is worked on (selection, grips, ghosts): "orange",
     /// the default, or "theme" for the theme's accent (MU39).
     pub interaction: String,
     /// Edit mode's wires and corner dots, in points.
     pub edit_edge_width: f32,
     pub edit_vertex_size: f32,
+    /// The splash's quick setup answered (first-run setup, 2026-11-16).
+    pub setup_done: bool,
+    /// Where you come from: "creabim", "revit", "archicad", "autocad",
+    /// "sketchup" or "blender"; keys and the mouse follow it.
+    pub background: String,
+    /// The drawing standard for new projects: "us", "metric", "uk", or ""
+    /// before one is picked.
+    pub standard: String,
+    /// The splash at every start, as Blender's.
+    pub show_splash: bool,
+    /// Your own keys over the background's, by command ("move": "MV").
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keymap: std::collections::BTreeMap<String, String>,
+    /// The rendered 3D modes' sun: day of the year and solar hour (the
+    /// place is the project's), and the brightness in stops.
+    pub render_day: f32,
+    pub render_hour: f32,
+    pub render_ev: f32,
+    /// The sky of the rendered modes ("clear", "hazy", "overcast") and
+    /// its own light's strength, 1 as it is (Visuals REV02, Light).
+    pub render_sky: String,
+    pub render_sky_strength: f32,
+    /// The rendered modes' white balance, kelvin: 6500 is daylight.
+    pub render_white: f32,
+    /// The 3D view's lens, mm on a full-frame camera (0: its usual 29 mm),
+    /// and whether its verticals are kept straight: as left last time.
+    pub camera_lens: f32,
+    pub camera_straight: bool,
+    /// How strong each type of light fitting is in a render, by its
+    /// type's name: 1 as made (not listed), 0 off.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub render_lamps: std::collections::BTreeMap<String, f32>,
+    /// The look each display button of the 3D view shows: the one of its
+    /// family used last (Visuals REV02).
+    pub look_line: crate::render3d::RenderMode,
+    pub look_solid: crate::render3d::RenderMode,
+    pub look_style: crate::render3d::RenderMode,
+    pub look_rendered: crate::render3d::RenderMode,
+    /// Grid bubbles, levels and dimensions drawn over a Style or Rendered
+    /// look (they are left off unless asked for).
+    pub render_overlays: bool,
+    /// The size a render is made at to keep, in pixels: 0 by 0 is the 3D
+    /// view's own (Render crop REV00, decision 5).
+    pub render_size: [u32; 2],
 }
 
 impl Default for Settings {
@@ -242,35 +331,69 @@ impl Default for Settings {
             left_width: 264.0,
             right_width: 290.0,
             left_folded: false,
+            time_pinned: false,
             right_folded: false,
             single_view: false,
             single_shows_3d: true,
             ground_grid: true,
             ground_grid_spacing: 1.0,
+            grids_3d: false,
             drawing_paper: "theme".into(),
+            window_buttons: "right".into(),
             navigation: "creabim".into(),
+            wheel: "auto".into(),
             ifc_body: "modelled".into(),
             temp_dims_off: false,
             hidden_3d: vec![],
             xray: false,
+            ground_3d: creabim_core::GroundState::After,
+            ground_3d_was: 0.35,
+            envelope_3d_off: false,
+            lot_lines_3d_off: false,
             hidden_colour_3d: false,
             guides_hidden: false,
             render_3d: Default::default(),
             help_width: 400.0,
+            time_name: String::new(),
             props_open: Default::default(),
             tools_tab: 0,
             workspace: "Drawing".into(),
             areas: None,
+            area_phases: vec![],
             workspaces: vec![],
             grips: Default::default(),
             distance_marks: false,
             snap_spacing_um: 50_000,
+            recent_divisions: vec![],
             edit_bar: "top".into(),
             axis_lines: true,
             plan_grid: true,
+            colour_hints: true,
+            family_last: Default::default(),
+            family_pins: vec![],
             interaction: "orange".into(),
             edit_edge_width: 1.0,
             edit_vertex_size: 4.0,
+            setup_done: false,
+            background: "creabim".into(),
+            standard: String::new(),
+            show_splash: true,
+            keymap: Default::default(),
+            render_day: 200.0,
+            render_hour: 10.0,
+            render_ev: 0.0,
+            render_sky: "clear".into(),
+            render_sky_strength: 1.0,
+            render_white: 6500.0,
+            camera_lens: 0.0,
+            camera_straight: false,
+            render_lamps: Default::default(),
+            look_line: crate::render3d::RenderMode::HiddenLine,
+            look_solid: crate::render3d::RenderMode::Shaded,
+            look_style: crate::render3d::RenderMode::Toon,
+            look_rendered: crate::render3d::RenderMode::Realtime,
+            render_overlays: false,
+            render_size: [0, 0],
         }
     }
 }
@@ -311,6 +434,29 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
     Some(base.join("CreaBIM"))
 }
 
+/// Ask for a template file, starting where `start` is.
+pub fn pick_template(start: &Path) -> Option<String> {
+    let mut d = rfd::FileDialog::new()
+        .set_title("Apply a template's look")
+        .add_filter(
+            "CreaBIM templates and projects",
+            &["creabim-template", "creabim"],
+        );
+    if let Some(dir) = start.parent().filter(|p| p.is_dir()) {
+        d = d.set_directory(dir);
+    }
+    d.pick_file().map(|p| p.to_string_lossy().to_string())
+}
+
+/// Ask for a picture to add to the project's renders.
+pub fn pick_image() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("Add an image")
+        .add_filter("Pictures (PNG, JPEG)", &["png", "jpg", "jpeg"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
 /// Ask for a file to open with the system's own file picker.
 pub fn pick_open() -> Option<String> {
     rfd::FileDialog::new()
@@ -334,6 +480,68 @@ pub fn pick_open() -> Option<String> {
 }
 
 /// Show `dir` in the system's file browser.
+/// Show a file in the system's file browser: selected in its folder on
+/// Windows, its folder opened elsewhere.
+pub fn show_in_folder(file: &Path) -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    if cfg!(windows) {
+        let file = std::path::absolute(file).unwrap_or_else(|_| file.to_path_buf());
+        return std::process::Command::new("explorer")
+            .arg(format!("/select,{}", file.display()))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("couldn't show {}: {e}", file.display()));
+    }
+    match file.parent() {
+        Some(dir) => open_folder(dir),
+        None => Ok(()),
+    }
+}
+
+/// Pick a document to give an element, starting in the project's folder.
+pub fn pick_document(start: Option<&Path>) -> Option<String> {
+    let mut d = rfd::FileDialog::new().set_title("Add a document");
+    if let Some(s) = start {
+        d = d.set_directory(s);
+    }
+    d.add_filter(
+        "Documents",
+        &[
+            "pdf", "docx", "doc", "xlsx", "xls", "txt", "md", "dwg", "dxf", "svg", "png", "jpg",
+            "jpeg",
+        ],
+    )
+    .add_filter("Any file", &["*"])
+    .pick_file()
+    .map(|p| p.display().to_string())
+}
+
+/// Open a file with the program the system gives it.
+pub fn open_file(file: &Path) -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let mut c = if cfg!(windows) {
+        // explorer opens a file with its program, as a double-click does
+        let mut c = std::process::Command::new("explorer");
+        c.arg(file);
+        c
+    } else {
+        let mut c = std::process::Command::new(if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        });
+        c.arg(file);
+        c
+    };
+    c.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("couldn't open {}: {e}", file.display()))
+}
+
 pub fn open_folder(dir: &Path) -> Result<(), String> {
     if cfg!(test) {
         return Ok(());

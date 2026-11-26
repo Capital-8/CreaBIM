@@ -67,6 +67,7 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "parts"),
     page!("Building the model", "profiles"),
     page!("Building the model", "site"),
+    page!("Building the model", "planting"),
     page!("Building the model", "curtain-walls"),
     page!("Building the model", "types"),
     page!("Building the model", "assemblies"),
@@ -79,10 +80,12 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Building the model", "rooms"),
     page!("Building the model", "ceilings"),
     page!("Building the model", "joins"),
+    page!("Building the model", "phases"),
     page!("Views and drawings", "views"),
     page!("Views and drawings", "sections"),
     page!("Views and drawings", "view-range"),
     page!("Views and drawings", "graphic-styles"),
+    page!("Views and drawings", "render"),
     page!("Views and drawings", "visibility"),
     page!("Views and drawings", "crop-boxes"),
     page!("Views and drawings", "trace-reference"),
@@ -101,6 +104,7 @@ pub const PAGES: &[(&str, &str, &str)] = &[
     page!("Drawing aids", "guides"),
     page!("Drawing aids", "units"),
     page!("Drawing aids", "project-info"),
+    page!("Drawing aids", "project-time"),
     page!("Files and exchange", "files"),
     page!("Files and exchange", "ifc"),
     page!("Files and exchange", "blender"),
@@ -154,6 +158,32 @@ pub const IMAGES: &[(&str, &[u8])] = &[
     img!("divide-bar"),
     img!("modifiers"),
     img!("edit-mode-mass"),
+    img!("phases-plans"),
+    img!("phases-3d"),
+    img!("phases-tag"),
+    img!("phases-tab"),
+    img!("phases-element"),
+    img!("phases-mistake"),
+    img!("phases-start"),
+    img!("render-looks"),
+    img!("render-buttons"),
+    img!("render-visuals"),
+    img!("render-moods"),
+    img!("start-where"),
+    img!("start-window"),
+    img!("start-templates"),
+    img!("start-look-closer"),
+    img!("start-mine-samples"),
+    img!("start-save-template"),
+    img!("start-workspace"),
+    img!("sheets-sheet"),
+    img!("sheets-header"),
+    img!("sheets-tab"),
+    img!("sheets-viewport"),
+    img!("sheets-guides"),
+    img!("sheets-marks"),
+    img!("sheets-cloud"),
+    img!("sheets-export"),
 ];
 
 /// A page's text by id.
@@ -184,6 +214,12 @@ pub fn exists(link: &str) -> bool {
 pub fn slug(heading: &str) -> String {
     let mut out = String::new();
     for c in heading.chars().flat_map(char::to_lowercase) {
+        // an apostrophe is dropped, as GitHub does: "The view's settings"
+        // is "the-views-settings" (MU106: the link missed and the View
+        // section lost its ?)
+        if c == '\'' || c == '\u{2019}' {
+            continue;
+        }
         if c.is_alphanumeric() {
             out.push(c);
         } else if !out.is_empty() && !out.ends_with('-') {
@@ -224,6 +260,22 @@ pub fn targets(md: &str) -> (Vec<&str>, Vec<&str>) {
     (links, images)
 }
 
+/// The Help page (and section) of a move, turn, scale… while it runs, for
+/// the ? in the tool's row (MU142: their rows had no help).
+pub fn mode_page(m: crate::modal::Mode) -> &'static str {
+    use crate::modal::Mode;
+    match m {
+        Mode::Move => "move#move-by-a-base-point",
+        Mode::Rotate => "move#rotate-r",
+        Mode::Scale => "move#scale-s",
+        Mode::Mirror => "move#mirror",
+        Mode::Offset => "move#offset",
+        Mode::Grip => "move#grab-with-the-pointer-g",
+        Mode::Pull => "move#pull-p",
+        Mode::Inset => "edit-mode",
+    }
+}
+
 /// The page about a tool, as a link (`page` or `page#heading`).
 pub fn tool_page(t: Tool) -> &'static str {
     match t {
@@ -241,6 +293,7 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::ArcLength => "dimensions#arc-length",
         Tool::Tag => "tags",
         Tool::Note => "notes",
+        Tool::Symbol => "graphic-styles#symbols",
         Tool::SpotLevel => "spot-levels",
         Tool::Sketch => "sketches",
         Tool::Guide => "guides",
@@ -254,7 +307,8 @@ pub fn tool_page(t: Tool) -> &'static str {
         Tool::Object => "furniture",
         Tool::Extrusion | Tool::Sweep => "parts",
         Tool::Void => "parts#voids",
-        Tool::Terrain | Tool::Paving | Tool::Planting => "site",
+        Tool::Terrain | Tool::Pad | Tool::Paving => "site",
+        Tool::Planting => "planting",
         Tool::Room | Tool::RoomSeparator => "rooms",
         Tool::Ceiling => "ceilings",
         Tool::Callout => "details#callouts",
@@ -276,6 +330,9 @@ pub fn element_page(kind: &ElementKind) -> &'static str {
         ElementKind::Footing(_) => "footings",
         ElementKind::Part(p) if p.void => "parts#voids",
         ElementKind::Part(_) => "parts",
+        ElementKind::Site(s) if matches!(s.form, creabim_core::site::SiteForm::Plant { .. }) => {
+            "planting"
+        }
         ElementKind::Site(_) => "site",
         ElementKind::Level(_) => "levels",
         ElementKind::Grid(_) | ElementKind::GridGroup(_) => "grids",
@@ -505,6 +562,7 @@ pub const KEYS: &[Binding] = &[
     key(VIEWS, "Ctrl+P", "The sheet in front as a PDF"),
     key(VIEWS, "D", "Dimension (with nothing selected; with a selection, D shows or hides its live dimensions)"),
     key(VIEWS, "T", "Tag"),
+    key(VIEWS, "J", "Trim or extend two to a corner (Align, Corner mode)"),
     key(VIEWS, "Ctrl+OpenBracket", "Fold the project browser to a rail, or open it"),
     key(VIEWS, "Ctrl+CloseBracket", "Fold Properties to its tabs, or open it"),
     key(VIEWS, "Tab", "Object mode / Edit mode (with several things under the pointer: the next of them)"),
@@ -558,9 +616,13 @@ pub const KEYS: &[Binding] = &[
     key(SELECT, "Shift+H", "Show only the selection"),
     key(SELECT, "Alt+H", "Show everything again"),
     key(EDIT, "M", "Move by a base point"),
+    key(EDIT, "P", "Pull the face under the pointer out or in"),
     key(EDIT, "G", "Grab: move with the pointer"),
+    key(EDIT, "L", "In Edit mode on a mass: pick the whole piece"),
+    key(EDIT, "I", "Inset the picked face of a shape: move or type the thickness, Ctrl sets a depth, O makes it a rim outside the face"),
     key(EDIT, "R", "Rotate"),
     key(EDIT, "S", "Scale"),
+    key(EDIT, "Shift+S", "Stretch: a box over corners and ends, then move them"),
     key(EDIT, "Shift+D", "Duplicate and move the copy"),
     typed(
         EDIT,
@@ -768,7 +830,7 @@ pub fn data_url_for(path: &str, dark: bool) -> Option<String> {
     Some(format!("data:{mime};base64,{}", base64(bytes)))
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for c in bytes.chunks(3) {
@@ -878,6 +940,25 @@ mod tests {
         }
     }
 
+    /// While a move, turn, scale… runs, its row's ? opens its own section
+    /// (MU142: those rows had no help).
+    #[test]
+    fn every_move_turn_and_scale_has_a_page() {
+        use crate::modal::Mode;
+        for m in [
+            Mode::Move,
+            Mode::Rotate,
+            Mode::Scale,
+            Mode::Mirror,
+            Mode::Offset,
+            Mode::Grip,
+            Mode::Pull,
+            Mode::Inset,
+        ] {
+            assert!(exists(mode_page(m)), "{m:?}: {}", mode_page(m));
+        }
+    }
+
     #[test]
     fn every_tool_has_a_few_lines_of_quick_help() {
         for t in Tool::ALL {
@@ -916,6 +997,40 @@ mod tests {
         assert_eq!(slug("Radius and diameter"), "radius-and-diameter");
         assert_eq!(slug("Flip, hand & swing"), "flip-hand-swing");
         assert_eq!(slug("IFC4 (.ifc)"), "ifc4-ifc");
+        assert_eq!(slug("The view's settings"), "the-views-settings");
+    }
+
+    /// Every ? on a Properties heading opens something: a link that finds
+    /// no page or heading hides the ? (MU106: View had none).
+    #[test]
+    fn every_section_help_link_has_words() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut seen = 0;
+        for f in std::fs::read_dir(&dir).unwrap() {
+            let f = f.unwrap().path();
+            if f.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).unwrap();
+            for l in text.lines().filter(|l| l.contains("prop_header(")) {
+                let Some((_, rest)) = l.rsplit_once("Some(\"") else {
+                    continue;
+                };
+                let Some((link, _)) = rest.split_once('"') else {
+                    continue;
+                };
+                if link.starts_with("say:") {
+                    continue;
+                }
+                seen += 1;
+                assert!(
+                    !quick(link).is_empty(),
+                    "{}: the ? on a heading links to {link}, which has no words",
+                    f.display()
+                );
+            }
+        }
+        assert!(seen > 20, "only {seen} links found");
     }
 
     #[test]

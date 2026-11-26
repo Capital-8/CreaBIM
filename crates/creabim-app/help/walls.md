@@ -76,7 +76,7 @@ A wall starts at its **base level** plus a **base offset**. Its **Top** is eithe
 - *Unconnected*: the wall has its own height;
 - *Up to* a level, plus a *Top offset*: the wall's height follows that level when it moves.
 
-**Attach top to roof/slab** (in *Properties* or the right-click menu) makes the top follow the underside of the roof or slab above, cut to its slope. Gable walls then stop neatly under the roof. *Detach* undoes it.
+**Attach top to roof/slab** (in *Properties* or the right-click menu) makes the top follow the underside of the roof or slab above, cut to its slope. Gable walls then stop neatly under the roof. Where a roof's lining stops at the wall's inner face, as it is built, the wall rises past it to the next layer up, so a section shows no gap. *Detach* undoes it.
 
 ## Types and layers
 

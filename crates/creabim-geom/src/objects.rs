@@ -8,10 +8,8 @@ use creabim_core::objects::{self, SymbolItem};
 use creabim_core::{Element, ElementKind, Model};
 
 /// An object's plan symbol, turned and placed (a view's table of pens by
-/// category draws it in the fine pen of small things). Objects hung above the cut plane (wall cupboards) are drawn
-/// dashed, as things overhead are; the symbols of building services (a
-/// light, a socket, a diffuser) are drawn in full wherever they are, as
-/// services drawings show them.
+/// category draws it in the fine pen of small things), dashed when it is
+/// overhead (see the module's notes).
 pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem> {
     let ElementKind::Object(o) = &e.kind else {
         return vec![];
@@ -22,7 +20,10 @@ pub fn object_plan(model: &Model, e: &Element, cut_height: f64) -> Vec<PlanItem>
     let (lo, _) = t.bounds();
     let floor = model.level(o.level).map_or(0.0, |l| l.elevation);
     let above = objects::base_z_of(model, o, t) - floor + lo.z > cut_height;
-    let pen = if above && !t.category.is_services() {
+    // what hangs from the ceiling is overhead whatever it is (Builder 2's
+    // F-07: the ceiling lights drew solid in floor plans)
+    let hung = t.mount == objects::Mount::Ceiling;
+    let pen = if above && (hung || !t.category.is_services()) {
         Pen::Hidden
     } else {
         Pen::Projection
@@ -133,9 +134,30 @@ mod tests {
                     ..
                 }
             )));
-        // a light hangs far above the cut, but its symbol is drawn in full,
-        // as are the sockets' down by the floor
-        for name in ["Ceiling light", "Double socket", "Radiator"] {
+        // a light hangs from the ceiling: overhead, dashed (Builder 2's
+        // F-07); the sockets down by the floor are drawn in full
+        let light = m
+            .iter()
+            .find(|e| {
+                e.name.starts_with("Ceiling light") && matches!(e.kind, ElementKind::Object(_))
+            })
+            .expect("a ceiling light");
+        let lit: Vec<&PlanItem> = plan.items.iter().filter(|i| i.id() == light.id).collect();
+        assert!(lit.len() >= 3);
+        assert!(lit.iter().all(|i| matches!(
+            i,
+            PlanItem::Polygon {
+                pen: Pen::Hidden,
+                ..
+            } | PlanItem::Line {
+                pen: Pen::Hidden,
+                ..
+            } | PlanItem::Arc {
+                pen: Pen::Hidden,
+                ..
+            }
+        )));
+        for name in ["Double socket", "Radiator"] {
             let e = m
                 .iter()
                 .find(|e| e.name.starts_with(name) && matches!(e.kind, ElementKind::Object(_)))

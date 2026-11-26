@@ -91,6 +91,7 @@ fn text_in(
     mm: f64,
 ) -> PlanItem {
     PlanItem::Text {
+        angle: 0.0,
         id,
         at,
         text: text.to_string(),
@@ -450,6 +451,25 @@ pub fn callout(
     parts: &MarkerParts,
     mm: f64,
 ) -> Vec<PlanItem> {
+    let (mut out, corner, top_left) = callout_box(id, lo, hi, round, parts, mm);
+    let c = (lo + hi) / 2.0;
+    let rad = (hi - lo).abs().min_element() / 2.0;
+    callout_head(
+        &mut out, id, number, sheet, lo, hi, c, rad, corner, top_left, round, parts, mm,
+    );
+    out
+}
+
+/// A callout's box (a circle when `round`), edged in `parts`' way, and
+/// the corner a head's leader starts from and its top left.
+pub fn callout_box(
+    id: ElementId,
+    lo: DVec2,
+    hi: DVec2,
+    round: bool,
+    parts: &MarkerParts,
+    mm: f64,
+) -> (Vec<PlanItem>, DVec2, DVec2) {
     let mut out = vec![];
     let (line_pen, arc_pen) = match parts.edge {
         CalloutEdge::Dashed => (Pen::Hidden, Pen::Symbol),
@@ -516,6 +536,25 @@ pub fn callout(
             DVec2::new(lo.x, hi.y),
         )
     };
+    (out, corner, top_left)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn callout_head(
+    out: &mut Vec<PlanItem>,
+    id: ElementId,
+    number: &str,
+    sheet: &str,
+    _lo: DVec2,
+    hi: DVec2,
+    c: DVec2,
+    rad: f64,
+    corner: DVec2,
+    top_left: DVec2,
+    round: bool,
+    parts: &MarkerParts,
+    mm: f64,
+) {
     let r = BUBBLE * mm;
     if parts.head == MarkerHead::TextOnly {
         // a dark tab on the top edge: "3 · A501" in white
@@ -564,7 +603,6 @@ pub fn callout(
         });
         out.extend(head(id, at, number, sheet, None, parts, mm));
     }
-    out
 }
 
 /// In a plan's items, the section and elevation marks redrawn with

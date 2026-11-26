@@ -25,9 +25,11 @@ They work in plans, sections and elevations.
 
 **Guides** are construction lines kept in the model: dashed, snapped to, never printed or exported.
 
-- Pick the **Guide** tool and click two points for a guide through them.
-- Or click an edge, then click where its parallel guide goes.
+- Pick the **Guide** tool and click two points for a guide through them. After the first click you can type a length instead, and `Tab` to an angle, as when drawing a wall; `Enter` places it.
+- Or click an edge, then click where its parallel guide goes. Click the edge or guide anywhere along it: the copy keeps its direction and goes through where you click next. To set how far across it goes, type the distance, such as `900` or `3'`, and press `Enter`; it goes to the side the pointer is on.
 
 In 3D, guides go on the [workplane](sketches#the-workplane); in a section, on the section plane.
+
+A guide is selected and moved like anything else: click it, or drag a box over it, then drag it, in plans and in 3D alike. In 3D, a box takes a guide by the line between its two points, and the drag holds it where the pointer meets the guide's level. Guides switched off in 3D take neither.
 
 *View › Guides* (`Shift+G`) hides all guides in every view without deleting them.

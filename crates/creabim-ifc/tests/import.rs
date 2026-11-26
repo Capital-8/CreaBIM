@@ -371,7 +371,7 @@ fn revit_ifc2x3_from_web_ifc() {
     let c = counts(m);
     assert_eq!(r.schema, "IFC2X3");
     assert_eq!(c["IfcBuildingStorey"], 2);
-    assert_eq!(c["IfcWall"], 17, "{c:?}");
+    assert_eq!(c["IfcWall"], 16, "{c:?}");
     assert_eq!(c["IfcColumn"], 42);
     assert_eq!(c["IfcBeam"], 43);
     assert_eq!(c["IfcSlab"], 9);
@@ -380,7 +380,30 @@ fn revit_ifc2x3_from_web_ifc() {
         .iter()
         .filter(|e| matches!(e.kind, ElementKind::Wall(_)))
         .count();
-    assert_eq!(walls, 17, "every wall is native");
+    assert_eq!(
+        walls, 16,
+        "every wall native but the one with a sloped clip"
+    );
+    // that one: clipped by a plane leaning 1.7 degrees, its top runs from
+    // 4.380 to 4.523 m (IfcOpenShell); it comes in with its clip, as a
+    // mesh, not as a native wall at its full height (owner 2026-11-23)
+    let id = creabim_core::ElementId::from_ifc_guid("138N8vYxXFrRrF$8SbSJG_").unwrap();
+    let e = m.get(id).unwrap();
+    assert_eq!(e.ifc_class(), "IfcWallStandardCase");
+    let ElementKind::FreeMesh(f) = &e.kind else {
+        panic!("came in as {:?}", e.kind)
+    };
+    let top = f.evaluated().mesh;
+    let z: Vec<f64> = top.vertices.iter().map(|v| v.z + f.origin.z).collect();
+    let (lo, hi) = z
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), z| (a.min(*z), b.max(*z)));
+    let level = f
+        .level
+        .and_then(|l| m.level(l))
+        .map_or(0.0, |l| l.elevation);
+    assert!((lo + level - 3.5).abs() < 1e-3, "base {}", lo + level);
+    assert!((hi + level - 4.523).abs() < 1e-3, "top {}", hi + level);
 
     let wall = |guid: &str| {
         let id = creabim_core::ElementId::from_ifc_guid(guid).unwrap();
@@ -433,4 +456,29 @@ fn bonsai_mapped_face_sets() {
             assert!((f.mesh.volume() - 8.0).abs() < 1e-9, "{}", e.name);
         }
     }
+}
+
+/// The fidelity lines the Activity log shows after an import (owner
+/// 2026-11-23), on the bench's hand-written file, whose contents are known:
+/// what came in and what didn't, what is kept to go back out, and the
+/// data not read yet.
+#[test]
+fn an_import_says_how_faithfully_it_came_in() {
+    let r = import_ifc(&fixture("bench/carried-data.ifc")).unwrap();
+    assert_eq!(
+        r.fidelity,
+        [
+            "7 of 8 objects came in: 6 as CreaBIM elements, 1 as meshes; 1 left out (1 IfcAnnotation)",
+            "kept to go back out: 4 of 5 property sets (8 values), 4 of 4 classification references (the rest are on what did not come in, or CreaBIM's own)",
+            "kept to go back out: 16 relationships CreaBIM doesn't model, with 2 openings, 1 drawing, 7 documents that did not come in",
+            "groups: 1 of 2 kept; 1 holds only what did not come in (drawings and the like)",
+        ]
+    );
+    // a file with boolean cuts says how many were made
+    let r = import_ifc(&fixture("thirdparty/web-ifc-example.ifc")).unwrap();
+    assert!(
+        r.fidelity.iter().any(|l| l == "boolean cuts: 2 made"),
+        "{:?}",
+        r.fidelity
+    );
 }

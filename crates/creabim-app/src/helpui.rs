@@ -68,6 +68,9 @@ impl CreaBimApp {
                 .icon("log")
                 .hint("The activity log in a view of its own, problems in red"),
             Item::Separator,
+            Item::new("app.splash", "Splash screen")
+                .icon("image")
+                .hint("The start screen: new, open, recent projects, and your setup"),
             Item::new("help:about", "About CreaBIM").icon("info"),
         ]
     }
@@ -144,7 +147,7 @@ impl CreaBimApp {
             && !key.starts_with("visibility.")
             && !key.starts_with("view.")
             && crate::props::box_open(ui);
-        let (resp, help_at) = crate::props::header(ui, title, open, indent);
+        let (resp, help_at) = crate::props::header_keyed(ui, title, open, indent, key);
         let resp = resp.on_hover_text(if open {
             "Click to fold this section"
         } else {
@@ -183,6 +186,8 @@ impl CreaBimApp {
         if lines.is_empty() {
             return false;
         }
+        // the ringed ? (MU60: the quiet one "doesn't signal a button"): one
+        // look for the help of every folding section
         let r = ui
             .add(
                 egui::Button::new(egui::RichText::new("?").size(11.0).strong())

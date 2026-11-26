@@ -17,6 +17,10 @@ pub(super) struct ImportReport {
     pub counts: Vec<(String, usize, usize)>,
     pub summary: Vec<String>,
     pub details: Vec<String>,
+    /// For each of `details`, the index of its note in `summary`.
+    pub detail_notes: Vec<usize>,
+    /// How long the file took to open, when it was timed.
+    pub secs: Option<f32>,
 }
 
 impl ImportReport {
@@ -28,25 +32,58 @@ impl ImportReport {
             counts: class_counts(&imported.model),
             summary: imported.warnings.clone(),
             details: imported.details.clone(),
+            detail_notes: imported.detail_notes.clone(),
+            secs: None,
         }
     }
 
-    /// The report as plain text, as copied.
+    /// Each note with the elements it names, in the notes' order; elements
+    /// whose note isn't known come last, under no note.
+    pub fn grouped(&self) -> Vec<(Option<&str>, Vec<&str>)> {
+        let mut out: Vec<(Option<&str>, Vec<&str>)> = self
+            .summary
+            .iter()
+            .map(|s| (Some(s.as_str()), Vec::new()))
+            .collect();
+        let mut loose = Vec::new();
+        for (i, d) in self.details.iter().enumerate() {
+            match self.detail_notes.get(i).and_then(|n| out.get_mut(*n)) {
+                Some(g) => g.1.push(d.as_str()),
+                None => loose.push(d.as_str()),
+            }
+        }
+        if !loose.is_empty() {
+            out.push((None, loose));
+        }
+        out
+    }
+
+    /// "in 3.6 s", or nothing when it wasn't timed.
+    pub fn took(&self) -> String {
+        self.secs
+            .map(|s| format!(" in {:.1} s", s.max(0.1)))
+            .unwrap_or_default()
+    }
+
+    /// The report as plain text, as copied: each note, then the elements
+    /// it names, indented under it.
     pub fn text(&self) -> String {
-        let mut out = format!("Import of {} ({})\n\nElements:\n", self.file, self.schema);
+        let mut out = format!(
+            "Import of {} ({}){}\n\nElements:\n",
+            self.file,
+            self.schema,
+            self.took()
+        );
         for (class, n, meshes) in &self.counts {
             out.push_str(&format!("  {class}: {}\n", count_label(*n, *meshes)));
         }
-        if !self.summary.is_empty() {
+        if !self.summary.is_empty() || !self.details.is_empty() {
             out.push_str("\nNotes:\n");
-            for s in &self.summary {
-                out.push_str(&format!("  {s}\n"));
-            }
-        }
-        if !self.details.is_empty() {
-            out.push_str("\nElement by element:\n");
-            for d in &self.details {
-                out.push_str(&format!("  {d}\n"));
+            for (note, items) in self.grouped() {
+                out.push_str(&format!("  {}\n", note.unwrap_or("Other elements")));
+                for d in items {
+                    out.push_str(&format!("      {d}\n"));
+                }
             }
         }
         out
@@ -97,7 +134,13 @@ impl CreaBimApp {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new(format!("{} ({})", report.file, report.schema)).strong(),
+                    egui::RichText::new(format!(
+                        "{} ({}){}",
+                        report.file,
+                        report.schema,
+                        report.took()
+                    ))
+                    .strong(),
                 );
                 ui.horizontal_wrapped(|ui| {
                     for (class, n, meshes) in &report.counts {
@@ -110,30 +153,35 @@ impl CreaBimApp {
                 if report.summary.is_empty() {
                     ui.label("Everything came in as it was written.");
                 }
-                for s in &report.summary {
-                    ui.label(format!("• {s}"));
-                }
-                if !report.details.is_empty() {
-                    ui.add_space(6.0);
-                    let title = format!("Element by element ({}):", report.details.len());
-                    ui.label(egui::RichText::new(title).strong());
-                    egui::ScrollArea::vertical()
-                        .max_height(260.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            for d in &report.details {
-                                let text = egui::RichText::new(d).small();
-                                ui.add(egui::Label::new(text).selectable(true));
+                // each note, folding open on the elements it names
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (i, (note, items)) in report.grouped().into_iter().enumerate() {
+                            let note = note.unwrap_or("Other elements");
+                            if items.is_empty() {
+                                ui.label(format!("• {note}"));
+                                continue;
                             }
-                        });
-                }
+                            egui::CollapsingHeader::new(note)
+                                .id_salt(("import-note", i))
+                                .show(ui, |ui| {
+                                    for d in items {
+                                        let text = egui::RichText::new(d).small();
+                                        ui.add(egui::Label::new(text).selectable(true));
+                                    }
+                                });
+                        }
+                    });
                 ui.add_space(6.0);
                 crate::props::flow(ui, |ui| {
                     copy = ui
                         .button("Copy report")
-                        .on_hover_text("Copy the whole report as text")
+                        .on_hover_text(
+                            "Copy the whole report as text. File › Import report shows it again",
+                        )
                         .clicked();
-                    ui.label(egui::RichText::new("File › Import report shows it again.").weak());
                 });
             });
         if copy {
@@ -143,5 +191,57 @@ impl CreaBimApp {
         if !open {
             report.open = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_report_lists_each_element_under_the_note_it_explains() {
+        let r = ImportReport {
+            file: "a.ifc".into(),
+            schema: "IFC2X3".into(),
+            summary: vec![
+                "walls as meshes (×2)".into(),
+                "spaces left out".into(),
+                "doors clipped".into(),
+            ],
+            details: vec![
+                "IfcWall 'a' sloped".into(),
+                "IfcDoor 'd' clipped".into(),
+                "IfcWall 'b' notched".into(),
+            ],
+            detail_notes: vec![0, 2, 0],
+            secs: Some(3.64),
+            ..Default::default()
+        };
+        let g = r.grouped();
+        assert_eq!(g[0].1, ["IfcWall 'a' sloped", "IfcWall 'b' notched"]);
+        assert!(g[1].1.is_empty());
+        assert_eq!(g[2].1, ["IfcDoor 'd' clipped"]);
+        let t = r.text();
+        assert!(t.starts_with("Import of a.ifc (IFC2X3) in 3.6 s"), "{t}");
+        let walls = t.find("walls as meshes").unwrap();
+        let b = t.find("IfcWall 'b' notched").unwrap();
+        let spaces = t.find("spaces left out").unwrap();
+        assert!(
+            walls < b && b < spaces,
+            "the second wall sits under its note:\n{t}"
+        );
+        assert!(!t.contains("Element by element"));
+    }
+
+    #[test]
+    fn elements_with_no_known_note_still_come_out() {
+        let r = ImportReport {
+            summary: vec!["x".into()],
+            details: vec!["IfcWall 'w'".into()],
+            ..Default::default()
+        };
+        let g = r.grouped();
+        assert_eq!(g.last().unwrap().0, None);
+        assert!(r.text().contains("IfcWall 'w'"));
     }
 }

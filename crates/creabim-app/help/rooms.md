@@ -11,7 +11,7 @@ A **room** is a space on a level: the study, the hall, the kitchen. It has a nam
 The tool also has the slab tool's ways of drawing, picked with `1`–`4` or in the tool options:
 
 - **Fill room (3)** is the click inside walls described above. The room keeps only its point; its outline is found again from the walls every time it is drawn, so it **follows the walls**.
-- **Polygon (1)**, **Rectangle (2)** and **From sketch (4)** draw the room's outline yourself. Use these for a terrace, a loggia or a balcony, where no walls close the space off. A drawn room keeps its outline and doesn't follow the walls; *Follow the walls instead* in *Properties* turns it back into one that does.
+- **Draw by** *Polygon* (`1`), *Rectangle* (`2`) or *From sketch* (`4`) draws the room's outline yourself. Use these for a terrace, a loggia or a balcony, where no walls close the space off. A drawn room keeps its outline and doesn't follow the walls; *Follow the walls instead* in *Properties* turns it back into one that does.
 
 Clicking where a room already is selects that room instead of making a second one.
 

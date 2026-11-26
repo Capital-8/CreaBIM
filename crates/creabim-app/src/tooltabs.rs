@@ -23,6 +23,8 @@ pub enum Entry {
         icon: &'static str,
         hint: &'static str,
     },
+    /// A family of tools behind one split button (tool families REV04).
+    Family(crate::families::Family),
     /// A divider between groups.
     Sep,
 }
@@ -34,7 +36,8 @@ pub const ALWAYS: [Tool; 2] = [Tool::Select, Tool::Align];
 
 /// What tab `tab` holds.
 pub fn entries(tab: usize) -> Vec<Entry> {
-    use Entry::{Sep, Tool as T};
+    use crate::families::Family as F;
+    use Entry::{Family as Fam, Sep, Tool as T};
     let act = |id, label, icon, hint| Entry::Act {
         id,
         label,
@@ -42,6 +45,8 @@ pub fn entries(tab: usize) -> Vec<Entry> {
         hint,
     };
     match tab {
+        // tool families REV04, Option A (MU57): single tools stay single;
+        // related ones share a split button, the last one used on top
         0 => vec![
             T(Tool::Wall),
             act(
@@ -57,34 +62,28 @@ pub fn entries(tab: usize) -> Vec<Entry> {
             T(Tool::Slab),
             T(Tool::Shaft),
             T(Tool::Roof),
-            T(Tool::Stair),
-            T(Tool::Railing),
             Sep,
-            T(Tool::Column),
-            T(Tool::Beam),
-            T(Tool::Footing),
-            Sep,
-            T(Tool::Object),
+            // shapes (MU43): draw, then Pull. Sketch, Mass and Extrusion
+            // are in Create > Earlier tools; Sweep and Void stay until
+            // Follow and Cut with shape replace them
+            Fam(F::Drafting),
             act(
-                "catalogue",
-                "Catalogue",
-                "sofa",
-                "Furniture and fixtures to place, and your own from Blender, FreeCAD or glTF",
+                "cmd:Pull",
+                "Pull",
+                "pull",
+                "Pull the face under the pointer out or in; a drawn outline becomes a solid (P)",
             ),
-            Sep,
-            T(Tool::Mass),
-            T(Tool::Extrusion),
             T(Tool::Sweep),
             T(Tool::Void),
-            T(Tool::Sketch),
             Sep,
-            T(Tool::Room),
-            T(Tool::RoomSeparator),
+            Fam(F::Structure),
+            Fam(F::Stairs),
+            Fam(F::Furnishing),
+            Sep,
+            Fam(F::Rooms),
             T(Tool::Ceiling),
             Sep,
-            T(Tool::Terrain),
-            T(Tool::Paving),
-            T(Tool::Planting),
+            Fam(F::Site),
         ],
         1 => vec![
             T(Tool::Dimension),
@@ -102,6 +101,7 @@ pub fn entries(tab: usize) -> Vec<Entry> {
                 "Tag every door, window, fixture and room in the view that has no tag yet (Shift+T)",
             ),
             T(Tool::Note),
+            T(Tool::Symbol),
             Sep,
             T(Tool::Detail),
             T(Tool::Callout),
@@ -111,12 +111,6 @@ pub fn entries(tab: usize) -> Vec<Entry> {
                 "Annotation styles",
                 "anno-styles",
                 "Named styles for dimensions, notes and tags: text, ends, tag shape, colour",
-            ),
-            act(
-                "marks",
-                "Mark numbering",
-                "hash",
-                "How doors, windows and other elements are numbered; renumber, and check for marks used twice",
             ),
         ],
         2 => vec![
@@ -155,9 +149,9 @@ pub fn entries(tab: usize) -> Vec<Entry> {
             ),
             act(
                 "templates",
-                "Sheet templates",
+                "Masters",
                 "sheet-template",
-                "Title blocks for sheets",
+                "Title blocks, frames and paper for sheets, in the Masters view",
             ),
         ],
         _ => vec![
@@ -178,6 +172,15 @@ pub fn entries(tab: usize) -> Vec<Entry> {
                 "info",
                 "Name, client, address, site and building: they fill the title blocks and the IFC export",
             ),
+            // project rules, with the other project set-up (MU66: it was on
+            // Annotate, where tags only show the marks)
+            act(
+                "marks",
+                "Mark numbering",
+                // not the Grid tool's # beside it: the tag, as its menu entry
+                "tag",
+                "How doors, windows and other elements are numbered; renumber, and check for marks used twice",
+            ),
 
             act(
                 "types.browser",
@@ -196,6 +199,18 @@ pub fn entries(tab: usize) -> Vec<Entry> {
                 "Materials",
                 "palette",
                 "Add, edit, delete and assign the project's materials",
+            ),
+            act(
+                "mat.patterns",
+                "Patterns",
+                "brick-wall",
+                "Hatches and surface patterns: brick bonds, tiles, boards and tiles you draw",
+            ),
+            act(
+                "libraries",
+                "Libraries",
+                "library",
+                "Every library in one place: patterns, symbols, line styles, palettes, materials, profiles, masters",
             ),
             act(
                 "graphicstyles",
@@ -221,6 +236,26 @@ pub fn entries(tab: usize) -> Vec<Entry> {
                 "walls-overlap",
                 "Find walls running along each other and overlapping: the plan merges them, but in 3D they stay two solids. Merge keeps one wall covering both",
             ),
+            // the model checks, moved here from the Create menu (tool
+            // families REV04, decision 5)
+            act(
+                "check.doorways",
+                "Check doorways",
+                "door-open",
+                "List and select the furniture and fixtures standing in a doorway, a window or a door's swing",
+            ),
+            act(
+                "check.stairs",
+                "Check stairs",
+                "stair",
+                "List and select the stairs failing a check of their rule set: riser, going, winders, width, landings, handrails and guards",
+            ),
+            act(
+                "check.layers",
+                "Check layer joins",
+                "layers",
+                "List and select the walls with a layer held back from a join (a gap) or run on into the wall it meets (an overlap)",
+            ),
             Sep,
             Entry::Menu {
                 key: "tab:ifc",
@@ -234,7 +269,12 @@ pub fn entries(tab: usize) -> Vec<Entry> {
 
 /// Does tab `tab` show `tool`?
 pub fn holds(tab: usize, tool: Tool) -> bool {
-    ALWAYS.contains(&tool) || entries(tab).contains(&Entry::Tool(tool))
+    ALWAYS.contains(&tool)
+        || entries(tab).iter().any(|e| match e {
+            Entry::Tool(t) => *t == tool,
+            Entry::Family(f) => f.holds(tool),
+            _ => false,
+        })
 }
 
 /// The first tab that shows `tool`.
@@ -257,6 +297,7 @@ mod tests {
                     Entry::Act { icon, label, .. } | Entry::Menu { icon, label, .. } => {
                         (icon, label.to_string())
                     }
+                    Entry::Family(f) => (f.first().icon, f.label().to_string()),
                     Entry::Sep => continue,
                 };
                 if let Some((_, other)) = seen.iter().find(|(i, _)| *i == icon) {
@@ -270,6 +311,18 @@ mod tests {
     #[test]
     fn every_tool_is_on_a_tab() {
         for t in Tool::ALL {
+            // the shape tools took their place (MU43): they are in
+            // Create > Earlier tools for one release, on no tab
+            // (the Drafting family's Line, Arc, Rectangle and Circle run the
+            // drawing tool, so it is on the Model tab through them)
+            if t == Tool::Sketch {
+                assert!(holds(0, t));
+                continue;
+            }
+            if matches!(t, Tool::Mass | Tool::Extrusion | Tool::Pad) {
+                assert!(!(0..TABS.len()).any(|tab| holds(tab, t)));
+                continue;
+            }
             assert!(
                 (0..TABS.len()).any(|tab| holds(tab, t)),
                 "{} is on no tab",

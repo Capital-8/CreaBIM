@@ -27,6 +27,10 @@
           "$ref": "#/$defs/DisplayUnits",
           "description": "How the project shows and takes lengths (the model is metres whatever this says)."
         },
+        "datum": {
+          "type": "number",
+          "description": "The site datum: how high the project's zero stands above sea level, in metres whatever `units` says. Site levels are written above it."
+        },
         "materials": {
           "type": "array",
           "items": { "$ref": "#/$defs/Material" }
@@ -309,7 +313,7 @@
     },
     "Frame": {
       "type": "object",
-      "description": "How a door or window is built inside its opening.",
+      "description": "How a door or window is built inside its opening: a frame round its outline, and inside it a grid of cells, each a fixed light or a panel that opens.",
       "properties": {
         "width": {
           "type": "number",
@@ -321,20 +325,257 @@
           "description": "Depth of the frame through the wall.",
           "default": 0.1
         },
+        "outline": {
+          "$ref": "#/$defs/Outline",
+          "description": "The opening's shape.",
+          "default": "rectangle"
+        },
+        "rise": {
+          "type": "number",
+          "description": "A segmental arch's rise from its springing to its crown, or a raked head's fall from its start to its end (negative: it falls towards the start), in metres. Not used by the other outlines.",
+          "default": 0.0
+        },
+        "leaf": {
+          "$ref": "#/$defs/LeafStyle",
+          "description": "What a door's leaves are made as.",
+          "default": "flush"
+        },
+        "fittings": {
+          "$ref": "#/$defs/GlassFittings",
+          "description": "How an `all-glass` leaf is held.",
+          "default": "patch"
+        },
+        "leaf_panes_across": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "A `french` or `slim-steel` leaf's panes across, each leaf (none: as `leaf_panes_up` says, or about 300 mm wide each, 400 for slim steel)."
+        },
+        "leaf_panes_up": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Its panes up (none: about 360 mm high each, 450 for slim steel). Set both or neither."
+        },
+        "lining": {
+          "type": "number",
+          "description": "A lining board's thickness on the reveal, room side (0: none).",
+          "default": 0.0
+        },
+        "architrave": {
+          "type": "number",
+          "description": "An architrave's face width round the opening, room side (0: none).",
+          "default": 0.0
+        },
+        "threshold": {
+          "type": "number",
+          "description": "A threshold's height under a door (0: none).",
+          "default": 0.0
+        },
+        "fire_rating": {
+          "type": "string",
+          "description": "Declared fire resistance, information only: \"FD30\", \"EI 30\"."
+        },
+        "acoustic_rating": {
+          "type": "string",
+          "description": "Declared sound reduction, information only: \"Rw 32 dB\"."
+        },
+        "security_rating": {
+          "type": "string",
+          "description": "Declared security class, information only: \"RC2\"."
+        },
+        "u_value": {
+          "type": "number",
+          "description": "Declared thermal transmittance, W/m²K, information only."
+        },
+        "accessible": {
+          "type": "boolean",
+          "description": "Declared suitable for people with disabilities.",
+          "default": false
+        },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Track" },
+          "description": "The grid's columns from the opening's start (none: one)."
+        },
+        "rows": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Track" },
+          "description": "The grid's rows from the bottom (none: one)."
+        },
+        "cells": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Cell" },
+          "description": "The cells, row by row from the bottom row, each row from the opening's start. None: a door's one hinged leaf or a window's one fixed light, or what `operation` describes."
+        },
+        "operation": {
+          "$ref": "#/$defs/Operation",
+          "description": "Before cells: how it opens, read only when `cells` is empty."
+        },
+        "active_share": {
+          "type": "number",
+          "description": "Before cells: a pair's active leaf share of the clear width."
+        },
+        "panels": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Before cells: a multi-panel slider's panels."
+        },
+        "fixed": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "description": "Before cells: a multi-panel slider's fixed panels, from 1."
+        },
         "panes_across": {
           "type": "integer",
           "minimum": 0,
-          "description": "Window panes side by side.",
+          "description": "Before cells: window panes side by side."
+        },
+        "panes_up": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Before cells: window panes one above the other."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Outline": {
+      "type": "string",
+      "description": "An opening's shape in its wall.",
+      "enum": ["rectangle", "segmental", "round", "raked"]
+    },
+    "LeafStyle": {
+      "type": "string",
+      "description": "What a door's leaves are made as.",
+      "enum": [
+        "flush",
+        "panelled",
+        "glazed",
+        "part-glazed",
+        "louvred",
+        "vision-panel",
+        "all-glass",
+        "french",
+        "slim-steel"
+      ]
+    },
+    "GlassFittings": {
+      "type": "string",
+      "description": "How an all glass leaf is held.",
+      "enum": ["patch", "bottom-rail", "rails"]
+    },
+    "Track": {
+      "type": "object",
+      "description": "A column or row of an opening's grid.",
+      "properties": {
+        "share": {
+          "type": "number",
+          "description": "Its share of the clear width or height, relative to the others ([1, 1] splits it equally).",
+          "default": 1.0
+        },
+        "bar": {
+          "type": "boolean",
+          "description": "A mullion or transom between it and the one before.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Cell": {
+      "type": "object",
+      "description": "One cell of an opening's grid.",
+      "properties": {
+        "mechanism": {
+          "$ref": "#/$defs/Mechanism",
+          "description": "How it opens.",
+          "default": "fixed"
+        },
+        "hand": {
+          "type": "boolean",
+          "description": "Hinged (or sliding) towards the opening's end, not its start.",
+          "default": false
+        },
+        "flipped": {
+          "type": "boolean",
+          "description": "Opens to the other side from its opening's own: from the side a door opens to, or the outside a window faces.",
+          "default": false
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Has the handle: the leaf opened first in a pair.",
+          "default": false
+        },
+        "track": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Which track a sliding panel runs on (0 or 1).",
+          "default": 0
+        },
+        "display": {
+          "$ref": "#/$defs/CellDisplay",
+          "description": "How drawings show it.",
+          "default": "convention"
+        },
+        "panes_across": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Glass panes side by side, split by glazing bars.",
           "default": 1
         },
         "panes_up": {
           "type": "integer",
           "minimum": 0,
-          "description": "Window panes one above the other.",
+          "description": "Glass panes one above the other.",
+          "default": 1
+        },
+        "across": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many columns it spans from its own, as a transom light over the whole opening; the places it covers are not cells of their own.",
           "default": 1
         }
       },
       "additionalProperties": false
+    },
+    "Mechanism": {
+      "type": "string",
+      "description": "How a cell opens.",
+      "enum": [
+        "fixed",
+        "hinged",
+        "top-hung",
+        "bottom-hung",
+        "louvred",
+        "surface-sliding",
+        "pocket",
+        "sliding",
+        "pivot",
+        "centre-pivot",
+        "double-action",
+        "folding",
+        "tilt-turn",
+        "vertical-sliding",
+        "horizontal-pivot",
+        "sectional",
+        "rolling",
+        "revolving"
+      ]
+    },
+    "CellDisplay": {
+      "type": "string",
+      "description": "How drawings show a cell.",
+      "enum": ["convention", "closed", "open"]
+    },
+    "Operation": {
+      "type": "string",
+      "description": "How a door or window opened before cells.",
+      "enum": [
+        "standard",
+        "double-swing",
+        "surface-sliding",
+        "surface-sliding-pair",
+        "pocket",
+        "pocket-pair",
+        "multi-slide"
+      ]
     },
     "Screen": {
       "type": "object",
@@ -542,7 +783,7 @@
     },
     "Opening": {
       "type": "object",
-      "description": "A door, window or bare hole in a wall, placed by its distance along the wall from the wall's start.",
+      "description": "A door, window or bare hole in a wall, placed by its distance along the wall from the wall's start; or a roof window, placed in plan on its roof.",
       "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
@@ -578,6 +819,17 @@
           "type": "boolean",
           "description": "A door opening to the wall's exterior; a window facing its interior.",
           "default": false
+        },
+        "roof_at": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "A roof window's centre in plan. With it, `wall` is the id of the roof the window is set in, its width runs across the slope and its height up it, and `offset`, `centre` and `sill` are not used."
+        },
+        "arrangement": {
+          "$ref": "#/$defs/Arrangement",
+          "description": "Windows that make one thing together: side by side in a ribbon, round a corner, in a bay or a bow. Left out: on its own."
         }
       },
       "required": ["id", "kind", "wall"],
@@ -587,6 +839,60 @@
       "type": "string",
       "description": "What an opening is.",
       "enum": ["door", "window", "hole"]
+    },
+    "Arrangement": {
+      "type": "object",
+      "description": "How a window stands with others. Each keeps its own frame; the windows of one group share its number.",
+      "properties": {
+        "kind": { "$ref": "#/$defs/ArrangementKind" },
+        "group": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The group's number, the same for every window in it."
+        },
+        "corner_start": {
+          "type": "boolean",
+          "description": "Its end at the wall's start reaches into the corner there.",
+          "default": false
+        },
+        "corner_end": {
+          "type": "boolean",
+          "description": "Its end at the wall's end reaches into the corner there.",
+          "default": false
+        },
+        "joint": {
+          "$ref": "#/$defs/CornerJoint",
+          "description": "How it meets the window round the corner.",
+          "default": "post"
+        },
+        "left_start": {
+          "type": "boolean",
+          "description": "At its start's corner the other wall runs off to this wall's left, else to its right.",
+          "default": false
+        },
+        "left_end": {
+          "type": "boolean",
+          "description": "The same at its end's corner.",
+          "default": false
+        },
+        "angle_start": {
+          "type": "number",
+          "description": "At its start's corner, the other wall's way off as an angle (radians) from this wall's direction towards its left."
+        },
+        "angle_end": { "type": "number", "description": "The same at its end's corner." }
+      },
+      "required": ["kind", "group"],
+      "additionalProperties": false
+    },
+    "ArrangementKind": {
+      "type": "string",
+      "description": "What a group of windows makes.",
+      "enum": ["ribbon", "corner", "bay", "bow"]
+    },
+    "CornerJoint": {
+      "type": "string",
+      "description": "Where two windows meet at a corner.",
+      "enum": ["post", "glass"]
     },
     "Slab": {
       "type": "object",
@@ -769,7 +1075,7 @@
     },
     "Stair": {
       "type": "object",
-      "description": "A stair: one flight, or two with a landing between.",
+      "description": "A stair: drawn by a line (its walk line or a side), with a landing at each corner; or, without a line, one flight or two with a landing between.",
       "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
@@ -808,7 +1114,87 @@
           "default": 0.15
         },
         "landing": { "$ref": "#/$defs/Landing" },
-        "material": { "type": "string" }
+        "material": { "type": "string" },
+        "line": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "The line it was drawn by, in plan, from `start`. Its corners are landings."
+        },
+        "bends": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "How far each straight of `line` bends into an arc: degrees its direction turns through, to the left when positive."
+        },
+        "drawn": {
+          "$ref": "#/$defs/StairLine",
+          "description": "Which line of the stair `line` is.",
+          "default": "walk"
+        },
+        "flights": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StairFlight" },
+          "description": "Flights given their own number of treads; the others take the rest."
+        },
+        "landings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StairLanding" },
+          "description": "Landings made deeper than the line leaves them."
+        },
+        "turns": {
+          "$ref": "#/$defs/StairTurnKind",
+          "description": "What its turns become.",
+          "default": "landing"
+        },
+        "winders": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many winders at each turn (0: one for each 30° it turns).",
+          "default": 0
+        },
+        "turn_kinds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/StairTurn" },
+          "description": "Turns given their own kind."
+        },
+        "build": {
+          "$ref": "#/$defs/StairBuild",
+          "description": "How it is built: what carries its treads.",
+          "default": "concrete"
+        },
+        "finish": {
+          "$ref": "#/$defs/StairFinish",
+          "description": "What its treads, risers and landings are finished in."
+        },
+        "rules": {
+          "type": "string",
+          "description": "The rule set it is checked against: `comfort`, `ontario`, `us`, `uk`, or the name of one of the project's own.",
+          "default": "ontario"
+        },
+        "ramp": {
+          "type": "number",
+          "description": "A ramp, not steps: its steepest slope, rise over run (1:12 is 0.0833). A ramp's `tread` and `max_riser` follow from it."
+        },
+        "typical": {
+          "type": "string",
+          "description": "Stacked: the id of the stair at the foot of the stack this one repeats on a typical floor. It is kept the same as that stair."
+        },
+        "split": {
+          "type": "boolean",
+          "description": "A split stair: its line is one arm; the stair is that arm and its mirror image, sharing one flight twice as wide up to the first landing.",
+          "default": false
+        },
+        "up_label": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Where its UP label stands, moved from before its first flight: the offset in plan. Left out: before the flight."
+        }
       },
       "required": ["id", "level", "start", "width"],
       "additionalProperties": false
@@ -831,6 +1217,102 @@
       "type": "string",
       "description": "Left or right.",
       "enum": ["left", "right"]
+    },
+    "StairLine": {
+      "type": "string",
+      "description": "Which line of a stair it was drawn by.",
+      "enum": ["walk", "left", "right"]
+    },
+    "StairFlight": {
+      "type": "object",
+      "description": "A flight of a line stair given its own number of treads.",
+      "properties": {
+        "straight": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The straight of the line it runs along, from 0."
+        },
+        "treads": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["straight", "treads"],
+      "additionalProperties": false
+    },
+    "StairLanding": {
+      "type": "object",
+      "description": "A landing of a line stair made deeper: the flight before it stops this much sooner.",
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The turn of the line it sits at, from 0."
+        },
+        "deeper": { "type": "number" }
+      },
+      "required": ["turn", "deeper"],
+      "additionalProperties": false
+    },
+    "StairTurnKind": {
+      "type": "string",
+      "description": "What a turn of a stair becomes.",
+      "enum": ["landing", "winders"]
+    },
+    "StairTurn": {
+      "type": "object",
+      "description": "A turn of a line stair given its own kind.",
+      "properties": {
+        "turn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The turn of the line, from 0."
+        },
+        "kind": { "$ref": "#/$defs/StairTurnKind" },
+        "winders": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many winders (0: one for each 30° it turns).",
+          "default": 0
+        }
+      },
+      "required": ["turn", "kind"],
+      "additionalProperties": false
+    },
+    "StairBuild": {
+      "type": "string",
+      "description": "How a stair is built.",
+      "enum": [
+        "concrete",
+        "stepped",
+        "folded_plate",
+        "stringers",
+        "cut_stringers",
+        "spine",
+        "cantilever",
+        "post"
+      ]
+    },
+    "StairFinish": {
+      "type": "object",
+      "description": "The finishes over a stair's structure. Its risers are measured finish to finish; the structure sits the tread finish lower.",
+      "properties": {
+        "tread": {
+          "type": "number",
+          "description": "The finish on each tread, landing and winder: its thickness.",
+          "default": 0.0
+        },
+        "tread_material": { "type": "string", "description": "A material id." },
+        "riser": {
+          "type": "number",
+          "description": "The finish on each riser's face (none where risers are open).",
+          "default": 0.0
+        },
+        "riser_material": { "type": "string", "description": "A material id." },
+        "nosing": {
+          "type": "number",
+          "description": "How far each tread's finish runs out past the riser below.",
+          "default": 0.0
+        }
+      },
+      "additionalProperties": false
     },
     "Railing": {
       "type": "object",
@@ -856,10 +1338,52 @@
           "description": "A stair's id: the railing follows its `side`."
         },
         "side": { "$ref": "#/$defs/Side" },
-        "material": { "type": "string" }
+        "material": { "type": "string" },
+        "extend": {
+          "$ref": "#/$defs/RailExtend",
+          "description": "On a stair: how far the handrail runs on past its ends."
+        },
+        "on_wall": {
+          "type": "boolean",
+          "description": "A handrail on a wall: brackets, ends back to the wall.",
+          "default": false
+        },
+        "infill": {
+          "$ref": "#/$defs/RailInfill",
+          "description": "What fills a guard below its top rail.",
+          "default": "rail"
+        },
+        "guard_height": {
+          "type": "number",
+          "description": "A guard taller than its handrail: its top rail's height; the handrail stays at `height` on its posts."
+        },
+        "newels": {
+          "type": "boolean",
+          "description": "Heavier posts at its ends and corners; a steep rail stops at one and starts again higher.",
+          "default": false
+        }
       },
       "required": ["id", "level"],
       "additionalProperties": false
+    },
+    "RailExtend": {
+      "type": "object",
+      "description": "How a stair's handrail runs on past its bottom and top nosings.",
+      "properties": {
+        "bottom": { "type": "number", "default": 0.3 },
+        "top": { "type": "number", "default": 0.3 },
+        "slope_bottom": {
+          "type": "boolean",
+          "description": "The rail keeps its slope for one going before running level.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "RailInfill": {
+      "type": "string",
+      "description": "What fills a guard below its top rail.",
+      "enum": ["rail", "balusters", "glass"]
     },
     "Part": {
       "type": "object",
@@ -990,7 +1514,7 @@
     },
     "SiteElement": {
       "type": "object",
-      "description": "A site element: terrain, a hard landscape area or a plant.",
+      "description": "A site element: terrain, a hard landscape area, an earthwork (a pad, a pit or a trench) or a plant.",
       "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
@@ -1040,6 +1564,69 @@
           "description": "Terrain: a contour every so much height; 0 draws none.",
           "default": 0.0
         },
+        "lines": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GroundLine" },
+          "description": "Terrain: the contours and break lines it passes through."
+        },
+        "survey": {
+          "type": "boolean",
+          "description": "Terrain: a survey, its edge takes its height from the data nearest it (else the edge stays at `top`).",
+          "default": false
+        },
+        "faceted": {
+          "type": "boolean",
+          "description": "Terrain: drawn as flat triangles between its points, not smoothed through them.",
+          "default": false
+        },
+        "major": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Terrain: every so many contours one is heavier; 0 is every fifth.",
+          "default": 0
+        },
+        "labels": {
+          "type": "boolean",
+          "description": "Terrain: heavier contours carry their height.",
+          "default": false
+        },
+        "levels": {
+          "type": "boolean",
+          "description": "Terrain: spot heights carry their height.",
+          "default": false
+        },
+        "shift": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "Terrain: what was taken off a survey's coordinates when it was brought in, metres: a survey point is its place here plus this."
+        },
+        "pads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GroundPad" },
+          "description": "Terrain: the pads worked into the ground, in order."
+        },
+        "under_buildings": {
+          "type": "boolean",
+          "description": "Terrain: the ground is dug out under the slabs standing on it.",
+          "default": false
+        },
+        "strata": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SoilLayer" },
+          "description": "Terrain: the soil under it, layer by layer from the top."
+        },
+        "analysis": {
+          "$ref": "#/$defs/GroundShading",
+          "description": "Terrain: shaded in plans by slope, aspect or height.",
+          "default": "none"
+        },
+        "flow": {
+          "type": "boolean",
+          "description": "Terrain: arrows in plans for which way water runs.",
+          "default": false
+        },
         "pattern": {
           "$ref": "#/$defs/SitePattern",
           "description": "An area's surface pattern."
@@ -1059,6 +1646,78 @@
         "plant": { "$ref": "#/$defs/PlantForm", "default": "tree" },
         "canopy": { "type": "number", "description": "A plant's crown across." },
         "height": { "type": "number", "description": "A plant's height." },
+        "cut": {
+          "type": "number",
+          "description": "A pad, pit or trench: its bank where it digs in, run over rise."
+        },
+        "fill": {
+          "type": "number",
+          "description": "A pad: its bank where it is made up, run over rise."
+        },
+        "depth": {
+          "type": "number",
+          "description": "A pit or a trench (kind `pad`): how deep below the ground; 0 is a pad at `top`.",
+          "default": 0.0
+        },
+        "width": {
+          "type": "number",
+          "description": "A trench (kind `pad`): its width; its line is `path`.",
+          "default": 0.0
+        },
+        "only_cut": {
+          "type": "boolean",
+          "description": "A pad that only digs: lower ground under it stays.",
+          "default": false
+        },
+        "retained": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "description": "A pad or a pit (kind `pad`): the edges cut upright whatever its banks, edge 0 from the first corner of `outline` to the second. A retaining wall standing on one is a wall element of its own, and is not tied to it here."
+        },
+        "radius": {
+          "type": "number",
+          "description": "A trench (kind `pad`): its bends rounded to this radius.",
+          "default": 0.0
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LotEdge" },
+          "description": "A property: what each edge of its outline is, edge `i` from corner `i` to the next (the first front, on four sides the third rear, the rest sides when left out)."
+        },
+        "rules": {
+          "$ref": "#/$defs/LotRules",
+          "description": "A property: the planning rules it is built to."
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "A road: its centreline, `[x, y, z]` points, `z` its crown's level above the level there."
+        },
+        "road": {
+          "$ref": "#/$defs/SiteRoad",
+          "description": "A road: its section and how it meets the ground."
+        },
+        "drain": {
+          "$ref": "#/$defs/SiteDrain",
+          "description": "A drain: its run, pipe and fall."
+        },
+        "tank": {
+          "$ref": "#/$defs/SiteTank",
+          "description": "A tank: what it is and its size; it stands at `at`."
+        },
+        "walk": {
+          "$ref": "#/$defs/SitePath",
+          "description": "A path: its line, width and surface."
+        },
+        "investigation": {
+          "$ref": "#/$defs/SiteProbe",
+          "description": "A borehole, trial pit or probe: its log; it stands at `at`."
+        },
         "material": { "type": "string" }
       },
       "required": ["id", "kind", "level"],
@@ -1067,7 +1726,78 @@
     "SiteKind": {
       "type": "string",
       "description": "What a site element is.",
-      "enum": ["terrain", "area", "plant"]
+      "enum": [
+        "terrain",
+        "area",
+        "pad",
+        "plant",
+        "property",
+        "road",
+        "drain",
+        "tank",
+        "path",
+        "investigation",
+        "spot",
+        "ground_line"
+      ]
+    },
+    "GroundLine": {
+      "type": "object",
+      "description": "A line a terrain passes through: `[x, y, z]` points, `z` above the level. A contour has one height; a `sharp` line is a break line (a kerb, a bank top) the ground folds along.",
+      "properties": {
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 3,
+            "maxItems": 3
+          }
+        },
+        "sharp": { "type": "boolean", "default": false },
+        "closed": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "GroundPad": {
+      "type": "object",
+      "description": "A levelled platform worked into a terrain (or, with a `depth`, a pit or trench dug into it): its outline, its `level` above the terrain's level, and its banks, each the run for one unit of height (`cut` where it is dug in, `fill` where it is made up; 0 is an upright face).",
+      "properties": {
+        "outline": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "level": { "type": "number" },
+        "cut": { "type": "number", "default": 1.0 },
+        "fill": { "type": "number", "default": 2.0 },
+        "depth": {
+          "type": "number",
+          "description": "An excavation: above 0, the floor is this far below the ground all over (a pit, a trench) and `level` is not used.",
+          "default": 0.0
+        }
+      },
+      "required": ["level"],
+      "additionalProperties": false
+    },
+    "SoilLayer": {
+      "type": "object",
+      "description": "A layer of soil under a terrain, from the ground as surveyed down.",
+      "properties": {
+        "name": { "type": "string" },
+        "thickness": { "type": "number" }
+      },
+      "required": ["name", "thickness"],
+      "additionalProperties": false
+    },
+    "GroundShading": {
+      "type": "string",
+      "description": "How a terrain is shaded in plans.",
+      "enum": ["none", "slope", "aspect", "height"]
     },
     "SitePattern": {
       "type": "object",
@@ -1097,6 +1827,303 @@
       "description": "A plant's form.",
       "enum": ["tree", "conifer", "palm", "shrub"]
     },
+    "LotEdge": {
+      "type": "string",
+      "description": "What an edge of a property is: it sets the edge's setback.",
+      "enum": ["front", "side", "rear", "open"]
+    },
+    "LotRules": {
+      "type": "object",
+      "description": "A property's planning rules, metres; a limit of 0 is none.",
+      "properties": {
+        "front": { "type": "number", "default": 6.0 },
+        "side": { "type": "number", "default": 3.0 },
+        "rear": { "type": "number", "default": 6.0 },
+        "height": {
+          "type": "number",
+          "description": "The highest the building may reach above the project's zero.",
+          "default": 0.0
+        },
+        "coverage": {
+          "type": "number",
+          "description": "How much of the lot may be covered, 0 to 1.",
+          "default": 0.0
+        },
+        "floor_ratio": {
+          "type": "number",
+          "description": "Floor area allowed per unit of lot area.",
+          "default": 0.0
+        },
+        "bearings": {
+          "type": "boolean",
+          "description": "Bearings and lengths written along the edges in plans.",
+          "default": true
+        },
+        "setbacks": {
+          "type": "boolean",
+          "description": "Setback lines and the buildable area drawn in plans.",
+          "default": true
+        },
+        "angle": {
+          "type": "number",
+          "description": "Angle planes: degrees from the horizontal, rising inward from `angle_from` above each edge with a setback; 0 is none.",
+          "default": 0.0
+        },
+        "angle_from": { "type": "number", "default": 2.5 },
+        "envelope": {
+          "type": "boolean",
+          "description": "The envelope shown in 3D.",
+          "default": true
+        },
+        "easements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LotEasement" },
+          "description": "Strips along edges kept clear of building."
+        },
+        "own": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LotEdgeRule" },
+          "description": "Edges with a setback or a note of their own."
+        }
+      },
+      "additionalProperties": false
+    },
+    "LotEasement": {
+      "type": "object",
+      "description": "A strip `width` wide inside the lot along edge `edge` (0 is the first), kept clear of building.",
+      "properties": {
+        "name": { "type": "string" },
+        "edge": { "type": "integer", "minimum": 0 },
+        "width": { "type": "number" }
+      },
+      "required": ["name", "edge", "width"],
+      "additionalProperties": false
+    },
+    "LotEdgeRule": {
+      "type": "object",
+      "description": "What edge `edge` of a lot (0 is the first) has of its own: a `setback` other than its kind's, and a `note` written on its setback line below its kind's setback, `note_offset` from there where it was dragged.",
+      "properties": {
+        "edge": { "type": "integer", "minimum": 0 },
+        "setback": { "type": "number" },
+        "note": { "type": "string" },
+        "note_offset": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "required": ["edge"],
+      "additionalProperties": false
+    },
+    "SiteRoad": {
+      "type": "object",
+      "description": "A road's section, metres: the carriageway kerb to kerb, its fall across (per cent) from its crown or one way to its right, kerbs, footpaths each side, its make-up's depth, its banks into the ground (run for each metre of height) and its parking bays.",
+      "properties": {
+        "width": { "type": "number", "default": 5.5 },
+        "fall": { "type": "number", "default": 2.5 },
+        "crowned": { "type": "boolean", "default": true },
+        "kerb": { "type": "number", "default": 0.1 },
+        "footpath": { "type": "number", "default": 0.0 },
+        "thickness": { "type": "number", "default": 0.3 },
+        "cut": { "type": "number", "default": 1.5 },
+        "fill": { "type": "number", "default": 2.0 },
+        "works": {
+          "type": "boolean",
+          "description": "Worked into the terrain under it.",
+          "default": true
+        },
+        "parking": { "$ref": "#/$defs/RoadParking" },
+        "gullies": {
+          "type": "number",
+          "description": "Gullies along its low edges this far apart, with a channel by the kerb; 0 is none.",
+          "default": 0.0
+        },
+        "radius": {
+          "type": "number",
+          "description": "Its bends rounded to this radius on the centreline; 0 leaves them sharp.",
+          "default": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoadParking": {
+      "type": "object",
+      "description": "Parking bays along a road's kerb: `width` along it (square to the bay), `length` out, at `angle` degrees to it (90 square on, 0 parallel).",
+      "properties": {
+        "side": { "$ref": "#/$defs/ParkingSide", "default": "left" },
+        "width": { "type": "number", "default": 2.5 },
+        "length": { "type": "number", "default": 5.0 },
+        "angle": { "type": "number", "default": 90.0 }
+      },
+      "additionalProperties": false
+    },
+    "ParkingSide": {
+      "type": "string",
+      "description": "Which side of a road, looking along it.",
+      "enum": ["left", "right", "both"]
+    },
+    "SiteDrain": {
+      "type": "object",
+      "description": "A drain run, metres: `path` in plan from its head down to its outfall, a pipe `diameter` across laid at `fall` per cent (1.25 is 1 in 80), its invert `depth` under the ground at its head, with a chamber `chamber` square inside at each point, in a trench `trench` wide on a bed `bed` deep.",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "service": { "$ref": "#/$defs/DrainService", "default": "foul" },
+        "diameter": { "type": "number", "default": 0.1 },
+        "fall": { "type": "number", "default": 1.25 },
+        "depth": { "type": "number", "default": 0.6 },
+        "chambers": { "type": "boolean", "default": true },
+        "chamber": { "type": "number", "default": 0.6 },
+        "trench": { "type": "number", "default": 0.6 },
+        "bed": { "type": "number", "default": 0.1 }
+      },
+      "additionalProperties": false
+    },
+    "DrainService": {
+      "type": "string",
+      "description": "What a drain carries.",
+      "enum": ["foul", "surface", "combined", "field"]
+    },
+    "SiteTank": {
+      "type": "object",
+      "description": "A buried tank, metres: `length` by `width` inside, `depth` deep, turned `angle` degrees anticlockwise, its top `cover` under the ground, its walls `wall` thick, dug in with `working` room round it.",
+      "properties": {
+        "service": { "$ref": "#/$defs/TankService", "default": "septic" },
+        "length": { "type": "number" },
+        "width": { "type": "number" },
+        "depth": { "type": "number" },
+        "angle": { "type": "number", "default": 0.0 },
+        "cover": { "type": "number", "default": 0.3 },
+        "wall": { "type": "number", "default": 0.15 },
+        "working": { "type": "number", "default": 0.5 }
+      },
+      "required": ["length", "width", "depth"],
+      "additionalProperties": false
+    },
+    "TankService": {
+      "type": "string",
+      "description": "What a tank is for.",
+      "enum": ["septic", "treatment", "rainwater", "attenuation", "soakaway"]
+    },
+    "SitePath": {
+      "type": "object",
+      "description": "A path on the ground, metres: along `path` in plan, `width` wide between its edging, following the ground, its surface and sub-base `thickness` deep, with `edging` this wide each side (0 for none).",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "width": { "type": "number", "default": 1.2 },
+        "surface": { "$ref": "#/$defs/PathSurface", "default": "gravel" },
+        "edging": { "type": "number", "default": 0.05 },
+        "thickness": { "type": "number", "default": 0.15 },
+        "radius": {
+          "type": "number",
+          "description": "Its bends rounded to this radius; 0 leaves them sharp.",
+          "default": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "PathSurface": {
+      "type": "string",
+      "description": "What a path's surface is.",
+      "enum": ["gravel", "paving", "asphalt", "bark"]
+    },
+    "SiteProbe": {
+      "type": "object",
+      "description": "A borehole, trial pit or probe of a soils report, as the report logs it: depths below its own ground level, `ground` that level above the level's datum as the report gives it (left out, the existing ground's height there).",
+      "properties": {
+        "kind": { "$ref": "#/$defs/ProbeType", "default": "borehole" },
+        "ground": { "type": "number" },
+        "depth": { "type": "number", "description": "How deep it went." },
+        "layers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProbeLayer" },
+          "description": "Its layers from the top down, each to the depth of its foot."
+        },
+        "water": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProbeWater" }
+        },
+        "tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProbeTest" }
+        },
+        "method": { "type": "string" },
+        "date": { "type": "string" },
+        "report": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["depth"],
+      "additionalProperties": false
+    },
+    "ProbeType": {
+      "type": "string",
+      "description": "How a spot was investigated.",
+      "enum": ["borehole", "trial_pit", "probe"]
+    },
+    "ProbeLayer": {
+      "type": "object",
+      "description": "A layer of a log: from the foot of the one above down to `to`.",
+      "properties": {
+        "to": { "type": "number" },
+        "soil": { "$ref": "#/$defs/SoilType", "default": "clay" },
+        "unit": {
+          "type": "string",
+          "description": "The report's name for it across the site: \"GT3\"."
+        },
+        "description": { "type": "string", "description": "The report's description, as written." }
+      },
+      "required": ["to"],
+      "additionalProperties": false
+    },
+    "SoilType": {
+      "type": "string",
+      "description": "The soil family a layer is drawn with.",
+      "enum": ["topsoil", "made_ground", "clay", "silt", "sand", "gravel", "peat", "rock"]
+    },
+    "ProbeWater": {
+      "type": "object",
+      "description": "Water struck at `depth`, rising to `rest` if the report says.",
+      "properties": {
+        "depth": { "type": "number" },
+        "rest": { "type": "number" },
+        "note": { "type": "string" }
+      },
+      "required": ["depth"],
+      "additionalProperties": false
+    },
+    "ProbeTest": {
+      "type": "object",
+      "description": "A test at `depth` and its result; `text` as the report writes it when the number alone doesn't say it all (\"50/220 mm\").",
+      "properties": {
+        "depth": { "type": "number" },
+        "kind": { "$ref": "#/$defs/TestType", "default": "spt" },
+        "value": { "type": "number" },
+        "text": { "type": "string" }
+      },
+      "required": ["depth", "value"],
+      "additionalProperties": false
+    },
+    "TestType": {
+      "type": "string",
+      "description": "What a test was.",
+      "enum": ["spt", "vane", "penetrometer", "dynamic"]
+    },
     "Object": {
       "type": "object",
       "description": "Furniture or a fixture from CreaBIM's catalogue.",
@@ -1125,6 +2152,10 @@
         "offset": {
           "type": "number",
           "description": "Its floor above the level (for one hung from the ceiling, its top below the ceiling). Left out: the catalogue's."
+        },
+        "light": {
+          "$ref": "#/$defs/ObjectLight",
+          "description": "The light it gives in a render, when not its kind's usual one. It belongs to the object's type: every object of the same `catalogue` key shares it, so state it the same on each (or on one; the last stated is kept)."
         }
       },
       "required": ["id", "level", "catalogue", "at"],
@@ -1134,6 +2165,38 @@
       "type": "string",
       "description": "Which point of an object `at` gives.",
       "enum": ["origin", "centre"]
+    },
+    "ObjectLight": {
+      "type": "object",
+      "description": "The light a fitting gives in a render.",
+      "properties": {
+        "on": {
+          "type": "boolean",
+          "description": "False: it is drawn, and gives no light.",
+          "default": true
+        },
+        "lumens": {
+          "type": "number",
+          "description": "Its output, lumens: about 800 for a 60 W bulb of old."
+        },
+        "kelvin": {
+          "type": "number",
+          "description": "Its colour, kelvin: 2700 warm, 4000 neutral, 6500 daylight.",
+          "default": 2700.0
+        },
+        "beam": { "$ref": "#/$defs/LightBeam", "default": "wide" },
+        "group": {
+          "type": "string",
+          "description": "The group it is dimmed with in Visuals; left out, its type's name."
+        }
+      },
+      "required": ["lumens"],
+      "additionalProperties": false
+    },
+    "LightBeam": {
+      "type": "string",
+      "description": "How a fitting's light spreads.",
+      "enum": ["narrow", "medium", "wide", "all-round"]
     },
     "Room": {
       "type": "object",
@@ -1233,6 +2296,15 @@
           "$ref": "#/$defs/ScheduleCategory",
           "description": "What a schedule lists."
         },
+        "drain": { "type": "string", "description": "A long section: the drain it follows." },
+        "probe": {
+          "type": "string",
+          "description": "A borehole log: the borehole, trial pit or probe it logs."
+        },
+        "stair": {
+          "type": "string",
+          "description": "A walk-line section: the stair it unrolls."
+        },
         "by_type": {
           "type": "boolean",
           "description": "A schedule's rows grouped by type.",
@@ -1241,6 +2313,10 @@
         "callout": {
           "$ref": "#/$defs/Callout",
           "description": "Makes it a callout of another view: an enlarged part of it. Give it the same kind and line (or level) as its parent."
+        },
+        "site": {
+          "$ref": "#/$defs/ViewSite",
+          "description": "A plan, section, elevation or 3D view: how it shows the site."
         }
       },
       "required": ["id", "kind"],
@@ -1249,7 +2325,16 @@
     "ViewKind": {
       "type": "string",
       "description": "What a view is.",
-      "enum": ["plan", "section", "elevation", "3d", "schedule"]
+      "enum": [
+        "plan",
+        "section",
+        "elevation",
+        "3d",
+        "schedule",
+        "long_section",
+        "borehole_log",
+        "walk_section"
+      ]
     },
     "ViewStyle": {
       "type": "string",
@@ -1268,7 +2353,10 @@
         "furniture",
         "fixtures",
         "rooms",
-        "materials"
+        "materials",
+        "drainage",
+        "stairs",
+        "parking"
       ]
     },
     "Callout": {
@@ -1291,6 +2379,44 @@
       },
       "required": ["parent", "min", "max"],
       "additionalProperties": false
+    },
+    "ViewSite": {
+      "type": "object",
+      "description": "How a view shows the site: the ground before or after its works (or after with the ground as it was dashed), and each kind of site information on or off.",
+      "properties": {
+        "ground": { "$ref": "#/$defs/SiteGround", "default": "after" },
+        "contours": { "type": "boolean", "default": true },
+        "levels": { "type": "boolean", "default": true },
+        "cut_fill": { "type": "boolean", "default": false },
+        "banks": { "type": "boolean", "default": true },
+        "limit": {
+          "type": "boolean",
+          "description": "The line round what the works change.",
+          "default": false
+        },
+        "legal": {
+          "type": "boolean",
+          "description": "Property lines, setbacks and easements.",
+          "default": true
+        },
+        "roads": { "type": "boolean", "default": true },
+        "services": {
+          "type": "boolean",
+          "description": "Drains, chambers and tanks.",
+          "default": true
+        },
+        "investigation": {
+          "type": "boolean",
+          "description": "Boreholes, trial pits and probes.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "SiteGround": {
+      "type": "string",
+      "description": "Which ground a view shows.",
+      "enum": ["after", "before", "both"]
     },
     "Sheet": {
       "type": "object",
@@ -1344,6 +2470,10 @@
         "crop": {
           "$ref": "#/$defs/Rect",
           "description": "Only this part of the drawing is shown (drawing coordinates)."
+        },
+        "fit": {
+          "type": "string",
+          "description": "A stair's id: the crop follows that stair, its footprint with a margin round it, as it moves or grows; `crop` is used once it is gone."
         }
       },
       "required": ["view", "at"],
@@ -1418,9 +2548,34 @@
               "maxItems": 3
             }
           ]
+        },
+        "symbol": {
+          "$ref": "#/$defs/NoteSymbol",
+          "description": "Drawn as a CreaBIM symbol instead of as text, `text` going in the symbol's slot when it has one."
         }
       },
       "required": ["view", "at", "text"],
+      "additionalProperties": false
+    },
+    "NoteSymbol": {
+      "type": "object",
+      "description": "A symbol placed with the Symbol tool, its middle on the note's `at`.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "`points`, `slopes`, `centerlines`, `materials` or `mep`."
+        },
+        "style": {
+          "type": "string",
+          "description": "A style of that kind, as `slopes.ramp_rise_arrow`; left out, the kind's pick in the project's style pack."
+        },
+        "angle": {
+          "type": "number",
+          "description": "Its turn, degrees anticlockwise.",
+          "default": 0.0
+        }
+      },
+      "required": ["kind"],
       "additionalProperties": false
     }
   }

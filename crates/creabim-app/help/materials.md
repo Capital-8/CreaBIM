@@ -23,6 +23,19 @@ Selecting a material in the project browser shows the same editor in *Properties
 
 Select it, then pick the material in *Properties*, or use *Materials › Assign material*. This works for walls, slabs, roofs, masses, doors, windows, columns, beams, stairs and railings. Layered walls, floors and roofs get their materials from their [assembly](assemblies).
 
+**The Material section** sits in the same place for every element, after *Preview* and before *Geometry*. An element of one material shows it with its swatch and a line on how it draws (its cut hatch and surface pattern). A layered one shows its **Assembly** and lists its layers, each with its swatch, name and thickness; **Edit the assembly…** opens its layers in the Assemblies window. Nothing shows for an element with no material, such as a void.
+
+## The material card
+
+Click a material's **swatch**, in any row that sets a material, and its **card** opens in place. It edits what is changed most:
+
+- its **Name**, its **Colour** (in 3D and in coloured drawings), its **Cut hatch** and its **Surface** pattern;
+- how many it reaches: *Used by 12 elements: a change here changes them all*, counting the elements built of assemblies that have it as a layer;
+- **Make a copy for this one**: a copy of the material, used here only, to change on its own;
+- **More in Materials…** for everything else, in the material browser.
+
+In a view, `Alt`+click an element, or right-click it and pick **Material: …**, to open the card of what was clicked, right there.
+
 ## Importing materials
 
 *Materials › Import materials…* reads materials from IFC files, FreeCAD material cards (`.FCMat`), glTF files (`.gltf`, `.glb`) and Blender files (`.blend`). A material whose name the project already has is updated, so its elements follow.

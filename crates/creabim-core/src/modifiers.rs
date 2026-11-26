@@ -608,6 +608,7 @@ fn mirror(e: &Evaluated, axis: Axis, plane: f64) -> Evaluated {
         mesh: EditMesh {
             vertices: e.mesh.vertices.clone(),
             faces: vec![],
+            edges: vec![],
         },
         source: vec![],
     };
@@ -650,30 +651,30 @@ fn mirror(e: &Evaluated, axis: Axis, plane: f64) -> Evaluated {
 }
 
 pub(crate) fn solidify(e: &Evaluated, thickness: f64) -> Evaluated {
-    let mesh = &e.mesh;
+    let mut out = e.clone();
+    // faces that meet along an edge are first made to face the same way
+    // (MU46: a surface pulled about had faces turned either way, and
+    // its inner skin came out twisted)
+    face_one_way(&mut out.mesh);
+    let mesh = out.mesh.clone();
     let nv = mesh.vertices.len();
     let normals: Vec<DVec3> = (0..mesh.faces.len()).map(|f| mesh.face_normal(f)).collect();
-    let mut vn = vec![DVec3::ZERO; nv];
     let mut v_faces: Vec<Vec<usize>> = vec![vec![]; nv];
     for (fi, f) in mesh.faces.iter().enumerate() {
-        for &v in f {
-            vn[v as usize] += normals[fi];
-            v_faces[v as usize].push(fi);
+        // a face with no area has no side to thicken towards
+        if normals[fi] != DVec3::ZERO {
+            for &v in f {
+                v_faces[v as usize].push(fi);
+            }
         }
     }
-    let mut out = e.clone();
-    // the inner skin: each vertex pushed back far enough that every face it
+    // the inner skin: each vertex pushed back so that every face it
     // touches ends up `thickness` behind itself (even thickness at corners)
-    for v in 0..nv {
-        let n = vn[v].normalize_or_zero();
-        let fit = v_faces[v]
-            .iter()
-            .map(|&f| n.dot(normals[f]))
-            .fold(1.0f64, f64::min)
-            .max(0.25);
+    for (v, faces) in v_faces.iter().enumerate() {
+        let planes: Vec<DVec3> = faces.iter().map(|&f| normals[f]).collect();
         out.mesh
             .vertices
-            .push(mesh.vertices[v] - n * (thickness / fit));
+            .push(mesh.vertices[v] - even_offset(&planes) * thickness);
     }
     let inner = |v: u32| v + nv as u32;
     for f in &mesh.faces {
@@ -682,7 +683,8 @@ pub(crate) fn solidify(e: &Evaluated, thickness: f64) -> Evaluated {
             .push(f.iter().rev().map(|&v| inner(v)).collect());
         out.source.push(None);
     }
-    // rims along open edges, where a surface has a boundary
+    // rims along open edges, where a surface has a boundary (an edge three
+    // faces meet at is no boundary, and gets none)
     let mut uses: HashMap<(u32, u32), Vec<(u32, u32)>> = HashMap::new();
     for f in &mesh.faces {
         for i in 0..f.len() {
@@ -707,6 +709,141 @@ pub(crate) fn solidify(e: &Evaluated, thickness: f64) -> Evaluated {
         }
     }
     out
+}
+
+/// The step, for a thickness of one, that takes a corner where faces with
+/// these unit normals meet as far behind each of them: along the normal
+/// of one face, into the corner of two or three (longer there, so the
+/// walls keep their thickness). Never more than four times the thickness:
+/// a knife-sharp corner would run away.
+fn even_offset(normals: &[DVec3]) -> DVec3 {
+    // the different ways the faces here look
+    let mut planes: Vec<DVec3> = Vec::new();
+    for n in normals {
+        if !planes.iter().any(|p| p.dot(*n) > 0.9999) {
+            planes.push(*n);
+        }
+    }
+    let mean = planes
+        .iter()
+        .fold(DVec3::ZERO, |a, n| a + *n)
+        .normalize_or_zero();
+    let exact = match planes.len() {
+        0 => return DVec3::ZERO,
+        1 => Some(planes[0]),
+        2 => {
+            // in the plane of the two normals, one unit behind both
+            let c = planes[0].dot(planes[1]);
+            (c > -0.999).then(|| (planes[0] + planes[1]) / (1.0 + c))
+        }
+        _ => {
+            // three faces: the point one unit behind each
+            let (a, b, c) = (planes[0], planes[1], planes[2]);
+            let det = a.dot(b.cross(c));
+            (det.abs() > 1e-6).then(|| (b.cross(c) + c.cross(a) + a.cross(b)) / det)
+        }
+    };
+    let d = exact.unwrap_or_else(|| {
+        // faces folded back on each other, or more than three no point
+        // fits: the middle way, as far as the least well served needs
+        if mean == DVec3::ZERO {
+            return planes[0];
+        }
+        let fit = planes
+            .iter()
+            .map(|n| mean.dot(*n))
+            .fold(1.0f64, f64::min)
+            .max(0.25);
+        mean / fit
+    });
+    if d.length() > 4.0 {
+        d.normalize() * 4.0
+    } else {
+        d
+    }
+}
+
+/// Turn faces so that any two meeting along an edge face the same way,
+/// patch by patch; a closed patch faces outwards. The first face of an
+/// open patch says which way the patch faces. Edges three or more faces
+/// meet at say nothing, so the patches on either side keep to themselves.
+fn face_one_way(mesh: &mut EditMesh) {
+    let nf = mesh.faces.len();
+    let mut uses: HashMap<(u32, u32), Vec<(usize, u32)>> = HashMap::new();
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        for i in 0..f.len() {
+            let (a, b) = (f[i], f[(i + 1) % f.len()]);
+            if a != b {
+                // the face, and where its edge starts
+                uses.entry((a.min(b), a.max(b))).or_default().push((fi, a));
+            }
+        }
+    }
+    let mut flip = vec![false; nf];
+    let mut seen = vec![false; nf];
+    for seed in 0..nf {
+        if seen[seed] {
+            continue;
+        }
+        seen[seed] = true;
+        let mut patch = vec![seed];
+        let mut closed = true;
+        let mut k = 0;
+        while k < patch.len() {
+            let f = patch[k];
+            k += 1;
+            let ring = mesh.faces[f].clone();
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                let Some(u) = uses.get(&(a.min(b), a.max(b))) else {
+                    continue;
+                };
+                if u.len() != 2 {
+                    closed = false;
+                    continue;
+                }
+                let Some(&(g, g_from)) = u.iter().find(|(o, _)| *o != f) else {
+                    continue;
+                };
+                if seen[g] {
+                    continue;
+                }
+                // two faces looking the same way run their shared edge
+                // in opposite directions
+                let f_from = if flip[f] { b } else { a };
+                flip[g] = f_from == g_from;
+                seen[g] = true;
+                patch.push(g);
+            }
+        }
+        if closed {
+            // six times the volume its faces enclose, as they are turned
+            let mut vol = 0.0;
+            for &f in &patch {
+                let r = &mesh.faces[f];
+                let p0 = mesh.vertices[r[0] as usize];
+                let mut v = 0.0;
+                for i in 1..r.len().saturating_sub(1) {
+                    let (p1, p2) = (
+                        mesh.vertices[r[i] as usize],
+                        mesh.vertices[r[i + 1] as usize],
+                    );
+                    v += p0.dot(p1.cross(p2));
+                }
+                vol += if flip[f] { -v } else { v };
+            }
+            if vol < 0.0 {
+                for &f in &patch {
+                    flip[f] = !flip[f];
+                }
+            }
+        }
+    }
+    for (f, turn) in mesh.faces.iter_mut().zip(flip) {
+        if turn {
+            f.reverse();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -846,6 +983,7 @@ mod tests {
                 DVec3::new(0.0, 3.0, 0.0),
             ],
             faces: vec![vec![0, 1, 2, 3]],
+            edges: vec![],
         };
         let e = evaluate(
             &sheet,
@@ -854,6 +992,84 @@ mod tests {
         assert_eq!(e.mesh.faces.len(), 6);
         assert!((e.mesh.volume() - 0.6).abs() < 1e-9);
         assert_eq!(e.source, vec![Some(0), None, None, None, None, None]);
+    }
+
+    /// Three walls in a U, 4 m by 3 m by 4 m on plan and 2 m tall, drawn
+    /// as one surface.
+    fn u_surface() -> EditMesh {
+        let plan = [(0.0, 3.0), (0.0, 0.0), (4.0, 0.0), (4.0, 3.0)];
+        let mut vertices = Vec::new();
+        for (x, y) in plan {
+            vertices.push(DVec3::new(x, y, 0.0));
+            vertices.push(DVec3::new(x, y, 2.0));
+        }
+        let faces = (0..3u32)
+            .map(|i| vec![2 * i, 2 * i + 2, 2 * i + 3, 2 * i + 1])
+            .collect();
+        EditMesh {
+            vertices,
+            faces,
+            edges: vec![],
+        }
+    }
+
+    #[test]
+    fn solidify_keeps_its_thickness_round_the_corners_of_a_surface() {
+        let e = evaluate(
+            &u_surface(),
+            &[Modifier::new(ModifierKind::Solidify { thickness: 0.2 })],
+        );
+        // walls 0.2 thick: the middle line is 3 + 4 + 3 long, less the two
+        // corners counted twice or not at all on either side of it
+        let v = e.mesh.volume().abs();
+        let expect = [0.2 * 2.0 * (10.0 - 0.4), 0.2 * 2.0 * (10.0 + 0.4)];
+        assert!(
+            expect.iter().any(|x| (v - x).abs() < 1e-9),
+            "{v} is not one of {expect:?}"
+        );
+    }
+
+    #[test]
+    fn solidify_takes_a_surface_whose_faces_are_turned_either_way() {
+        // MU46: a surface pulled about, one wall facing the other way
+        let good = u_surface();
+        let mut turned = good.clone();
+        turned.faces[1].reverse();
+        let stack = [Modifier::new(ModifierKind::Solidify { thickness: 0.2 })];
+        let (a, b) = (evaluate(&good, &stack), evaluate(&turned, &stack));
+        assert!((a.mesh.volume() - b.mesh.volume()).abs() < 1e-9);
+        assert_eq!(a.mesh.vertices, b.mesh.vertices);
+        // and a box turned inside out is hollowed as a box is
+        let mut inside_out = EditMesh::cuboid(DVec3::new(4.0, 4.0, 4.0));
+        for f in &mut inside_out.faces {
+            f.reverse();
+        }
+        let stack = [Modifier::new(ModifierKind::Solidify { thickness: 0.5 })];
+        let e = evaluate(&inside_out, &stack);
+        assert!((e.mesh.volume() - (64.0 - 27.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn solidify_leaves_out_what_it_cannot_thicken() {
+        // a face with no area, and a fin three faces meet at
+        let mut m = u_surface();
+        m.vertices.push(DVec3::new(2.0, -1.0, 0.0));
+        m.vertices.push(DVec3::new(2.0, -1.0, 2.0));
+        // a fin off the middle wall's bottom edge would need a split wall;
+        // off a corner edge it makes that edge one three faces share
+        m.faces.push(vec![2, 8, 9, 3]);
+        m.faces.push(vec![0, 0, 1]);
+        let e = evaluate(
+            &m,
+            &[Modifier::new(ModifierKind::Solidify { thickness: 0.2 })],
+        );
+        assert_eq!(e.source.len(), e.mesh.faces.len());
+        assert!(e.mesh.vertices.iter().all(|v| v.is_finite()));
+        // no vertex runs further than four times the thickness
+        let n = m.vertices.len();
+        for v in 0..n {
+            assert!(e.mesh.vertices[v].distance(e.mesh.vertices[v + n]) <= 0.8 + 1e-9);
+        }
     }
 
     #[test]

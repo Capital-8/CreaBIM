@@ -1,0 +1,302 @@
+<title>Drawing Styles</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/*FONTS*/
+:root{--bg:#eceee9;--paper:#fff;--panel:#f6f7f4;--ink:#1d211c;--muted:#5f665d;--rule:#d5d9d2;--field:#fff;--accent:#2f6fd6;--soft:#e7eefb;--warm:#a8552a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#151715;--paper:#1d201c;--panel:#232622;--ink:#e8ebe6;--muted:#a1a89e;--rule:#383d36;--field:#151715;--accent:#6ea0f0;--soft:#22304a;--warm:#e58a5c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#151715;--paper:#1d201c;--panel:#232622;--ink:#e8ebe6;--muted:#a1a89e;--rule:#383d36;--field:#151715;--accent:#6ea0f0;--soft:#22304a;--warm:#e58a5c;color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif;margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding-block:26px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:24px;margin:0 0 6px;text-wrap:balance} h2{font-size:17px;margin:30px 0 6px}
+.lede{color:var(--muted);max-width:80ch;margin:0 0 16px}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:16px;align-items:start}
+@media (max-width:900px){.main{grid-template-columns:1fr}}
+.sheet{background:#fff;border:1px solid var(--rule);border-radius:6px;padding:10px;min-width:0}
+.sheet svg{display:block;width:100%;height:auto}
+.cap{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:2px 0 8px}
+/* the Properties panel, DS rows */
+.props{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;font-size:12.5px}
+.card{border:1px solid var(--rule);border-radius:6px;padding:6px 8px 8px;margin-bottom:8px;background:var(--paper)}
+.card>.t{font-weight:600;font-size:12.5px;margin-bottom:4px;display:flex;justify-content:space-between}
+.card>.t span{color:var(--muted);font-weight:400}
+.row{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:8px;margin:4px 0}
+.row label{text-align:right;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+select,button.f{font:inherit;font-size:12.5px;height:26px;border:1px solid var(--rule);border-radius:4px;background:var(--field);color:var(--ink);padding:0 6px;min-width:0;width:100%}
+button.f{cursor:pointer;text-align:center}
+button.f:hover{border-color:var(--accent)}
+.grp{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:6px;margin:10px 0 2px}
+.grp::after{content:"";flex:1;border-top:1px solid var(--rule)}
+.sl{display:grid;grid-template-columns:96px minmax(0,1fr) 40px;gap:6px;align-items:center;margin:3px 0}
+.sl label{text-align:right;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sl input[type=range]{width:100%;accent-color:var(--accent);min-width:0}
+.sl output{font-variant-numeric:tabular-nums;font-size:11.5px;text-align:right}
+.chk{display:flex;gap:6px;align-items:center;margin:3px 0 3px 102px}
+.note{font-size:11.5px;color:var(--muted);margin:6px 0 0}
+.adjust[hidden]{display:none!important}
+.thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,270px),1fr));gap:12px}
+.th{background:var(--paper);border:2px solid var(--rule);border-radius:6px;padding:8px;cursor:pointer;min-width:0}
+.th.on{border-color:var(--accent)}
+.th .name{font-weight:600;font-size:13px}
+.th .badge{font-size:11px;color:var(--muted)}
+.th svg{display:block;width:100%;height:auto;background:#fff;border-radius:3px;margin-top:6px}
+.groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px}
+.groups div{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:10px 12px;font-size:12.5px}
+.groups b{display:block;margin-bottom:2px}
+</style>
+
+<div class="wrap">
+<h1>Drawing styles: one engine, eight looks</h1>
+<p class="lede">Gemini's seven styles from the two Hand Line Studios, reconciled into one set of 22 settings, plus our Loose. A view picks its <b>drawing style</b> in Properties › Graphics; <b>Adjust this style…</b> opens every setting, grouped as CreaBIM's pens plan files them. Pen weights still come from the pen set, so cut, projection and hatch keep their order in every style. This page draws the footing detail live from those settings, with CreaBIM's own lettering fonts. It is a mockup: the real engine will be Rust, drawing PDF, sheets and screen alike.</p>
+
+<div class="main">
+ <div class="sheet"><div class="cap" id="bigcap">Ground floor detail · 1:20</div><div id="big"></div></div>
+ <div class="props" aria-label="Properties panel mockup">
+  <div class="card"><div class="t">Graphics <span>View · Detail 1 Wall base</span></div>
+   <div class="row"><label>Drawing style</label><select id="pick"></select></div>
+   <div class="row"><label>Pen set</label><select disabled><option>Project's (Technical)</option></select></div>
+   <div class="row"><label></label><button class="f" id="adjbtn">Adjust this style…</button></div>
+  </div>
+  <div class="card adjust" id="adjust" hidden>
+   <div class="t">Adjust · <span id="adjname"></span></div>
+   <div id="sliders"></div>
+   <div class="row" style="margin-top:8px"><label></label><button class="f" id="reset">Reset to its factory values</button></div>
+   <p class="note">An adjusted style is kept in the style pack under its own name, as pen sets are.</p>
+  </div>
+ </div>
+</div>
+
+<h2>The eight styles</h2>
+<p class="lede">Click one to draw the detail above in it.</p>
+<div class="thumbs" id="thumbs"></div>
+
+<h2>Where each setting lives</h2>
+<div class="groups">
+ <div><b>Line</b>Overshoot, wobble, ends (blob, taper, flick), pressure, double pass. Pens stage 4 and the brushes.</div>
+ <div><b>Hatches</b>Spacing and angle jitter, broken lines, density, timber X, earth weave. Stage 5.</div>
+ <div><b>Colour</b>Wash strength only. Ink stays black in every style; colour belongs to the drawing palette, stage 7.</div>
+ <div><b>Lettering</b>CAD = CreaBIM Vectra, architect's hand = CreaBIM Tech Hand, drafting slant = CreaBIM Atelier Hand; jitter.</div>
+ <div><b>Leaders and ticks</b>Straight, stepped (new) or curved leaders; arrow, slug or dot ends; slash, slug or dot ticks.</div>
+</div>
+</div>
+
+<script>
+const PRESETS = /*PRESETS*/;
+const FONT = {cad:"'CreaBIM Vectra'", architect_hand:"'CreaBIM Tech Hand'", drafting_slant:"'CreaBIM Atelier Hand'"};
+// ink is always black: a style is how the line is drawn, never its colour (owner, 2026-11-14 and MU82); colour belongs to the palette
+const INK = {black:"#1c1c1a"};
+const WASH = {concrete:"#b9bdb8", gravel:"#ddd3bb", earth:"#c8b08c", insulation:"#b9d0a8", timber:"#dcbb8c"};
+// the settings, grouped as the pens plan files them
+const SETTINGS = [
+ ["Line", [["overshoot","Overshoot",0,6,0.1],["wobbleAmp","Wobble",0,0.6,0.01],["wobbleWave","Wobble length",30,110,1],["endStyle","Ends",["none","ink_blob","taper","lift_off_flick"]],["endAmount","End amount",0,1,0.01],["pressureVar","Pressure",0,0.6,0.01],["doubleOffset","Double pass",0,0.8,0.01],["doubleOpacity","Double strength",0,0.6,0.01]]],
+ ["Hatches", [["hatchSpacingJitter","Spacing jitter",0,0.5,0.01],["hatchAngleJitter","Angle jitter",0,8,0.1],["hatchBroken","Broken lines",0,0.5,0.01],["hatchDensity","Density",0.6,1.6,0.01],["woodCross","Timber X",null],["earthWeave","Earth weave",null]]],
+ ["Colour", [["washOpacity","Wash",0,1,0.01]]],
+ ["Lettering", [["letteringStyle","Lettering",["cad","architect_hand","drafting_slant"]],["letterJitter","Letter jitter",0,0.7,0.01]]],
+ ["Leaders and ticks", [["leaderShape","Leader",["straight","stepped","curved"]],["leaderEnd","Leader end",["arrow","slug","dot"]],["dimTick","Tick",["slash","slug","dot"]]]],
+];
+const LABELS = {none:"None",ink_blob:"Ink blob",taper:"Taper",lift_off_flick:"Flick",black:"Black",graphite:"Graphite",sepia:"Sepia",redline:"Redline crimson",cad:"CAD (Vectra)",architect_hand:"Architect's hand (Tech Hand)",drafting_slant:"Drafting slant (Atelier Hand)",straight:"Straight",stepped:"Stepped",curved:"Curved",arrow:"Arrow",slug:"Slug",dot:"Dot",slash:"Slash"};
+
+// ---------- seeded noise ----------
+function rngOf(seed){let a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+// ---------- the detail, model mm (x right, y up), drawn at 1:20 ----------
+const X=x=>(x+1150)/20, Y=y=>(960-y)/20; // 1:20   // to paper mm
+const W=126, H=104;
+const P_CUT=0.5, P_PROJ=0.25, P_FINE=0.18;
+const REG = {
+ earth:[[-1000,-1000],[1100,-1000],[1100,0],[-1000,0]],
+ gravel:[[-1000,-50],[0,-50],[0,100],[-1000,100]],
+ slab:[[-1000,100],[0,100],[0,200],[-1000,200]],
+ stem:[[-200,-900],[400,-900],[400,-600],[200,-600],[200,200],[0,200],[0,-600],[-200,-600]],
+ plate:[[0,200],[200,200],[200,240],[0,240]],
+ cavity:[[20,240],[180,240],[180,900],[20,900]],
+};
+const toP = pts => pts.map(([x,y])=>[X(x),Y(y)]);
+
+// ---------- the line engine: a straight line to hand strokes ----------
+function f(n){return Math.round(n*1000)/1000}
+function poly(pts){return "M"+pts.map(p=>f(p[0])+","+f(p[1])).join("L")+"Z"}
+function circle(c,r,fill,op){return `<circle cx="${f(c[0])}" cy="${f(c[1])}" r="${f(r)}" fill="${fill}"${op?` fill-opacity="${op}"`:""}/>`}
+function inkLine(a,b,w,S,rng,ink,o={}){
+ let dx=b[0]-a[0], dy=b[1]-a[1], L=Math.hypot(dx,dy); if(L<1e-6) return "";
+ const ux=dx/L, uy=dy/L, nx=-uy, ny=ux;
+ const ov = o.noOver?0:S.overshoot*0.22;
+ const e1 = ov*(0.4+0.9*rng()), e2 = ov*(0.4+0.9*rng());
+ const A=[a[0]-ux*e1,a[1]-uy*e1], B=[b[0]+ux*e2,b[1]+uy*e2];
+ const LL=L+e1+e2, n=Math.max(2,Math.ceil(LL/0.5));
+ const amp=S.wobbleAmp*0.22*(o.hatch?0.6:1), wave=Math.max(1.5,S.wobbleWave*0.09), ph=rng()*6.283, ph2=rng()*6.283;
+ const left=[],right=[];
+ for(let i=0;i<=n;i++){
+  const t=i/n, d=t*LL;
+  // the line stays straight: wobble is small and fades at its ends
+  const fade=Math.min(1,t*6,(1-t)*6);
+  const off=amp*fade*(Math.sin(6.283*d/wave+ph)*0.75+Math.sin(6.283*d/(wave*0.37)+ph2)*0.25);
+  let ww=w*(1+S.pressureVar*0.9*Math.sin(6.283*t*1.1+ph2));
+  if(S.endStyle==="taper"){const k=Math.max(0.05,0.18*S.endAmount);ww*=0.3+0.7*Math.min(1,t/k,(1-t)/k)}
+  const px=A[0]+ux*d+nx*off, py=A[1]+uy*d+ny*off;
+  left.push([px+nx*ww/2,py+ny*ww/2]); right.push([px-nx*ww/2,py-ny*ww/2]);
+ }
+ let s=`<path d="${poly(left.concat(right.reverse()))}" fill="${ink}"/>`;
+ // round pen ends
+ s+=circle(left[0].map((v,i)=>(v+right[right.length-1][i])/2),w*0.48,ink)+circle(left[n].map((v,i)=>(v+right[0][i])/2),w*0.48,ink);
+ if(!o.hatch){
+  if(S.endStyle==="ink_blob"){
+   for(const [p,ok] of [[A,rng()<0.75],[B,rng()<0.75]]) if(ok) s+=circle(p,w*(0.55+0.9*S.endAmount),ink);
+  }
+  if(S.endStyle==="lift_off_flick" && L>3){
+   const k=0.9*S.endAmount, side=rng()<0.5?1:-1;
+   const tip=[B[0]+ux*k*0.7+nx*side*k*0.5,B[1]+uy*k*0.7+ny*side*k*0.5];
+   s+=`<path d="${poly([[B[0]+nx*w/2,B[1]+ny*w/2],tip,[B[0]-nx*w/2,B[1]-ny*w/2]])}" fill="${ink}"/>`;
+  }
+  if(S.doubleOffset>0.01 && S.doubleOpacity>0.01){
+   const off=S.doubleOffset*0.3*(rng()<0.5?1:-1), sk=(rng()-0.5)*0.004*L;
+   const a2=[A[0]+nx*off,A[1]+ny*off], b2=[B[0]+nx*(off+sk),B[1]+ny*(off+sk)];
+   s+=`<g opacity="${f(S.doubleOpacity)}">`+inkLine(a2,b2,w*0.75,{...S,doubleOffset:0,endStyle:"none",overshoot:S.overshoot*0.6},rng,ink,{hatch:true})+"</g>";
+  }
+ }
+ return s;
+}
+function inkPoly(pts,closed,w,S,rng,ink,o){let s="";for(let i=0;i<pts.length-(closed?0:1);i++)s+=inkLine(pts[i],pts[(i+1)%pts.length],w,S,rng,ink,o);return s}
+
+// ---------- hatches, made by hand ----------
+function hatch(name,S,rng,ink,clip){
+ let s=`<g clip-path="url(#${clip})">`;
+ const d=S.hatchDensity, sj=S.hatchSpacingJitter, aj=S.hatchAngleJitter*Math.PI/180, br=S.hatchBroken;
+ const line=(a,b,w)=>{ // broken lines: a gap here and there
+  if(rng()<br){const t=0.3+0.4*rng(), g=0.6+rng()*0.8, L=Math.hypot(b[0]-a[0],b[1]-a[1]); if(L>3){const m1=t-g/L/2,m2=t+g/L/2; const at=k=>[a[0]+(b[0]-a[0])*k,a[1]+(b[1]-a[1])*k]; return inkLine(a,at(m1),w,S,rng,ink,{hatch:true,noOver:true})+inkLine(at(m2),b,w,S,rng,ink,{hatch:true,noOver:true})}}
+  return inkLine(a,b,w,S,rng,ink,{hatch:true,noOver:true})};
+ const w=P_FINE*0.8;
+ if(name==="concrete"){
+  const n=Math.round(240*d);
+  for(let i=0;i<n;i++){const c=[X(-1000+2100*rng()),Y(-900+1100*rng())]; s+=circle(c,0.09+0.05*rng(),ink)}
+  for(let i=0;i<Math.round(34*d);i++){const c=[X(-1000+2100*rng()),Y(-900+1100*rng())],r=0.55+0.3*rng(),a0=rng()*6.283;
+   const tri=[0,1,2].map(k=>[c[0]+r*Math.cos(a0+k*2.094),c[1]+r*Math.sin(a0+k*2.094)]); s+=inkPoly(tri,true,w*0.8,S,rng,ink,{hatch:true,noOver:true})}
+ } else if(name==="gravel"){
+  for(let y=-40;y<100;y+=26/d){for(let x=-1000;x<0;x+=34/d){const c=[X(x+12*(rng()-0.5)+((y/26|0)%2)*14),Y(y+10*(rng()-0.5))];
+   s+=`<ellipse cx="${f(c[0])}" cy="${f(c[1])}" rx="${f(0.55+0.2*rng())}" ry="${f(0.36+0.12*rng())}" transform="rotate(${f(rng()*40-20)} ${f(c[0])} ${f(c[1])})" fill="none" stroke="${ink}" stroke-width="${w}"/>`}}
+ } else if(name==="earth"){
+  if(S.earthWeave){ // three-line basket weave
+   const cell=4.2/d;
+   for(let gx=0;gx<W;gx+=cell)for(let gy=Y(0);gy<H;gy+=cell){const v=((gx/cell|0)+(gy/cell|0))%2;
+    for(let k=0;k<3;k++){const o=(k+1)*cell/4+(rng()-0.5)*sj*cell*0.3;
+     s+= v? line([gx+o,gy+0.4],[gx+o,gy+cell-0.4],w) : line([gx+0.4,gy+o],[gx+cell-0.4,gy+o],w)}}
+  } else { // earth: groups of three at 45°, then a gap
+   let k=0; for(let t=-H;t<W;){const a=-Math.PI/4+(rng()-0.5)*aj, L=200;
+    const p0=[t,Y(0)], p1=[t+Math.cos(a)*L,Y(0)-Math.sin(a)*L]; s+=line(p0,p1,w);
+    t+= (k%3==2? 4.2:1.25)/d*(1+(rng()-0.5)*sj*2); k++}
+  }
+ } else if(name==="insulation"){
+  const st=3.4/d;
+  for(let y=Y(900)-st;y<Y(240)+st;y+=st){const j=(rng()-0.5)*sj*st;
+   s+=line([X(20),y+j],[X(180),y+st+j],w)+line([X(180),y+j],[X(20),y+st+j],w)}
+ } else if(name==="timber"){
+  if(S.woodCross){s+=line([X(0),Y(200)],[X(200),Y(240)],w)+line([X(0),Y(240)],[X(200),Y(200)],w)}
+  else{for(let k=1;k<3;k++){const y=Y(200+k*13);s+=line([X(10),y],[X(190),y+(rng()-0.5)*0.4],w)}}
+ }
+ return s+"</g>";
+}
+
+// ---------- lettering, leaders, ticks ----------
+function text(str,at,S,ink,anchor){
+ const fam=FONT[S.letteringStyle]||FONT.cad, j=S.letterJitter, rng=rngOf(str.length*97+(S.seed|0));
+ const rot=[...str].map(()=>f((rng()-0.5)*j*7)).join(" "), dy=[...str].map(()=>f((rng()-0.5)*j*0.25)).join(" ");
+ const slant=S.letteringStyle==="drafting_slant"?' font-style="italic"':"";
+ // a paper halo round each letter, as drawings mask text over hatches
+ return `<text x="${f(at[0])}" y="${f(at[1])}" font-family="${fam}" font-size="2.3" fill="${ink}" text-anchor="${anchor}" rotate="${rot}" dy="${dy}" stroke="#fff" stroke-width="0.9" stroke-linejoin="round" paint-order="stroke"${slant}>${str}</text>`;
+}
+function endMark(kind,tip,from,S,rng,ink){
+ const dx=tip[0]-from[0], dy=tip[1]-from[1], L=Math.hypot(dx,dy)||1, ux=dx/L, uy=dy/L;
+ if(kind==="arrow"){const b=[tip[0]-ux*1.6,tip[1]-uy*1.6];return `<path d="${poly([tip,[b[0]-uy*0.5,b[1]+ux*0.5],[b[0]+uy*0.5,b[1]-ux*0.5]])}" fill="${ink}"/>`}
+ if(kind==="dot") return circle(tip,0.45,ink);
+ // slug: a short heavy capsule along the leader
+ return inkLine([tip[0]-ux*1.5,tip[1]-uy*1.5],tip,0.75,{...S,overshoot:0,endStyle:"none",doubleOffset:0},rng,ink,{noOver:true});
+}
+function leader(lab,S,rng,ink){
+ const [str,lx,ly,tx,ty,side]=lab; const at=[X(lx),Y(ly)], tip=[X(tx),Y(ty)];
+ const anchor = side<0?"end":"start";
+ let s=text(str,[at[0],at[1]+0.8],S,ink,anchor);
+ const tw=str.length*1.45, land=side<0?[at[0]+0.8,at[1]]:[at[0]-0.8,at[1]];
+ let from;
+ if(S.leaderShape==="stepped"){const el=[land[0]+side*-3.0,land[1]]; s+=inkLine(land,el,P_FINE,S,rng,ink); s+=inkLine(el,tip,P_FINE,S,rng,ink); from=el;}
+ else if(S.leaderShape==="curved"){const c=[(land[0]+tip[0])/2,land[1]]; s+=`<path d="M${f(land[0])},${f(land[1])} Q${f(c[0])},${f(c[1])} ${f(tip[0])},${f(tip[1])}" fill="none" stroke="${ink}" stroke-width="${P_FINE}" stroke-linecap="round"/>`; from=c;}
+ else {s+=inkLine(land,tip,P_FINE,S,rng,ink); from=land;}
+ return s+endMark(S.leaderEnd,tip,from,S,rng,ink);
+}
+function tick(kind,p,S,rng,ink){
+ if(kind==="dot") return circle(p,0.4,ink);
+ const a=[p[0]-0.9,p[1]+0.9], b=[p[0]+0.9,p[1]-0.9];
+ return kind==="slug"? inkLine(a,b,0.8,{...S,overshoot:0,endStyle:"none",doubleOffset:0},rng,ink,{noOver:true}) : inkLine(a,b,0.35,S,rng,ink,{noOver:true});
+}
+
+// ---------- the whole detail ----------
+let uid=0;
+function draw(S){
+ const rng=rngOf(S.seed||1042), ink=INK[S.inkTone]||INK.black, id="c"+(uid++);
+ const clips=Object.entries(REG).map(([k,p])=>`<clipPath id="${id}${k}"><path d="${poly(toP(p))}"/></clipPath>`).join("");
+ let s=`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Footing detail in ${S.name||"this"} style"><defs>${clips}</defs><rect width="${W}" height="${H}" fill="#fff"/>`;
+ // washes: flat colour under the ink
+ const wo=S.washOpacity||0;
+ if(wo>0.01){for(const [k,c] of [["earth","earth"],["gravel","gravel"],["slab","concrete"],["stem","concrete"],["cavity","insulation"],["plate","timber"]]) s+=`<path d="${poly(toP(REG[k]))}" fill="${WASH[c]}" fill-opacity="${f(wo*0.75)}"/>`}
+ // hatches, then paper under the next material so each stays in its own area
+ s+=hatch("earth",S,rng,ink,id+"earth");
+ for(const k of ["gravel","slab","stem","plate","cavity"]) s+= wo>0.01? "" : `<path d="${poly(toP(REG[k]))}" fill="#fff"/>`;
+ if(wo>0.01) for(const k of ["gravel","slab","stem","plate","cavity"]) s+=`<path d="${poly(toP(REG[k]))}" fill="#fff"/><path d="${poly(toP(REG[k]))}" fill="${WASH[{gravel:"gravel",slab:"concrete",stem:"concrete",plate:"timber",cavity:"insulation"}[k]]}" fill-opacity="${f(wo*0.75)}"/>`;
+ s+=hatch("gravel",S,rng,ink,id+"gravel")+hatch("concrete",S,rng,ink,id+"slab")+hatch("concrete",S,rng,ink,id+"stem")+hatch("insulation",S,rng,ink,id+"cavity")+hatch("timber",S,rng,ink,id+"plate");
+ // cut lines, heavy
+ s+=inkPoly(toP(REG.stem),true,P_CUT,S,rng,ink);
+ s+=inkPoly(toP([[-1000,200],[0,200]]),false,P_CUT,S,rng,ink)+inkPoly(toP([[-1000,100],[0,100]]),false,P_PROJ,S,rng,ink);
+ s+=inkPoly(toP(REG.plate),true,P_CUT,S,rng,ink);
+ s+=inkLine([X(0),Y(240)],[X(0),Y(900)],P_CUT,S,rng,ink)+inkLine([X(200),Y(240)],[X(200),Y(900)],P_CUT,S,rng,ink);
+ s+=inkLine([X(20),Y(240)],[X(20),Y(900)],P_FINE,S,rng,ink)+inkLine([X(180),Y(240)],[X(180),Y(900)],P_FINE,S,rng,ink);
+ // ground line and gravel edge
+ s+=inkLine([X(200),Y(0)],[X(1100),Y(0)],P_CUT,S,rng,ink)+inkLine([X(-1000),Y(-50)],[X(0),Y(-50)],P_FINE,S,rng,ink);
+ // centre line, rebar
+ s+=`<path d="M${f(X(100))},${f(Y(-960))} V${f(Y(930))}" stroke="${ink}" stroke-width="${P_FINE}" stroke-dasharray="4 1 0.6 1" fill="none"/>`;
+ s+=circle([X(-80),Y(-820)],0.55,ink)+circle([X(280),Y(-820)],0.55,ink);
+ // dimension 200 under the footing
+ const dy=Y(-985); s+=inkLine([X(-40),dy],[X(240),dy],P_FINE,S,rng,ink,{noOver:true})+inkLine([X(0),Y(-910)],[X(0),dy+1.2],P_FINE,S,rng,ink,{noOver:true})+inkLine([X(200),Y(-910)],[X(200),dy+1.2],P_FINE,S,rng,ink,{noOver:true});
+ s+=tick(S.dimTick,[X(0),dy],S,rng,ink)+tick(S.dimTick,[X(200),dy],S,rng,ink)+text("200",[X(100),dy+2.9],S,ink,"middle");
+ // notes
+ const labs=[["CONCRETE SLAB",-640,420,-480,150,-1],["GRAVEL BED",-640,260,-380,30,-1],["INSULATED STUD WALL",330,760,110,650,1],["TREATED PLATE",330,520,150,220,1],["CONCRETE STEM WALL",470,300,150,-150,1],["FOOTING, 2 BARS",500,-450,330,-700,1],["COMPACTED EARTH",500,-760,620,-500,1]];
+ for(const l of labs) s+=leader(l,S,rng,ink);
+ return s+"</svg>";
+}
+
+// ---------- the page ----------
+const ORDER=Object.keys(PRESETS);
+let cur=ORDER[1], edited=JSON.parse(JSON.stringify(PRESETS));
+const pick=document.getElementById("pick");
+pick.innerHTML=ORDER.map(k=>`<option value="${k}">${PRESETS[k].name}</option>`).join("");
+function S(k){return {...edited[k].params,name:edited[k].name}}
+function render(){
+ document.getElementById("big").innerHTML=draw(S(cur));
+ document.getElementById("bigcap").textContent=`Ground floor detail · 1:20 · ${edited[cur].name}`;
+ pick.value=cur;
+ document.querySelectorAll(".th").forEach(t=>t.classList.toggle("on",t.dataset.k===cur));
+}
+function thumbs(){
+ document.getElementById("thumbs").innerHTML=ORDER.map(k=>`<div class="th" data-k="${k}" tabindex="0" role="button" aria-label="Use ${PRESETS[k].name}"><div class="name">${PRESETS[k].name}</div><div class="badge">${PRESETS[k].badge}</div>${draw(S(k))}</div>`).join("");
+ document.querySelectorAll(".th").forEach(t=>{t.onclick=()=>{cur=t.dataset.k;render();sliders()};t.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();t.click()}}});
+}
+function sliders(){
+ document.getElementById("adjname").textContent=edited[cur].name;
+ const p=edited[cur].params;
+ let h="";
+ for(const [g,items] of SETTINGS){h+=`<div class="grp">${g}</div>`;
+  for(const [key,lab,a,b,st] of items){const v=p[key];
+   if(Array.isArray(a)) h+=`<div class="row"><label>${lab}</label><select data-k="${key}">${a.map(o=>`<option value="${o}"${o===v?" selected":""}>${LABELS[o]||o}</option>`).join("")}</select></div>`;
+   else if(a===null) h+=`<label class="chk"><input type="checkbox" data-k="${key}"${v?" checked":""}> ${lab}</label>`;
+   else h+=`<div class="sl"><label>${lab}</label><input type="range" min="${a}" max="${b}" step="${st}" value="${v??0}" data-k="${key}"><output>${(+(v??0)).toFixed(st<0.1?2:1)}</output></div>`;
+  }}
+ const box=document.getElementById("sliders"); box.innerHTML=h;
+ box.querySelectorAll("[data-k]").forEach(el=>{el.oninput=el.onchange=()=>{
+  const k=el.dataset.k; p[k]= el.type==="checkbox"?el.checked : el.tagName==="SELECT"?el.value : parseFloat(el.value);
+  if(el.type==="range") el.nextElementSibling.textContent=(+el.value).toFixed(parseFloat(el.step)<0.1?2:1);
+  render(); thumbs();
+ }});
+}
+pick.onchange=()=>{cur=pick.value;render();sliders()};
+document.getElementById("adjbtn").onclick=()=>{const a=document.getElementById("adjust");a.hidden=!a.hidden;sliders()};
+document.getElementById("reset").onclick=()=>{edited[cur]=JSON.parse(JSON.stringify(PRESETS[cur]));sliders();render();thumbs()};
+document.fonts.ready.then(()=>{thumbs();render()});
+thumbs();render();
+</script>

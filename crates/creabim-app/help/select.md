@@ -60,6 +60,16 @@ The *Select* menu in the tool bar gathers the rest:
 - **All by type**: every wall, every door, every slab… with a count, without selecting one first.
 - **Select similar**, as below.
 
+## The Select tab
+
+*Properties* has a **Select** tab, first in its strip and there at all times, even with nothing selected. Element says what one thing is; the Select tab says what your selection holds, and how to change it. It stays open while you look at the plan, so you can tick, look and tick again.
+
+- **In the selection**: what you picked, by category, with a count ("Doors (3)", "Walls (2)"). Untick a category to take it out of the selection.
+- **Select similar**: **Type** and **Category** (every element of the same type, or of the same category), in this **View** or the whole **Project**. Under them, **By its values** lists the values of the element picked last, as its schedule shows them: a door's type, level, wall, width, height and sill; a wall's material, thickness and height. Tick the ones that must match: what matches lights up in every view as you tick, and the button counts it ("Select 4"). Press it to select them.
+- **Select**: **All**, **None** and **Invert**, and **All of** a kind (every wall, every door…), with a count.
+
+The Select menu and the right-click menu keep their entries; *Select similar › By its values…* opens this tab.
+
 ## Select similar
 
 Select one element (or a few), then right-click it, or open the *Edit* menu, and pick **Select similar**:

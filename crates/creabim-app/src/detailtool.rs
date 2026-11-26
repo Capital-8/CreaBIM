@@ -382,13 +382,18 @@ pub fn detail_fields(ui: &mut egui::Ui, d: &mut DetailItem) -> &'static str {
         }
         _ => {}
     }
-    ui.label(
-        egui::RichText::new(format!(
-            "{} points, {} long. Detail components are drafting: they show in this view only, never in 3D, schedules or IFC.",
-            d.points.len(),
-            crate::units::len(d.length())
-        ))
-        .weak(),
+    crate::props::worked_out(
+        ui,
+        "detail-component",
+        &[
+            crate::props::Worked::new("Points", d.points.len().to_string()),
+            crate::props::Worked::new("Length", crate::units::len(d.length())),
+        ],
+    );
+    crate::props::info(
+        ui,
+        "Detail components are drafting: they show in this view only, never in 3D, schedules or IFC.",
+        "",
     );
     label
 }
@@ -425,8 +430,7 @@ pub fn join_fields(ui: &mut egui::Ui, model: &Model, j: &mut JoinRule) -> &'stat
     ui.add_enabled_ui(j.cleanup, |ui| {
         let rule = *j;
         for w in JoinWinner::ALL {
-            if ui
-                .radio_value(&mut j.winner, w, winner_label(model, &rule, w))
+            if crate::props::radio_tick(ui, &mut j.winner, w, winner_label(model, &rule, w))
                 .changed()
             {
                 label = "Junction winner";

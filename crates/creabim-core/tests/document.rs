@@ -46,9 +46,12 @@ fn door(host: ElementId) -> Element {
             width: 0.9,
             height: 2.1,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     )
 }

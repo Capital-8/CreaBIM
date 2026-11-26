@@ -11,10 +11,16 @@ use glam::DVec2;
 /// What has been typed into the tracker so far.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tracker {
-    /// The Length field, then the Angle field (degrees).
-    pub fields: [String; 2],
+    /// The Length field, then the Angle field (degrees), then the Gap
+    /// field (a stair's, between the runs of a half-turn).
+    pub fields: [String; 3],
     /// The field typing goes to.
     pub active: usize,
+    /// It has a Gap field: drawing a stair (Stair Guides REV02 §5).
+    pub gap: bool,
+    /// Copying a guide: one field, the Distance across from the original,
+    /// and no angle, which the original sets (#34).
+    pub across: bool,
 }
 
 /// What a frame's keys did to the tracker.
@@ -38,9 +44,32 @@ impl Tracker {
         *self = Tracker::default();
     }
 
+    /// How many fields it has.
+    fn count(&self) -> usize {
+        if self.across {
+            1
+        } else if self.gap {
+            3
+        } else {
+            2
+        }
+    }
+
     /// Typing goes to the next field (Tab).
     pub fn next_field(&mut self) {
-        self.active = (self.active + 1) % self.fields.len();
+        self.active = (self.active + 1) % self.count();
+    }
+
+    /// The typed gap between a stair's runs, metres (0 or more).
+    pub fn gap_typed(&self) -> Option<f64> {
+        let t = self.fields[2].trim();
+        if !self.gap || t.is_empty() {
+            return None;
+        }
+        if t == "0" {
+            return Some(0.0);
+        }
+        crate::units::parse(t).filter(|g| *g >= 0.0)
     }
 
     /// Take this frame's keys: digits and length marks go into the active
@@ -80,7 +109,7 @@ impl Tracker {
             changed = true;
         }
         if tab {
-            self.active = (self.active + 1) % self.fields.len();
+            self.active = (self.active + 1) % self.count();
             changed = true;
         }
         if back {
@@ -142,6 +171,7 @@ pub fn angle_of(a: DVec2, b: DVec2) -> f64 {
 /// The tracker's pill below and right of `at`: "Length 3000  Angle 90°
 /// Step 50 mm", a typed field in the accent with a caret on the active
 /// one, on the theme's raised surface.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     painter: &Painter,
     at: Pos2,
@@ -149,6 +179,7 @@ pub fn draw(
     len: f64,
     angle: f64,
     step: &str,
+    gap: Option<f64>,
     look: &crate::handles::PillLook,
 ) {
     let font = egui::FontId::proportional(11.5);
@@ -175,7 +206,11 @@ pub fn draw(
     };
     let typed = |i: usize| !t.fields[i].is_empty();
     let on = |i: usize| t.typing() && t.active == i;
-    job.append("Length ", 0.0, fmt(look.text, false));
+    job.append(
+        if t.across { "Distance " } else { "Length " },
+        0.0,
+        fmt(look.text, false),
+    );
     job.append(
         &len_text,
         0.0,
@@ -188,19 +223,41 @@ pub fn draw(
             on(0),
         ),
     );
-    job.append("   Angle ", 0.0, fmt(look.text, false));
-    job.append(
-        &ang_text,
-        0.0,
-        fmt(
-            if typed(1) || on(1) {
-                look.number
-            } else {
-                look.text
-            },
-            on(1),
-        ),
-    );
+    if !t.across {
+        job.append("   Angle ", 0.0, fmt(look.text, false));
+        job.append(
+            &ang_text,
+            0.0,
+            fmt(
+                if typed(1) || on(1) {
+                    look.number
+                } else {
+                    look.text
+                },
+                on(1),
+            ),
+        );
+    }
+    if let Some(g) = gap {
+        let gap_text = if t.fields[2].is_empty() {
+            bare(g)
+        } else {
+            t.fields[2].clone()
+        };
+        job.append("   Gap ", 0.0, fmt(look.text, false));
+        job.append(
+            &gap_text,
+            0.0,
+            fmt(
+                if typed(2) || on(2) {
+                    look.number
+                } else {
+                    look.text
+                },
+                on(2),
+            ),
+        );
+    }
     job.append(
         &format!("   Step {step}"),
         0.0,

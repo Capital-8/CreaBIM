@@ -100,7 +100,7 @@ pub(super) fn categories_of(model: &Model, ids: &[ElementId]) -> Vec<(Category, 
 impl CreaBimApp {
     /// What the view the menu is about shows: the 3D view's scene less
     /// what is hidden there, or the active drawing's elements.
-    fn ids_in_view(&mut self) -> HashSet<ElementId> {
+    pub(super) fn ids_in_view(&mut self) -> HashSet<ElementId> {
         if self.shell.context_3d || self.active_view.is_none() {
             let hidden = self.hidden_in_3d();
             return self
@@ -162,6 +162,9 @@ impl CreaBimApp {
             Item::new("similar:tags", "Similar tags")
                 .enabled(tags)
                 .hint("Tags of the same kind (door tags, window tags…) in the same view"),
+            Item::new("seltab", "By its values…")
+                .enabled(some)
+                .hint("Pick by width, level, material… in the Select tab of Properties"),
         ];
         let only = self.keep_only_items();
         if !only.is_empty() {
@@ -170,6 +173,45 @@ impl CreaBimApp {
             items.extend(only);
         }
         vec![Item::sub("Select similar", items).icon("square-dashed-mouse-pointer")]
+    }
+
+    /// The two selected, when there are two that Corner can run to a
+    /// corner (the right-click menu's Trim to corner).
+    pub(super) fn corner_pair(&self) -> Option<(ElementId, ElementId)> {
+        let ids = self.selection.all();
+        let model = self.doc.model();
+        let [a, b] = ids[..] else {
+            return None;
+        };
+        let la = crate::aligntool::corner_line(model.get(a)?)?;
+        let lb = crate::aligntool::corner_line(model.get(b)?)?;
+        crate::aligntool::longer_parts(la, lb).map(|_| (a, b))
+    }
+
+    /// Trim to corner on the two selected, each keeping its longer part.
+    pub(super) fn trim_corner(&mut self) {
+        let Some((a, b)) = self.corner_pair() else {
+            self.status =
+                "Select two walls, beams, lines or grid lines that are not parallel.".into();
+            return;
+        };
+        let model = self.doc.model();
+        let line = |id| model.get(id).and_then(crate::aligntool::corner_line);
+        let Some((ka, kb)) = line(a)
+            .zip(line(b))
+            .and_then(|(la, lb)| crate::aligntool::longer_parts(la, lb))
+        else {
+            return;
+        };
+        match crate::aligntool::corner_tx(model, (a, ka), (b, kb)) {
+            Ok((tx, _)) => {
+                self.status = match self.doc.commit(tx) {
+                    Ok(()) => "Trim to corner: each kept its longer part. Ctrl+Z to undo; J then two clicks to choose the parts.".into(),
+                    Err(e) => format!("Couldn't do that: {e}"),
+                };
+            }
+            Err(why) => self.status = why,
+        }
     }
 
     /// One item per kind of element selected, each keeping only that kind;

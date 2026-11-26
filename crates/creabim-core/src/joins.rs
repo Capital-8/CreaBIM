@@ -431,10 +431,11 @@ impl WallEnds {
     /// As [`WallEnds::place`], for a layer whose ends were moved by hand
     /// `ext` past where the joins put them (start, end).
     pub fn place_layer(&self, wall: &Wall, u: f64, s: f64, core: bool, ext: [f64; 2]) -> f64 {
-        if u <= 0.0 {
+        // (within a hair: a rounding error short of an end is the end)
+        if u <= 1e-9 {
             return self.layer_start(wall, s, core) - ext[0];
         }
-        if u >= wall.length() {
+        if u >= wall.length() - 1e-9 {
             return self.layer_end(wall, s, core) + ext[1];
         }
         for g in &self.gaps {
@@ -1196,6 +1197,13 @@ fn tee(p: DVec2, d_in: DVec2, me: &Joinable, o: &Joinable) -> Option<((f64, f64,
     let n_in = d_in.perp();
     let left = meet(p + n_in * t, d_in, face, d)?;
     let right = meet(p - n_in * t, d_in, face, d)?;
+    // a T reaches no further than a mitre or a butt does: a wall all but
+    // parallel to the one it ends on would otherwise run on to where
+    // their faces meet, kilometres away
+    let limit = 4.0 * t.max(ow.thickness / 2.0) + off;
+    if left.abs() >= limit || right.abs() >= limit {
+        return None;
+    }
     // layered into layered: the core runs on to the other's core
     let core = match (me.core, o.core) {
         (Some(_), Some((c0, c1))) => {
@@ -1534,6 +1542,30 @@ mod tests {
         doc.commit(set_rule(doc.model(), a, b, "preset", |r| p.apply(r, a)))
             .unwrap();
         doc.model().clone()
+    }
+
+    #[test]
+    fn a_wall_ending_on_a_nearly_parallel_wall_stays_its_length() {
+        // Highland Haven (OSArch benchmark): a lining 16 mm thick ends on
+        // the side of a stud wall that runs 5 cm off it, the two a
+        // millionth of a radian apart. Read as a T, the lining's end ran
+        // on to where their faces meet, 81 km away
+        let (m, ids) = model(&[
+            (DVec2::ZERO, DVec2::new(10.0, 1.25e-5)),
+            (DVec2::new(6.0, 0.05), DVec2::new(3.0, 0.05)),
+        ]);
+        let joins = wall_joins(&m);
+        for &id in &ids {
+            let w = wall(&m, id);
+            let ends = joins.get(&id).cloned().unwrap_or_default();
+            for p in ends.local_outline(&w, (-0.1, 0.1)) {
+                assert!(
+                    p.x > -1.0 && p.x < w.length() + 1.0,
+                    "a join ran a wall {:.0} m past its ends",
+                    p.x.abs().max(p.x - w.length())
+                );
+            }
+        }
     }
 
     #[test]

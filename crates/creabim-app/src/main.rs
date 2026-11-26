@@ -20,6 +20,7 @@ mod choices;
 mod commands;
 mod detailtool;
 mod editmode;
+mod families;
 mod files;
 mod fillpreview;
 mod ghost;
@@ -27,8 +28,13 @@ mod handles;
 mod help;
 mod hoverpick;
 mod icons;
+mod investigationui;
+mod keymap;
+mod kindpick;
+mod library;
 #[cfg(feature = "live-mcp")]
 mod live_mcp;
+mod matcard;
 mod memberstool;
 mod modal;
 mod modguides;
@@ -36,23 +42,32 @@ mod multiedit;
 mod objecttool;
 mod optionbar;
 mod outline;
+mod paletteshapes;
 mod paneface;
 mod partstool;
+mod phaselens;
 mod planview;
+mod projecttime;
 mod props;
 mod render3d;
+mod rendered;
 mod roomtool;
 mod schedulepane;
 mod selection;
+mod servicesui;
 mod sheetview;
+mod sitelevel;
 mod sketch;
 mod slabtool;
 mod snaps;
+mod stretchtool;
 mod svgicon;
 mod tempdims;
 mod textures;
 mod theme;
+mod timecard;
 mod tooltabs;
+mod touchpad;
 mod trace;
 mod tracker;
 mod ui_model;
@@ -69,6 +84,10 @@ fn app_icon() -> std::sync::Arc<eframe::egui::IconData> {
 fn main() -> eframe::Result {
     // the window's thread answers first on a busy machine
     creabim_geom::prio::ui();
+    // a road following the ground takes its levels from it after each change
+    let _ = creabim_core::document::SITE_SETTLE.set(creabim_geom::earth::settle_roads);
+    // the house the program opens on is built while the window is made
+    app::appmenu::start_opening_house();
     // a crash says why in the activity log, with where it happened (MU39:
     // one closed the app with nothing to go on)
     let before = std::panic::take_hook();
@@ -85,7 +104,12 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("CreaBIM")
-            .with_inner_size([1400.0, 860.0])
+            // the size it comes back to when un-maximised. It is maximised
+            // on its first frame (see CreaBimApp::ui), not here: asked for
+            // at creation on a scaled Windows display, the window came up
+            // flagged maximised but at the wrong size, its foot under the
+            // taskbar (MU102: 1768 × 1122 on a 1938 × 1038 work area)
+            .with_inner_size([1200.0, 760.0])
             .with_icon(app_icon()),
         renderer: eframe::Renderer::Wgpu,
         #[cfg(target_os = "linux")]

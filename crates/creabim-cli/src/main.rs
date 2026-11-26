@@ -43,6 +43,10 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim xlsx <model> <out.xlsx>      export the schedules to Excel
   creabim ifc <model> <out.ifc>        export a model to IFC4
   creabim import-ifc <in.ifc> <out>    import an IFC2X3, IFC4 or IFC4X3 file
+  creabim ifc-check <in.ifc>... [--table out.md]
+                                       the IFC bench: import, save and open as
+                                       .creabim, export, and report what was
+                                       kept and lost, per file
   creabim ifcx <model> <out.ifcx>      export to IFC5 IFCX JSON (experimental)
   creabim import-ifcx <in.ifcx> <out>  import an IFC5 IFCX file (experimental)
   creabim plan <model> <level-name> <out.svg>
@@ -78,6 +82,9 @@ usage: (<model> is a .creabim project or a legacy .creabim.json file)
   creabim fcstd <model> <out.FCStd>    export a FreeCAD document
   creabim link <model> <file.blend|file.FCStd> <out-model>
                                        bring in (or reload) a linked file's objects";
+
+mod ifccheck;
+mod templateset;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -251,6 +258,30 @@ fn main() -> ExitCode {
             let svg = creabim_geom::plan_view(&m, le.id, 1.2).to_svg(100.0);
             std::fs::write(out, svg).map_err(|e| e.to_string())
         }),
+        // a view as the app and its sheets draw it: with its pens, styles
+        // and the looks of the phase it stands at
+        ["styled", input, name, out] => load(input).and_then(|m| {
+            let e = m
+                .iter()
+                .find(|e| e.name == *name && matches!(e.kind, creabim_core::ElementKind::View(_)))
+                .ok_or_else(|| format!("no view named {name:?}"))?;
+            let creabim_core::ElementKind::View(v) = &e.kind else {
+                unreachable!()
+            };
+            let v = creabim_core::styles::resolved(&m, v);
+            let looks = creabim_geom::looks::Looks::for_view(&m, e.id, &v);
+            let d = creabim_geom::section::view_drawing(&m, e.id).expect("is a view");
+            let (lo, hi) = d.bounds().unwrap_or((glam::DVec2::ZERO, glam::DVec2::ONE));
+            let (lo, hi) = (lo - glam::DVec2::ONE, hi + glam::DVec2::ONE);
+            let map = creabim_geom::paper::PaperMap {
+                model: lo,
+                paper: glam::DVec2::ZERO,
+                scale: v.paper_scale(),
+            };
+            let mut svg = creabim_geom::paper::SvgCanvas::new((hi - lo) * map.k());
+            creabim_geom::paper::draw_looks(&mut svg, &d, &map, &looks);
+            std::fs::write(out, svg.finish()).map_err(|e| e.to_string())
+        }),
         ["view", input, name, out] => load(input).and_then(|m| {
             let e = m
                 .iter()
@@ -272,6 +303,7 @@ fn main() -> ExitCode {
                         creabim_core::ViewKind::Section { cut: false, .. } => "elevation",
                         creabim_core::ViewKind::Axonometric { .. } => "3d",
                         creabim_core::ViewKind::Schedule { .. } => "schedule",
+                        creabim_core::ViewKind::LongSection { .. } | creabim_core::ViewKind::BoreholeLog { .. } | creabim_core::ViewKind::WalkSection { .. } => "long section",
                     };
                     println!("{kind:10} 1:{:<5} {}", v.scale, e.name);
                 }
@@ -318,6 +350,7 @@ fn main() -> ExitCode {
             }
             std::fs::write(out, sheets_pdf(&m, &info(input))).map_err(|e| e.to_string())
         }),
+        ["template-set", set, out, rest @ ..] => templateset::run(set, out, rest),
         ["apply-style", input, pack, rest @ ..] => apply_style(input, pack, rest),
         ["style-packs"] => {
             for p in creabim_core::styles::StylePack::shipped() {
@@ -351,6 +384,7 @@ fn main() -> ExitCode {
                 }
             }
         }),
+        ["ifc-check", rest @ ..] => ifccheck::run(rest),
         ["import-ifc", input, out] => read_text(input)
             .and_then(|text| import_ifc(&text).map_err(|e| format!("{input}: {e}")))
             .and_then(|r| save_import(r, out)),
@@ -414,6 +448,7 @@ fn info(path: &str) -> SheetInfo {
         // them (`House-1.1.1.creabim` was `House-1` on its sheets)
         project: project_name(&name),
         date: creabim_geom::sheet::today(),
+        ..Default::default()
     }
 }
 
@@ -426,14 +461,20 @@ fn read_text(path: &str) -> Result<String, String> {
 
 /// Save an imported model in the format `out` names, reporting what was skipped.
 fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
-    for w in &r.warnings {
+    // each note, then the elements it names under it
+    for (i, w) in r.warnings.iter().enumerate() {
         eprintln!("warning: {w}");
-    }
-    if !r.details.is_empty() {
-        eprintln!("details, element by element:");
-        for d in &r.details {
-            eprintln!("  {d}");
+        for (d, _) in r
+            .details
+            .iter()
+            .zip(&r.detail_notes)
+            .filter(|(_, n)| **n == i)
+        {
+            eprintln!("    {d}");
         }
+    }
+    for d in r.details.iter().skip(r.detail_notes.len()) {
+        eprintln!("    {d}");
     }
     // native elements and meshes apart: "13 IfcWall (6 meshes)"
     let mut counts = std::collections::BTreeMap::new();
@@ -452,6 +493,9 @@ fn save_import(r: ImportResult, out: &str) -> Result<(), String> {
         })
         .collect();
     eprintln!("imported {} ({})", r.schema, summary.join(", "));
+    for f in &r.fidelity {
+        eprintln!("fidelity: {f}");
+    }
     if is_json(out) {
         std::fs::write(out, r.model.to_json()).map_err(|e| e.to_string())
     } else {

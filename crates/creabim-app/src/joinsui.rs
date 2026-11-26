@@ -171,12 +171,7 @@ impl CreaBimApp {
             return;
         }
         if mine.is_empty() {
-            ui.label(
-                egui::RichText::new(
-                    "Joins automatically: layer by layer, the structure through finishes. Select it with another element and right-click to switch the join order or turn cleanup off.",
-                )
-                .weak(),
-            );
+            crate::props::info(ui, "Joins automatically: layer by layer, the structure through finishes. Select it with another element and right-click to switch the join order or turn cleanup off.", "");
             return;
         }
         let mut edit: Option<(ElementId, JoinRule, &'static str)> = None;

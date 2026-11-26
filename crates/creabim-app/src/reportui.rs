@@ -15,6 +15,8 @@ use super::*;
 pub struct LogUi {
     pub filter: String,
     pub problems_only: bool,
+    /// Timing notes shown too (hidden by default).
+    pub timing: bool,
 }
 
 /// A zip of `files` (name, bytes), stored without compression: plain to
@@ -161,37 +163,54 @@ impl CreaBimApp {
         lines
             .into_iter()
             .filter(|l| !self.log_ui.problems_only || crate::actlog::is_problem(l))
+            .filter(|l| self.log_ui.timing || !crate::actlog::is_timing(l))
             .filter(|l| f.is_empty() || l.to_lowercase().contains(&f))
             .collect()
     }
 
     /// The Log tab of Properties: its filter and what is in it.
     pub(super) fn log_props(&mut self, ui: &mut egui::Ui) {
-        if !self.prop_header(ui, "log_view", "Log", true, None) {
-            return;
-        }
-        crate::props::row(ui, "Filter", |ui| {
-            crate::props::fill(
+        let open = self.prop_header(ui, "log_view", "Log", true, None);
+        crate::props::fold(ui, open, |ui| {
+            crate::props::row(ui, "Filter", |ui| {
+                crate::props::fill(
+                    ui,
+                    egui::TextEdit::singleline(&mut self.log_ui.filter)
+                        .vertical_align(egui::Align::Center)
+                        .hint_text("words to find"),
+                )
+            });
+            crate::props::check(ui, "Show", &mut self.log_ui.problems_only, "Problems only");
+            crate::props::check(ui, "", &mut self.log_ui.timing, "Timing notes");
+            let (lines, _) = crate::actlog::recent();
+            let problems = lines
+                .iter()
+                .filter(|l| crate::actlog::is_problem(l))
+                .count();
+            crate::props::worked_out(
                 ui,
-                egui::TextEdit::singleline(&mut self.log_ui.filter)
-                    .vertical_align(egui::Align::Center)
-                    .hint_text("words to find"),
-            )
-        });
-        crate::props::check(ui, "Show", &mut self.log_ui.problems_only, "Problems only");
-        let (lines, _) = crate::actlog::recent();
-        let problems = lines
-            .iter()
-            .filter(|l| crate::actlog::is_problem(l))
-            .count();
-        crate::props::row(ui, "Lines", |ui| ui.label(format!("{}", lines.len())));
-        crate::props::row(ui, "Problems", |ui| ui.label(format!("{problems}")));
-        crate::props::row(ui, "System", |ui| ui.label(os_version()));
-        crate::props::row(ui, "Graphics", |ui| ui.label(gpu()));
-        crate::props::note(
+                "log",
+                &[
+                    crate::props::Worked::new("Lines", lines.len().to_string()),
+                    crate::props::Worked::new("Problems", problems.to_string()),
+                    crate::props::Worked::new(
+                        "Timing notes",
+                        lines
+                            .iter()
+                            .filter(|l| crate::actlog::is_timing(l))
+                            .count()
+                            .to_string(),
+                    ),
+                    crate::props::Worked::new("System", os_version()),
+                    crate::props::Worked::new("Graphics", gpu()),
+                ],
+            );
+            crate::props::info(
             ui,
             "Report a problem saves this log, your settings and your system in one file; your project only if you say so. Nothing is sent anywhere.",
+            "",
         );
+        });
     }
 
     /// The Log view: the activity log as it is written.
@@ -216,6 +235,8 @@ impl CreaBimApp {
                 for l in &shown {
                     let ink = if crate::actlog::is_problem(l) {
                         red
+                    } else if crate::actlog::is_timing(l) {
+                        pal.muted
                     } else {
                         pal.text
                     };
@@ -238,67 +259,193 @@ impl CreaBimApp {
         self.report_ask = Some(false);
     }
 
-    /// The Report a problem window, while it is asked for.
+    /// The Report a problem card (Mockup_Report_Card_REV00, C: a note
+    /// pinned to the branch), while it is asked for: the web card of the
+    /// family where the pages are, the plain window otherwise.
     pub(super) fn report_window(&mut self, ctx: &egui::Context) {
-        let Some(mut with_project) = self.report_ask else {
+        let Some(with_project) = self.report_ask else {
             return;
         };
+        if self.shell.web.is_none() {
+            return self.report_plain(ctx, with_project);
+        }
+        self.show_report_card(ctx);
+        if let Some(web) = &mut self.shell.web {
+            web.shade(true);
+        }
+        crate::app::shell::card_shade(ctx, "report-problem");
+        // the keys, while the views have the keyboard
+        if matches!(self.report_phase, ReportPhase::Ask | ReportPhase::Failed(_)) {
+            let (enter, esc) = ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if enter {
+                self.report_do(ctx, "save");
+            } else if esc {
+                self.report_do(ctx, "cancel");
+            }
+        }
+        self.report_step(ctx);
+    }
+
+    /// The card's buttons: save, cancel, and the project tick.
+    pub(super) fn report_do(&mut self, ctx: &egui::Context, what: &str) {
+        let Some(with_project) = self.report_ask else {
+            return;
+        };
+        match what {
+            "tick" if matches!(self.report_phase, ReportPhase::Ask | ReportPhase::Failed(_)) => {
+                self.report_ask = Some(!with_project);
+            }
+            "cancel" if !matches!(self.report_phase, ReportPhase::Writing(_)) => {
+                self.report_close()
+            }
+            "save" if matches!(self.report_phase, ReportPhase::Ask | ReportPhase::Failed(_)) => {
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                // written on the next frame, so the card shows its note
+                // being written first
+                if let Some(to) = rfd::FileDialog::new()
+                    .set_title("Save the problem report")
+                    .add_filter("Zip", &["zip"])
+                    .set_file_name(format!("CreaBIM-report-{secs}.zip"))
+                    .save_file()
+                {
+                    self.report_phase = ReportPhase::Writing(to);
+                    self.report_since = Some(std::time::Instant::now());
+                    ctx.request_repaint();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Write the report once the card shows it saving; close a little
+    /// after it is saved.
+    fn report_step(&mut self, ctx: &egui::Context) {
+        let with_project = self.report_ask.unwrap_or(false);
+        match &self.report_phase {
+            ReportPhase::Writing(to) => {
+                // a beat of the note being written, then the work
+                if self
+                    .report_since
+                    .is_some_and(|t| t.elapsed().as_millis() < 450)
+                {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(60));
+                    return;
+                }
+                let to = to.clone();
+                let bytes = zip(&self.report_files(with_project));
+                match std::fs::write(&to, bytes) {
+                    Ok(()) => {
+                        self.status = format!(
+                            "Report saved: {}. Attach it to a GitHub issue or an email{}.",
+                            to.display(),
+                            if with_project {
+                                "; it holds your project"
+                            } else {
+                                ""
+                            }
+                        );
+                        self.report_phase = ReportPhase::Saved(to.display().to_string());
+                        self.report_since = Some(std::time::Instant::now());
+                        let _ = crate::files::open_folder(&to);
+                    }
+                    Err(e) => self.report_phase = ReportPhase::Failed(e.to_string()),
+                }
+                ctx.request_repaint();
+            }
+            ReportPhase::Saved(_) => {
+                if self
+                    .report_since
+                    .is_some_and(|t| t.elapsed().as_millis() > 1800)
+                {
+                    self.report_close();
+                } else {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn report_close(&mut self) {
+        self.report_ask = None;
+        self.report_phase = ReportPhase::Ask;
+        self.report_since = None;
+        self.hide_report_card();
+    }
+
+    /// What the card's page draws.
+    pub(super) fn report_state_json(&self) -> serde_json::Value {
+        let (phase, line) = match &self.report_phase {
+            ReportPhase::Ask => ("ask", String::new()),
+            ReportPhase::Writing(_) => ("saving", String::new()),
+            ReportPhase::Saved(p) => ("saved", p.clone()),
+            ReportPhase::Failed(e) => ("failed", e.clone()),
+        };
+        serde_json::json!({
+            "phase": phase,
+            "line": line,
+            "project": self.report_ask.unwrap_or(false),
+        })
+    }
+
+    /// The plain window, where there are no pages (the web view failed).
+    fn report_plain(&mut self, ctx: &egui::Context, mut with_project: bool) {
         let mut go = false;
         let mut close = false;
-        let pal = self.shell.theme.palette();
-        egui::Modal::new(egui::Id::new("report-problem")).show(ctx, |ui| {
+        let p = crate::theme::Palette::of(ctx);
+        let left = self.shell.settings.window_buttons == "left";
+        let frame = egui::Frame::new()
+            .fill(p.panel2)
+            .stroke(egui::Stroke::new(1.0, p.border))
+            .corner_radius(10)
+            .inner_margin(egui::Margin {
+                left: 18,
+                right: 18,
+                top: 16,
+                bottom: 14,
+            });
+        egui::Modal::new(egui::Id::new("report-problem")).frame(frame).show(ctx, |ui| {
             ui.set_width(420.0);
-            ui.heading("Report a problem");
-            ui.add_space(6.0);
-            ui.label("CreaBIM saves one file to attach to a GitHub issue or an email: what it did lately, the steps that were slow, any crash, your settings, your system and graphics card. Nothing is sent anywhere.");
-            ui.add_space(8.0);
-            ui.checkbox(&mut with_project, "Include the project as it is now");
+            ui.label(egui::RichText::new("Report a problem").size(16.5).strong().color(p.text));
+            ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("It helps rebuild the problem exactly, but it is your work: leave it off if it is private.")
-                    .small()
-                    .color(pal.muted),
+                egui::RichText::new(REPORT_LINE)
+                    .size(13.0)
+                    .color(p.muted),
             );
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                go = ui.button("Save the report…").clicked();
+            crate::props::tickbox(ui, &mut with_project, "Include the project as it is now")
+                .on_hover_text("It helps rebuild the problem exactly, but it is your work: leave it off if it is private");
+            ui.add_space(14.0);
+            let layout = if left {
+                egui::Layout::left_to_right(egui::Align::Center)
+            } else {
+                egui::Layout::right_to_left(egui::Align::Center)
+            };
+            ui.with_layout(layout, |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let main = egui::Button::new(
+                    egui::RichText::new("Save the report…").strong().color(egui::Color32::WHITE),
+                )
+                .fill(p.accent);
+                go = ui.add(main).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
                 close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
             });
         });
-        self.report_ask = if go || close {
-            None
-        } else {
-            Some(with_project)
-        };
-        if !go {
-            return;
+        self.report_ask = Some(with_project);
+        if close {
+            self.report_close();
+        } else if go {
+            self.report_do(ctx, "save");
         }
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let Some(to) = rfd::FileDialog::new()
-            .set_title("Save the problem report")
-            .add_filter("Zip", &["zip"])
-            .set_file_name(format!("CreaBIM-report-{secs}.zip"))
-            .save_file()
-        else {
-            return;
-        };
-        let bytes = zip(&self.report_files(with_project));
-        self.status = match std::fs::write(&to, bytes) {
-            Ok(()) => {
-                let _ = crate::files::open_folder(&to);
-                format!(
-                    "Report saved: {}. Attach it to a GitHub issue or an email{}.",
-                    to.display(),
-                    if with_project {
-                        "; it holds your project"
-                    } else {
-                        ""
-                    }
-                )
-            }
-            Err(e) => format!("Couldn't save the report: {e}"),
-        };
+        self.report_step(ctx);
     }
 
     /// The report's files: a summary, the activity log, the settings and,
@@ -405,4 +552,19 @@ mod tests {
         let crc = u32::from_le_bytes([z[14], z[15], z[16], z[17]]);
         assert_eq!(crc, creabim_geom::raster::crc32(b"CreaBIM: 1.1.0"));
     }
+}
+
+/// What Report a problem says it does.
+const REPORT_LINE: &str = "CreaBIM saves one file to attach to a GitHub issue or an email: what it did lately, the steps that were slow, any crash, your settings, your system and graphics card. Nothing is sent anywhere.";
+
+/// Where the Report a problem card is.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum ReportPhase {
+    #[default]
+    Ask,
+    /// The file is picked; written on the next frames.
+    Writing(std::path::PathBuf),
+    /// Saved here.
+    Saved(String),
+    Failed(String),
 }

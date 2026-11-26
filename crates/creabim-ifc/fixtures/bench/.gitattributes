@@ -1,0 +1,2 @@
+# bench files are compared record by record: keep them byte-for-byte
+*.ifc -text

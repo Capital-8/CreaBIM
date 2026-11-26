@@ -429,3 +429,71 @@ fn materials_saved_before_the_library_open_unchanged() {
     );
     assert_eq!((m.roughness, m.metallic, m.opacity), (0.8, 0.0, 1.0));
 }
+
+#[test]
+fn ifc_data_kept_beside_the_model_survives_save_open_and_store_saves() {
+    use creabim_core::ifcdata::{ClassRef, IfcData, Prop, Pset, Record};
+    let (_dir, path) = tmp();
+    let mut model = sample_house();
+    let wall = model
+        .iter()
+        .find(|e| matches!(e.kind, ElementKind::Wall(_)))
+        .unwrap()
+        .id;
+    let rec = Record {
+        psets: vec![Pset {
+            name: "Acme_Wall".into(),
+            description: None,
+            props: vec![Prop {
+                name: "Fire".into(),
+                value: "IFCLABEL('REI 60')".into(),
+                kind: String::new(),
+            }],
+        }],
+        classes: vec![ClassRef {
+            code: Some("EF_25_10".into()),
+            name: None,
+            location: None,
+            system: Some("Uniclass".into()),
+            edition: None,
+            source: None,
+        }],
+    };
+    let other = model
+        .iter()
+        .filter(|e| matches!(e.kind, ElementKind::Wall(_)))
+        .nth(1)
+        .unwrap()
+        .id;
+    let mut data = IfcData::default();
+    data.by_guid.insert(wall.ifc_guid(), rec.clone());
+    data.by_guid.insert(other.ifc_guid(), rec.clone());
+    model.set_ifc_data(data);
+    let mut doc = Document::from_model(model);
+
+    // a fresh save, then edits recorded into the open file
+    let mut store = Store::create(&path, &doc).unwrap();
+    doc.edit(first_wall(&doc), "Thicker", set_thickness(0.3))
+        .unwrap();
+    store.record(&doc).unwrap();
+    store.close().unwrap();
+
+    let (_store, back) = Store::open(&path).unwrap();
+    assert_eq!(back.model().ifc_data().get(&wall.ifc_guid()), Some(&rec));
+    assert_eq!(back.model().ifc_data().get(&other.ifc_guid()), Some(&rec));
+    // the set both walls share is stored once
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let sets: i64 = conn
+        .query_row("SELECT COUNT(*) FROM ifc_sets", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(sets, 1);
+
+    // a project with none has no table, and opens with none
+    let (_dir2, plain) = tmp();
+    Store::create(&plain, &Document::from_model(sample_house()))
+        .unwrap()
+        .close()
+        .unwrap();
+    let (_s, back) = Store::open(&plain).unwrap();
+    assert!(back.model().ifc_data().is_empty());
+}

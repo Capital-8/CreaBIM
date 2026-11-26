@@ -120,7 +120,73 @@ pub fn schedule(model: &Model, category: ScheduleCategory) -> Schedule {
 
 /// The schedule of one category; `by_type` groups the rows by element
 /// type, each group under a heading row naming the type and its count.
+/// A phased project's schedule ends with its totals split by status:
+/// what is kept, what is taken down and what is new.
 pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> Schedule {
+    let mut s = schedule_all(model, category, by_type);
+    if category == ScheduleCategory::Materials || creabim_core::phases::list(model).is_empty() {
+        return s;
+    }
+    let listed: Vec<ElementId> = s.rows.iter().filter(|r| !r.group).map(|r| r.id).collect();
+    let group_of = |id: ElementId| {
+        let e = model.get(id).filter(|e| creabim_core::phases::phased(e))?;
+        Some(if e.phase.gone.is_some() {
+            1
+        } else if e.phase.built.is_some() {
+            2
+        } else {
+            0
+        })
+    };
+    if !listed.iter().any(|id| group_of(*id).is_some()) {
+        return s;
+    }
+    for (g, label) in ["Existing, kept", "Taken down", "New"]
+        .into_iter()
+        .enumerate()
+    {
+        let n = listed.iter().filter(|id| group_of(**id) == Some(g)).count();
+        if n == 0 {
+            continue;
+        }
+        // the same schedule of a model without the listed elements of
+        // the other statuses, and without what hangs on them
+        let mut out: Vec<ElementId> = listed
+            .iter()
+            .copied()
+            .filter(|id| group_of(*id).is_some_and(|x| x != g))
+            .collect();
+        let mut i = 0;
+        while i < out.len() {
+            for d in model.dependents(out[i]) {
+                if !out.contains(&d) {
+                    out.push(d);
+                }
+            }
+            i += 1;
+        }
+        let gone: std::collections::HashSet<ElementId> = out.into_iter().collect();
+        let mut part = model.clone();
+        part.retain(|e| !gone.contains(&e.id));
+        let sub = schedule_all(&part, category, false);
+        let mut cells = vec![String::new(); s.columns.len()];
+        for (k, c) in s.columns.iter().enumerate().skip(1) {
+            if let Some(j) = sub.columns.iter().position(|x| x.title == c.title) {
+                cells[k] = sub.totals.get(j).cloned().unwrap_or_default();
+            }
+        }
+        cells[0] = format!("{label} ({n})");
+        s.rows.push(Row {
+            id: ElementId::new(),
+            cells,
+            group: true,
+        });
+    }
+    s
+}
+
+/// [`schedule_by`] without the totals by status.
+fn schedule_all(model: &Model, category: ScheduleCategory, by_type: bool) -> Schedule {
     if category == ScheduleCategory::Materials {
         return takeoff_schedule(model, by_type);
     }
@@ -146,6 +212,7 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         ElementKind::Slab(s) => Some(s.level),
         ElementKind::Opening(o) => match model.get(o.host).map(|h| &h.kind) {
             Some(ElementKind::Wall(w)) => Some(w.level),
+            Some(ElementKind::Roof(r)) => Some(r.level),
             _ => None,
         },
         k => creabim_core::members::level_of(k),
@@ -182,6 +249,75 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
             if doors {
                 // hinge side seen from where it opens to, into or out of the building
                 columns.push(col("Swing", None, 22.0, false));
+                // how it opens: single or double, and a pair's leaf widths
+                columns.push(col("Operation", None, 34.0, false));
+            } else {
+                // how each of its cells opens: fixed, casement, awning
+                columns.push(col("Operation", None, 34.0, false));
+            }
+            let op_col = columns.len() - 1;
+            // how they are made and what is declared for them, as columns
+            // only once some door or window has them, so other schedules
+            // keep their old table
+            let these: Vec<&creabim_core::construction::Construction> = model
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Opening(o) if o.kind == kind => Some(&o.frame.construction),
+                    _ => None,
+                })
+                .collect();
+            type Get = fn(&creabim_core::construction::Construction) -> String;
+            let extras: Vec<(&str, f64, Get)> = [
+                (
+                    "Leaf",
+                    22.0,
+                    (|c| {
+                        use creabim_core::construction::LeafStyle as L;
+                        if c.leaf == L::Flush {
+                            String::new()
+                        } else if c.leaf == L::AllGlass {
+                            format!("All glass, {}", c.fittings.code())
+                        } else {
+                            c.leaf.label().to_string()
+                        }
+                    }) as Get,
+                ),
+                ("Fire", 16.0, |c| c.ratings.fire.clone()),
+                ("Acoustic", 20.0, |c| c.ratings.acoustic.clone()),
+                ("Security", 18.0, |c| c.ratings.security.clone()),
+                ("U-value", 16.0, |c| {
+                    c.ratings
+                        .u_value
+                        .map_or(String::new(), |u| format!("{u:.2}"))
+                }),
+                ("Accessible", 18.0, |c| {
+                    if c.ratings.accessible {
+                        "Yes".into()
+                    } else {
+                        String::new()
+                    }
+                }),
+            ]
+            .into_iter()
+            .filter(|(_, _, get)| these.iter().any(|c| !get(c).is_empty()))
+            .collect();
+            for (name, width, _) in &extras {
+                // a window's is how it is made: French, slim steel
+                let name = if !doors && *name == "Leaf" {
+                    "Make"
+                } else {
+                    name
+                };
+                columns.push(col(name, None, *width, false));
+            }
+            // the ribbon or corner a window is in (part 9), as a column only
+            // once some window is in one
+            let arranged = !doors
+                && model.iter().any(|e| {
+                    matches!(&e.kind, ElementKind::Opening(o) if o.kind == kind && o.arrangement.is_some())
+                });
+            if arranged {
+                columns.push(col("Arrangement", None, 26.0, false));
             }
             for e in model.iter() {
                 let ElementKind::Opening(o) = &e.kind else {
@@ -197,13 +333,31 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                     name(o.host),
                     mm(o.width),
                     mm(o.height),
-                    mm(o.sill),
+                    // a roof window has no sill height: it lies in the slope
+                    if o.roof_at.is_some() {
+                        "-".into()
+                    } else {
+                        mm(o.sill)
+                    },
                 ];
                 if doors {
-                    cells.push(match model.get(o.host).map(|h| &h.kind) {
-                        Some(ElementKind::Wall(w)) => crate::opening::door_hand(o, w).into(),
-                        _ => String::new(),
-                    });
+                    let host = match model.get(o.host).map(|h| &h.kind) {
+                        Some(ElementKind::Wall(w)) => Some(w),
+                        _ => None,
+                    };
+                    cells.push(host.map_or_else(String::new, |w| crate::opening::door_hand(o, w)));
+                    cells.push(host.map_or_else(
+                        || o.frame.operation(o.kind).label(o.kind).into(),
+                        |w| crate::opening::operation_text(o, w),
+                    ));
+                } else {
+                    cells.push(crate::opening::window_text(o));
+                }
+                for (_, _, get) in &extras {
+                    cells.push(get(&o.frame.construction));
+                }
+                if arranged {
+                    cells.push(creabim_core::arrangement::label(o));
                 }
                 rows.push((
                     0.0,
@@ -214,6 +368,19 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                         group: false,
                     },
                 ));
+            }
+            // the operation column wide enough for its longest entry (a
+            // door with lights round it says what they are)
+            let longest = rows
+                .iter()
+                .filter_map(|(_, _, r)| r.cells.get(op_col))
+                .map(|t| t.chars().count())
+                .max()
+                .unwrap_or(0);
+            // (none from before cells is longer than 28 characters, so
+            // those schedules keep their width)
+            if let Some(c) = columns.get_mut(op_col).filter(|_| longest > 28) {
+                c.width = c.width.max(longest as f64 * 1.3);
             }
             let what = if kind == OpeningKind::Door {
                 "doors"
@@ -338,6 +505,319 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
                     area(total),
                 ],
             )
+        }
+        ScheduleCategory::Drainage => {
+            let columns = vec![
+                col("Ref", None, 14.0, false),
+                col("Run", Some(Field::Name), 34.0, false),
+                col("Is", None, 30.0, false),
+                col("Cover level", None, 22.0, true),
+                col("Invert", None, 22.0, true),
+                col("Depth", None, 18.0, true),
+                col("Size", None, 22.0, false),
+                col("Pipe out", None, 30.0, false),
+            ];
+            let (mut chambers, mut tanks, mut gullies, mut dug) = (0, 0, 0, 0.0);
+            for e in model.iter() {
+                let ElementKind::Site(s) = &e.kind else {
+                    continue;
+                };
+                match &s.form {
+                    creabim_core::SiteForm::Drain(d) => {
+                        let lv = crate::services::drain_levels(model, s, d);
+                        dug += crate::services::drain_dig(model, s, d).dug;
+                        let pts = crate::services::chamber_points(d);
+                        for (n, k) in pts.iter().enumerate() {
+                            chambers += 1;
+                            let out = if k + 1 < d.path.len() {
+                                format!("Ø{:.0} {}", d.diameter * 1000.0, d.gradient_text())
+                            } else {
+                                "End".into()
+                            };
+                            let rf = format!("{}{}", d.service.letter(), n + 1);
+                            rows.push((
+                                0.0,
+                                format!("{}{:04}", e.name, n),
+                                Row {
+                                    id: e.id,
+                                    group: false,
+                                    cells: vec![
+                                        rf,
+                                        e.name.clone(),
+                                        "Chamber".into(),
+                                        creabim_core::site_level(model, lv.cover[*k]),
+                                        creabim_core::site_level(model, lv.invert[*k]),
+                                        mm(lv.cover[*k] - lv.invert[*k]),
+                                        format!("{0:.0}×{0:.0}", d.chamber * 1000.0),
+                                        out,
+                                    ],
+                                },
+                            ));
+                        }
+                    }
+                    creabim_core::SiteForm::Road(r) => {
+                        for (n, g) in crate::services::gullies(model, s, r).iter().enumerate() {
+                            gullies += 1;
+                            let to = g.to.map_or("None near".to_string(), |(d, k, _)| {
+                                let letter = match model.get(d).map(|e| &e.kind) {
+                                    Some(ElementKind::Site(o)) => match &o.form {
+                                        creabim_core::SiteForm::Drain(d) => d.service.letter(),
+                                        _ => "",
+                                    },
+                                    _ => "",
+                                };
+                                format!("To {letter}{}", k + 1)
+                            });
+                            rows.push((
+                                0.5,
+                                format!("{}{:04}", e.name, n),
+                                Row {
+                                    id: e.id,
+                                    group: false,
+                                    cells: vec![
+                                        format!("G{}", n + 1),
+                                        e.name.clone(),
+                                        "Road gully".into(),
+                                        creabim_core::site_level(model, g.cover),
+                                        String::new(),
+                                        String::new(),
+                                        "450×300".into(),
+                                        to,
+                                    ],
+                                },
+                            ));
+                        }
+                    }
+                    creabim_core::SiteForm::Tank(t) => {
+                        tanks += 1;
+                        let lv = crate::services::tank_levels(model, s, t);
+                        dug += crate::services::tank_dig(model, s, t).dug;
+                        rows.push((
+                            1.0,
+                            e.name.clone(),
+                            Row {
+                                id: e.id,
+                                group: false,
+                                cells: vec![
+                                    format!("T{tanks}"),
+                                    e.name.clone(),
+                                    format!("{} {:.1} m³", t.service.label(), t.capacity()),
+                                    creabim_core::site_level(model, lv.ground),
+                                    creabim_core::site_level(model, lv.floor),
+                                    mm(lv.ground - lv.floor),
+                                    format!("{:.0}×{:.0}", t.length * 1000.0, t.width * 1000.0),
+                                    String::new(),
+                                ],
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            (
+                columns,
+                vec![
+                    if gullies > 0 {
+                        format!("{chambers} chambers, {gullies} gullies, {tanks} tanks")
+                    } else {
+                        format!("{chambers} chambers, {tanks} tanks")
+                    },
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    format!("dug {}", units.volume(dug)),
+                ],
+            )
+        }
+        ScheduleCategory::Parking => {
+            use creabim_core::carpark::BayKind;
+            let columns = vec![
+                col("Car park", Some(Field::Name), 40.0, false),
+                col("Bay type", None, 34.0, false),
+                col("Size", None, 30.0, false),
+                col("Bays", None, 40.0, false),
+                col("Provided", None, 20.0, true),
+                col("Required", None, 20.0, true),
+            ];
+            let (mut cars, mut asked, mut any_asked) = (0u32, 0u32, false);
+            let mut k = 0.0;
+            for e in model.iter() {
+                let ElementKind::Site(s) = &e.kind else {
+                    continue;
+                };
+                let (Some(cp), Some(lay)) = (s.as_car_park(), s.car_park_layout(model)) else {
+                    continue;
+                };
+                let here = lay.cars() as u32;
+                cars += here;
+                let need = cp.required.required();
+                if let Some(n) = need {
+                    asked += n;
+                    any_asked = true;
+                }
+                let need_acc = (cp.accessible_per > 0).then(|| {
+                    (here as f64 / cp.accessible_per as f64 - 1e-9)
+                        .ceil()
+                        .max(0.0) as u32
+                });
+                for kind in BayKind::LISTED {
+                    let c = lay.count(kind);
+                    if c == 0 && !(kind == BayKind::Accessible && need_acc.is_some_and(|n| n > 0)) {
+                        continue;
+                    }
+                    let size = if kind == BayKind::Accessible {
+                        format!(
+                            "{:.0}×{:.0} + {:.0}",
+                            cp.bay_width * 1000.0,
+                            cp.bay_length * 1000.0,
+                            cp.access_zone * 1000.0
+                        )
+                    } else {
+                        format!("{:.0}×{:.0}", cp.bay_width * 1000.0, cp.bay_length * 1000.0)
+                    };
+                    k += 1.0;
+                    rows.push((
+                        k,
+                        format!("{}{k:04}", e.name),
+                        Row {
+                            id: e.id,
+                            group: false,
+                            cells: vec![
+                                e.name.clone(),
+                                kind.label().to_string(),
+                                size,
+                                lay.labels(kind),
+                                c.to_string(),
+                                match (kind, need_acc) {
+                                    (BayKind::Accessible, Some(n)) => n.to_string(),
+                                    _ => String::new(),
+                                },
+                            ],
+                        },
+                    ));
+                }
+                // the car park's own total against what it is asked
+                k += 1.0;
+                rows.push((
+                    k,
+                    format!("{}{k:04}", e.name),
+                    Row {
+                        id: e.id,
+                        group: false,
+                        cells: vec![
+                            e.name.clone(),
+                            "All car bays".into(),
+                            String::new(),
+                            format!("{} rows", lay.rows),
+                            here.to_string(),
+                            need.map_or(String::new(), |n| n.to_string()),
+                        ],
+                    },
+                ));
+            }
+            (
+                columns,
+                vec![
+                    "Total".into(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    cars.to_string(),
+                    if any_asked {
+                        asked.to_string()
+                    } else {
+                        String::new()
+                    },
+                ],
+            )
+        }
+        ScheduleCategory::Stairs => {
+            let columns = vec![
+                col("Name", Some(Field::Name), 40.0, false),
+                col("Level", None, 24.0, false),
+                col("Risers", None, 20.0, true),
+                col("Goings", None, 20.0, true),
+                col("2R + G", None, 14.0, true),
+                col("Pitch", None, 13.0, true),
+                col("Width", None, 14.0, true),
+                col("Headroom", None, 18.0, true),
+                col("Rule set", None, 34.0, false),
+                col("Checks", None, 40.0, false),
+            ];
+            let (mut stairs, mut failing) = (0, 0);
+            for e in model.iter() {
+                let ElementKind::Stair(s) = &e.kind else {
+                    continue;
+                };
+                stairs += 1;
+                let lay = s.layout(s.rise(model));
+                let r = lay.riser;
+                let checks = creabim_core::stairrules::check_stair(model, e.id);
+                let fails: Vec<&str> = checks
+                    .iter()
+                    .filter(|c| c.verdict == creabim_core::stairrules::Verdict::Fails)
+                    .map(|c| c.what)
+                    .collect();
+                if !fails.is_empty() {
+                    failing += 1;
+                }
+                let head = checks
+                    .iter()
+                    .find(|c| c.what == "Headroom")
+                    .map_or_else(|| "-".to_string(), |c| c.value.clone());
+                rows.push((
+                    elevation(e),
+                    e.name.clone(),
+                    Row {
+                        id: e.id,
+                        group: false,
+                        cells: vec![
+                            e.name.clone(),
+                            name(s.level),
+                            if s.is_ramp() {
+                                crate::members::ramp_tag(s.tread / r.max(1e-9)).replace(" · ", ", ")
+                            } else {
+                                format!("{} × {}", lay.risers, mm(r))
+                            },
+                            if s.is_ramp() {
+                                // a ramp's run, end to end
+                                units.length(lay.treads() as f64 * s.tread)
+                            } else {
+                                format!("{} × {}", lay.treads(), mm(s.tread))
+                            },
+                            if s.is_ramp() {
+                                "-".into()
+                            } else {
+                                mm(2.0 * r + s.tread)
+                            },
+                            format!("{:.0}°", r.atan2(s.tread).to_degrees()),
+                            mm(s.width),
+                            head,
+                            s.rules.label(),
+                            if fails.is_empty() {
+                                "Passes".into()
+                            } else {
+                                format!("Fails: {}", fails.join(", "))
+                            },
+                        ],
+                    },
+                ));
+            }
+            let mut totals = vec![String::new(); columns.len()];
+            totals[0] = if stairs == 1 {
+                "1 stair".into()
+            } else {
+                format!("{stairs} stairs")
+            };
+            totals[9] = if failing == 0 {
+                "All pass".into()
+            } else {
+                format!("{failing} failing")
+            };
+            (columns, totals)
         }
         ScheduleCategory::Rooms => {
             let columns = vec![
@@ -510,6 +990,30 @@ pub fn schedule_by(model: &Model, category: ScheduleCategory, by_type: bool) -> 
         }
         if totals.len() > 1 {
             totals.insert(1, String::new());
+        }
+    }
+    // a phased project says when each thing is built, and when it comes
+    // down: "Existing", "Existing, down in Demolition", "Proposed"
+    let phases = creabim_core::phases::list(model);
+    let phase_of = |id: ElementId| {
+        let e = model.get(id).filter(|e| creabim_core::phases::phased(e))?;
+        let name = |p: Option<u32>| {
+            p.and_then(|p| phases.iter().find(|x| x.id == p))
+                .map(|x| x.name.as_str())
+        };
+        let built = name(e.phase.built).or(phases.first().map(|p| p.name.as_str()))?;
+        Some(match name(e.phase.gone) {
+            Some(g) => format!("{built}, down in {g}"),
+            None => built.to_string(),
+        })
+    };
+    if !phases.is_empty() && rows.iter().any(|(_, _, r)| phase_of(r.id).is_some()) {
+        columns.push(col("Phase", None, 40.0, false));
+        for (_, _, r) in &mut rows {
+            r.cells.push(phase_of(r.id).unwrap_or_default());
+        }
+        if totals.len() > 1 {
+            totals.push(String::new());
         }
     }
     let mut rows: Vec<Row> = rows.into_iter().map(|(_, _, r)| r).collect();
@@ -868,7 +1372,116 @@ const PAD: f64 = 1.5;
 /// at the origin. Row text carries the row's element, so clicking a row on a
 /// sheet selects that element.
 pub fn schedule_drawing(view: ElementId, title: &str, s: &Schedule) -> PlanView {
-    let width: f64 = s.columns.iter().map(|c| c.width).sum();
+    schedule_drawing_in(view, title, s, None)
+}
+
+/// Cells wrap onto more lines past this width, paper mm (MU131).
+pub const WRAP_PAST: f64 = 34.0;
+/// One more line in a cell adds this much to its row, paper mm.
+const LINE: f64 = 3.4;
+const TEXT: f64 = 2.5;
+/// Between the blocks of a schedule continued beside itself, paper mm.
+const BLOCK_GAP: f64 = 8.0;
+
+/// `t` in lines no wider than `w` paper mm, broken at spaces (a word
+/// longer than that stays whole).
+fn wrapped(t: &str, w: f64) -> Vec<String> {
+    let mut lines: Vec<String> = vec![];
+    let mut cur = String::new();
+    for word in t.split(' ') {
+        let next = if cur.is_empty() {
+            word.to_string()
+        } else {
+            format!("{cur} {word}")
+        };
+        if !cur.is_empty() && crate::paper::text_width(&next, TEXT) > w {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        } else {
+            cur = next;
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
+/// Each column's width on paper: its header, its longest cell, at most
+/// [`WRAP_PAST`] (numbers and group headings never wrap), with its padding.
+pub fn column_widths(s: &Schedule) -> Vec<f64> {
+    (0..s.columns.len())
+        .map(|i| {
+            let c = &s.columns[i];
+            let head = crate::paper::text_width(c.title, TEXT);
+            let longest = s
+                .rows
+                .iter()
+                .filter(|r| !r.group)
+                .map(|r| crate::paper::text_width(&r.cells[i], TEXT))
+                .chain(s.totals.get(i).map(|t| crate::paper::text_width(t, TEXT)))
+                .fold(0.0, f64::max);
+            let fit = if c.numeric {
+                longest
+            } else {
+                longest.min(WRAP_PAST)
+            };
+            fit.max(head) + 2.0 * PAD
+        })
+        .collect()
+}
+
+/// [`schedule_drawing`] fitted to a place `max_height` paper mm tall:
+/// each column as wide as its longest text, up to [`WRAP_PAST`] past which
+/// its cells wrap; a table taller than its place continues in blocks side
+/// by side, its title and header repeated, its totals under the last (MU131:
+/// fixed columns let text run into the next and a wide table was cut).
+pub fn schedule_drawing_in(
+    view: ElementId,
+    title: &str,
+    s: &Schedule,
+    max_height: Option<f64>,
+) -> PlanView {
+    let n = s.columns.len();
+    let widths = column_widths(s);
+    let width: f64 = widths.iter().sum();
+    // each row's lines per cell, and its height
+    let lines: Vec<Vec<Vec<String>>> = s
+        .rows
+        .iter()
+        .map(|r| {
+            r.cells
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    if r.group || s.columns[i].numeric {
+                        vec![t.clone()]
+                    } else {
+                        wrapped(t, widths[i] - 2.0 * PAD)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let heights: Vec<f64> = lines
+        .iter()
+        .map(|cells| {
+            ROW + (cells.iter().map(|c| c.len()).max().unwrap_or(1).max(1) - 1) as f64 * LINE
+        })
+        .collect();
+    let totals = s.totals.iter().any(|t| !t.is_empty()) || !s.totals.is_empty();
+    // rows into blocks that fit the place
+    let head = TITLE_ROW + ROW;
+    let foot = if totals { ROW } else { 0.0 };
+    let mut blocks: Vec<Vec<usize>> = vec![vec![]];
+    let mut h = head;
+    for (r, rh) in heights.iter().enumerate() {
+        let room = max_height.map_or(f64::INFINITY, |m| m - foot);
+        if h + rh > room && !blocks.last().unwrap().is_empty() {
+            blocks.push(vec![]);
+            h = head;
+        }
+        blocks.last_mut().unwrap().push(r);
+        h += rh;
+    }
     let mut items = Vec::new();
     let line = |items: &mut Vec<PlanItem>, a: DVec2, b: DVec2, heavy: bool| {
         items.push(PlanItem::Line {
@@ -880,6 +1493,7 @@ pub fn schedule_drawing(view: ElementId, title: &str, s: &Schedule) -> PlanView 
     };
     let text = |items: &mut Vec<PlanItem>, id, at, t: &str, size, align| {
         items.push(PlanItem::Text {
+            angle: 0.0,
             id,
             at,
             text: t.to_string(),
@@ -890,85 +1504,120 @@ pub fn schedule_drawing(view: ElementId, title: &str, s: &Schedule) -> PlanView 
             bold: false,
         })
     };
-    text(
-        &mut items,
-        view,
-        DVec2::new(width / 2.0, -TITLE_ROW / 2.0),
-        &title.to_uppercase(),
-        3.5,
-        Anchor::Middle,
-    );
-    let rows = s.rows.len() + 2; // header, rows, totals
-    let bottom = -TITLE_ROW - rows as f64 * ROW;
-    let mut x = 0.0;
-    let cell = |c: &Column, x: f64| {
-        if c.numeric {
-            (x + c.width - PAD, Anchor::End)
+    let count = blocks.len();
+    for (bi, rows) in blocks.iter().enumerate() {
+        let ox = bi as f64 * (width + BLOCK_GAP);
+        let last = bi + 1 == count;
+        let name = if bi == 0 {
+            title.to_uppercase()
         } else {
-            (x + PAD, Anchor::Start)
-        }
-    };
-    for (i, c) in s.columns.iter().enumerate() {
-        let (tx, align) = cell(c, x);
+            format!("{}, CONTINUED", title.to_uppercase())
+        };
         text(
             &mut items,
             view,
-            DVec2::new(tx, -TITLE_ROW - ROW / 2.0),
-            c.title,
-            2.5,
-            align,
+            DVec2::new(ox + width / 2.0, -TITLE_ROW / 2.0),
+            &name,
+            3.5,
+            Anchor::Middle,
         );
-        for (r, row) in s.rows.iter().enumerate() {
-            let y = -TITLE_ROW - (r as f64 + 1.5) * ROW;
-            text(
-                &mut items,
-                row.id,
-                DVec2::new(tx, y),
-                &row.cells[i],
-                2.5,
-                align,
-            );
+        // the rows' tops, down from under the header
+        let mut tops = vec![-TITLE_ROW - ROW];
+        for r in rows {
+            let t = *tops.last().unwrap() - heights[*r];
+            tops.push(t);
         }
-        if let Some(t) = s.totals.get(i).filter(|t| !t.is_empty()) {
+        let body_bottom = *tops.last().unwrap();
+        let bottom = if last {
+            body_bottom - foot
+        } else {
+            body_bottom
+        };
+        let mut x = ox;
+        for i in 0..n {
+            let c = &s.columns[i];
+            let (tx, align) = if c.numeric {
+                (x + widths[i] - PAD, Anchor::End)
+            } else {
+                (x + PAD, Anchor::Start)
+            };
             text(
                 &mut items,
                 view,
-                DVec2::new(tx, bottom + ROW / 2.0),
-                t,
-                2.5,
+                DVec2::new(tx, -TITLE_ROW - ROW / 2.0),
+                c.title,
+                TEXT,
                 align,
             );
-        }
-        if i > 0 {
-            // a group heading runs on across the empty cells after it, so
-            // the column lines break there
-            let spans = |row: &Row| row.group && row.cells[1..=i].iter().all(|c| c.is_empty());
-            let mut top = -TITLE_ROW;
-            for (r, row) in s.rows.iter().enumerate() {
-                if spans(row) {
-                    let y = -TITLE_ROW - (r as f64 + 1.0) * ROW;
-                    if y < top {
-                        line(&mut items, DVec2::new(x, top), DVec2::new(x, y), false);
-                    }
-                    top = y - ROW;
+            for (k, r) in rows.iter().enumerate() {
+                let top = tops[k];
+                for (li, t) in lines[*r][i].iter().enumerate() {
+                    let y = top - ROW / 2.0 - li as f64 * LINE;
+                    text(&mut items, s.rows[*r].id, DVec2::new(tx, y), t, TEXT, align);
                 }
             }
-            line(&mut items, DVec2::new(x, top), DVec2::new(x, bottom), false);
+            if last {
+                if let Some(t) = s.totals.get(i).filter(|t| !t.is_empty()) {
+                    text(
+                        &mut items,
+                        view,
+                        DVec2::new(tx, bottom + ROW / 2.0),
+                        t,
+                        TEXT,
+                        align,
+                    );
+                }
+            }
+            if i > 0 {
+                // a group heading runs on across the empty cells after it,
+                // so the column lines break there
+                let spans = |row: &Row| row.group && row.cells[1..=i].iter().all(|c| c.is_empty());
+                let mut top = -TITLE_ROW;
+                for (k, r) in rows.iter().enumerate() {
+                    if spans(&s.rows[*r]) {
+                        let y = tops[k];
+                        if y < top {
+                            line(&mut items, DVec2::new(x, top), DVec2::new(x, y), false);
+                        }
+                        top = tops[k + 1];
+                    }
+                }
+                line(&mut items, DVec2::new(x, top), DVec2::new(x, bottom), false);
+            }
+            x += widths[i];
         }
-        x += c.width;
-    }
-    for r in 0..=rows {
-        let y = -TITLE_ROW - r as f64 * ROW;
-        let heavy = r == 0 || r == 1 || r == rows - 1 || r == rows;
-        line(&mut items, DVec2::new(0.0, y), DVec2::new(width, y), heavy);
-    }
-    // outer frame
-    for (a, b) in [
-        (DVec2::ZERO, DVec2::new(width, 0.0)),
-        (DVec2::ZERO, DVec2::new(0.0, bottom)),
-        (DVec2::new(width, 0.0), DVec2::new(width, bottom)),
-    ] {
-        line(&mut items, a, b, true);
+        // the title's and the header's lines heavy, then each row's
+        line(
+            &mut items,
+            DVec2::new(ox, -TITLE_ROW),
+            DVec2::new(ox + width, -TITLE_ROW),
+            true,
+        );
+        for (k, y) in tops.iter().enumerate() {
+            let heavy = k == 0 || (last && totals && k + 1 == tops.len());
+            line(
+                &mut items,
+                DVec2::new(ox, *y),
+                DVec2::new(ox + width, *y),
+                heavy,
+            );
+        }
+        if last && totals {
+            line(
+                &mut items,
+                DVec2::new(ox, bottom),
+                DVec2::new(ox + width, bottom),
+                true,
+            );
+        }
+        // outer frame
+        for (a, b) in [
+            (DVec2::new(ox, 0.0), DVec2::new(ox + width, 0.0)),
+            (DVec2::new(ox, 0.0), DVec2::new(ox, bottom)),
+            (DVec2::new(ox + width, 0.0), DVec2::new(ox + width, bottom)),
+        ] {
+            line(&mut items, a, b, true);
+        }
     }
     PlanView { items }
 }
@@ -995,6 +1644,44 @@ pub fn to_csv(s: &Schedule) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Part 9: a window schedule says which ribbon or corner a window is
+    /// in, once one is; before, it keeps its old columns.
+    #[test]
+    fn window_schedules_name_the_arrangement_once_there_is_one() {
+        use creabim_core::{arrangement, ElementKind, OpeningKind};
+        let mut m = creabim_core::sample::sample_house();
+        let titles = |m: &creabim_core::Model| -> Vec<&'static str> {
+            schedule(m, ScheduleCategory::Windows)
+                .columns
+                .iter()
+                .map(|c| c.title)
+                .collect()
+        };
+        assert!(!titles(&m).contains(&"Arrangement"));
+        let tx = m
+            .iter()
+            .filter(|e| matches!(&e.kind, ElementKind::Opening(o) if o.kind == OpeningKind::Window && o.roof_at.is_none()))
+            .find_map(|e| arrangement::add_beside(&m, e.id).ok())
+            .unwrap();
+        tx.apply(&mut m).unwrap();
+        let s = schedule(&m, ScheduleCategory::Windows);
+        let at = s
+            .columns
+            .iter()
+            .position(|c| c.title == "Arrangement")
+            .unwrap();
+        let named: Vec<&str> = s
+            .rows
+            .iter()
+            .map(|r| r.cells[at].as_str())
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(named, ["Ribbon 1", "Ribbon 1"]);
+        // the door schedule has none
+        let d = schedule(&m, ScheduleCategory::Doors);
+        assert!(!d.columns.iter().any(|c| c.title == "Arrangement"));
+    }
+
     use super::*;
     use creabim_core::sample::sample_house;
 
@@ -1011,6 +1698,40 @@ mod tests {
             .unwrap();
         let doors = schedule(doc.model(), ScheduleCategory::Doors);
         assert_eq!(doors.rows[0].cells[3], "1200");
+    }
+
+    #[test]
+    fn door_schedule_says_how_each_door_opens() {
+        let mut doc = creabim_core::Document::from_model(sample_house());
+        let doors = schedule(doc.model(), ScheduleCategory::Doors);
+        let at = doors
+            .columns
+            .iter()
+            .position(|c| c.title == "Operation")
+            .unwrap();
+        assert_eq!(doors.rows[0].cells[at], "Single hinged");
+        let front = doors.rows[0].id;
+        doc.edit(front, "Pair", |e| {
+            if let ElementKind::Opening(o) = &mut e.kind {
+                o.width = 1.6;
+                o.frame
+                    .set_operation(o.kind, creabim_core::Operation::DoubleSwing);
+                o.frame.set_active_share(2.0 / 3.0);
+            }
+        })
+        .unwrap();
+        let doors = schedule(doc.model(), ScheduleCategory::Doors);
+        // the active leaf first, both in millimetres
+        let text = &doors.rows[0].cells[at];
+        assert!(text.starts_with("Double hinged, 9"), "{text}");
+        let widths: Vec<f64> = text["Double hinged, ".len()..]
+            .split(" + ")
+            .map(|w| w.parse().unwrap())
+            .collect();
+        assert!(
+            widths[0] > widths[1] * 1.9 && widths[0] < widths[1] * 2.1,
+            "{text}"
+        );
     }
 
     #[test]
@@ -1181,7 +1902,8 @@ mod tests {
         let s = schedule(&m, ScheduleCategory::Rooms);
         let r = s.rows.iter().position(|r| r.group).unwrap();
         let d = schedule_drawing(ElementId::NIL, "Room Schedule", &s);
-        let x1 = s.columns[0].width;
+        let w = column_widths(&s);
+        let x1 = w[0];
         let mid = -TITLE_ROW - (r as f64 + 1.5) * ROW;
         let crosses = |x: f64| {
             d.items.iter().any(|it| {
@@ -1196,7 +1918,7 @@ mod tests {
         );
         // the area column's line still runs through it
         let area = s.columns.iter().position(|c| c.title == "Area").unwrap();
-        let xa: f64 = s.columns[..area].iter().map(|c| c.width).sum();
+        let xa: f64 = w[..area].iter().sum();
         assert!(crosses(xa));
     }
 
@@ -1206,8 +1928,70 @@ mod tests {
         let s = schedule(&m, ScheduleCategory::Windows);
         let d = schedule_drawing(ElementId::NIL, "Window Schedule", &s);
         let (lo, hi) = d.bounds().unwrap();
-        let width: f64 = s.columns.iter().map(|c| c.width).sum();
+        let width: f64 = column_widths(&s).iter().sum();
         assert!((hi.x - lo.x - width).abs() < 1e-9);
         assert!((lo.y + TITLE_ROW + (s.rows.len() + 2) as f64 * ROW).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_schedule_fits_its_text_and_continues_beside_itself() {
+        let col = |title: &'static str, numeric| Column {
+            title,
+            field: None,
+            width: 20.0,
+            numeric,
+        };
+        let long = "Exterior wall R-31, cedar rainscreen over strapping";
+        let s = Schedule {
+            category: creabim_core::ScheduleCategory::Walls,
+            listed: 30,
+            columns: vec![
+                col("Name", false),
+                col("Assembly", false),
+                col("Length", true),
+            ],
+            rows: (0..30)
+                .map(|i| Row {
+                    id: ElementId::NIL,
+                    cells: vec![format!("Wall {i}"), long.into(), "36'-0\"".into()],
+                    group: false,
+                })
+                .collect(),
+            totals: vec!["30 walls".into(), String::new(), String::new()],
+        };
+        let texts = |d: &PlanView| -> Vec<(DVec2, String)> {
+            d.items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Text { at, text, .. } => Some((*at, text.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let one = schedule_drawing(ElementId::NIL, "Wall schedule", &s);
+        // the long assembly wraps: no line of it is wider than the limit
+        for (_, t) in texts(&one) {
+            if long.contains(t.as_str()) && t.contains(' ') {
+                assert!(
+                    crate::paper::text_width(&t, TEXT) <= WRAP_PAST + 1e-6,
+                    "{t}"
+                );
+            }
+        }
+        assert!(!texts(&one).iter().any(|(_, t)| t == long), "it wrapped");
+        // in a 120 mm place it continues beside itself, header repeated,
+        // totals once, under the last block
+        let split = schedule_drawing_in(ElementId::NIL, "Wall schedule", &s, Some(120.0));
+        let t = texts(&split);
+        assert!(t.iter().any(|(_, x)| x == "WALL SCHEDULE, CONTINUED"));
+        assert!(t.iter().filter(|(_, x)| x == "Assembly").count() >= 2);
+        assert_eq!(t.iter().filter(|(_, x)| x == "30 walls").count(), 1);
+        let lowest = split
+            .items
+            .iter()
+            .filter_map(|i| i.bounds())
+            .map(|(lo, _)| lo.y)
+            .fold(0.0, f64::min);
+        assert!(lowest >= -120.0 - 1e-6, "{lowest}");
     }
 }

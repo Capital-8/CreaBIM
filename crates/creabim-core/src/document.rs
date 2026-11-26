@@ -38,7 +38,26 @@ pub struct Document {
     model: Model,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    /// The phase being worked in: what is added is built in it (see
+    /// [`crate::phases::stamp`]). None adds things as they are given.
+    working: Option<u32>,
+    /// The option being worked in; none is what every option shares.
+    working_option: Option<u32>,
+    /// While an option is worked in, refuse changes to what all options
+    /// share (see [`crate::phases::held_change`]).
+    hold_shared: bool,
+    /// A change to existing work from a later phase alters it there (see
+    /// [`crate::phases::alter`]) instead of correcting the survey.
+    alter_existing: bool,
+    /// How many elements were altered so, since last asked.
+    altered: usize,
 }
+
+/// Settles what only the geometry can work out after each change, in the
+/// same undo step: set once by the app (a road following the ground takes
+/// its levels from the ground under it). The core can't build the ground.
+pub static SITE_SETTLE: std::sync::OnceLock<fn(&Model, &Transaction) -> Transaction> =
+    std::sync::OnceLock::new();
 
 impl Document {
     pub fn new() -> Self {
@@ -73,6 +92,11 @@ impl Document {
             model,
             undo: undo.into_iter().map(Step::new).collect(),
             redo: redo.into_iter().map(Step::new).collect(),
+            working: None,
+            working_option: None,
+            hold_shared: false,
+            alter_existing: false,
+            altered: 0,
         })
     }
 
@@ -101,9 +125,64 @@ impl Document {
             return Ok(());
         }
         let mut tx = tx;
+        if let Some(w) = self.working {
+            crate::phases::stamp(&self.model, &mut tx, w, self.working_option);
+            if self.alter_existing {
+                self.altered += crate::phases::alter(&self.model, &mut tx, w, self.working_option);
+            }
+        }
+        self.check_held(&tx)?;
         self.apply_settled(&mut tx)?;
         self.undo.push(Step::new(tx));
         self.redo.clear();
+        Ok(())
+    }
+
+    /// The phase being worked in, which what is added from now on is
+    /// built in; none leaves added things as they are given.
+    pub fn set_working_phase(&mut self, phase: Option<u32>) {
+        self.working = phase;
+    }
+
+    pub fn working_phase(&self) -> Option<u32> {
+        self.working
+    }
+
+    /// The option being worked in, which what is added from now on is
+    /// built in alone; none is shared by every option.
+    pub fn set_working_option(&mut self, option: Option<u32>) {
+        self.working_option = option;
+    }
+
+    pub fn working_option(&self) -> Option<u32> {
+        self.working_option
+    }
+
+    /// Hold what all options share while an option is worked in: a change
+    /// to it is refused, so nothing common to the options moves by
+    /// accident.
+    pub fn set_hold_shared(&mut self, hold: bool) {
+        self.hold_shared = hold;
+    }
+
+    /// Whether a change to existing work, made from a later phase, alters
+    /// it there (the old comes down, the changed is built) or corrects the
+    /// survey (it was always so, in every phase).
+    pub fn set_alter_existing(&mut self, alter: bool) {
+        self.alter_existing = alter;
+    }
+
+    /// How many elements have been altered since this was last asked.
+    pub fn take_altered(&mut self) -> usize {
+        std::mem::take(&mut self.altered)
+    }
+
+    fn check_held(&self, tx: &Transaction) -> Result<(), ModelError> {
+        if self.hold_shared && self.working_option.is_some() {
+            if let Some(id) = crate::phases::held_change(tx) {
+                return Err(ModelError::Held(id, crate::phases::HELD.into()));
+            }
+        }
         Ok(())
     }
 
@@ -126,6 +205,24 @@ impl Document {
             if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
                 tx.ops.extend(extra.ops);
             }
+        }
+        // what the geometry works out for the site (a road following the
+        // ground), when the app has said how
+        if let Some(settle) = SITE_SETTLE.get() {
+            let extra = settle(&self.model, tx);
+            if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+                tx.ops.extend(extra.ops);
+            }
+        }
+        // a stacked stair's copies follow the one edited
+        let extra = crate::stairstack::settle(&self.model, tx);
+        if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+            tx.ops.extend(extra.ops);
+        }
+        // a stair's well follows its stair
+        let extra = crate::stairwell::settle(&self.model, tx);
+        if !extra.ops.is_empty() && extra.apply(&mut self.model).is_ok() {
+            tx.ops.extend(extra.ops);
         }
         // held dimensions move the other end of what moved (the padlock)
         for round in crate::holds::settle(&self.model, tx) {
@@ -182,6 +279,14 @@ impl Document {
     /// label and both only replace elements: dragging a value in a field
     /// is then one undo step, even when it changes several elements.
     pub fn commit_merged(&mut self, tx: Transaction) -> Result<(), ModelError> {
+        // a change that alters existing work is a step of its own
+        if let (true, Some(w)) = (self.alter_existing, self.working) {
+            let mut probe = tx.clone();
+            if crate::phases::alter(&self.model, &mut probe, w, self.working_option) > 0 {
+                return self.commit(tx);
+            }
+        }
+        self.check_held(&tx)?;
         let replaces =
             |t: &Transaction| t.ops.iter().all(|o| matches!(o, crate::Op::Replace { .. }));
         let mergeable = self.redo.is_empty()
@@ -245,6 +350,11 @@ impl Document {
             .expect("undoing a committed transaction cannot fail");
         self.redo.push(step);
         true
+    }
+
+    /// Have everything drawn from the model made again ([`Model::redraw`]).
+    pub fn redraw(&mut self) {
+        self.model.redraw();
     }
 
     /// Take back the last edit for good, without offering it for redo: for

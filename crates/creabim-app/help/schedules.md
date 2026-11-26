@@ -4,7 +4,7 @@ A **schedule** is a table of elements, made from the model: every door with its 
 
 ## Making one
 
-*File › New schedule* (or *Create › Schedule*), then *Doors*, *Windows*, *Walls*, *Slabs*, *Columns and beams*, *Furniture*, *Fixtures*, *Rooms* or *Take-off* (see [Take-off](take-off)). It opens in the 2D pane and appears under *Schedules* in the browser.
+*File › New schedule* (or *Create › Schedule*), then *Doors*, *Windows*, *Walls*, *Slabs*, *Columns and beams*, *Stairs*, *Furniture*, *Fixtures*, *Rooms*, *Drainage* (the site's drains and chambers), *Parking* (a [car park](site#car-parks)'s bays) or *Take-off* (see [Take-off](take-off)). It opens in the 2D pane and appears under *Schedules* in the browser.
 
 ## Furniture and fixtures
 
@@ -19,7 +19,7 @@ Click a line's mark to select every object of that type. Tick *Group by type* to
 
 - **Edit in the table**: change a window's width or a wall's material right in a cell. The model, the plans and the 3D view change with it.
 - Click a row's mark to select that element.
-- Totals are at the bottom.
+- Totals are at the bottom. In a project with [phases](phases), they are split by status: *Existing kept*, *Taken down* and *New*, each with its count and its sums.
 - Tick *Group by type* in the schedule's *Properties* for a heading row per [type](types), with its count. Click a heading to select all of its rows.
 - **Export CSV** and **Export Excel** in the schedule's header: CSV saves this table for a spreadsheet; Excel saves every schedule in one workbook, with numbers as numbers. See [Take-off](take-off#to-excel).
 - The selected row is marked with a soft tone and an accent bar, on light or dark paper.

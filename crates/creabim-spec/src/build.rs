@@ -260,6 +260,18 @@ pub fn build(spec: &f::Model) -> Result<Built, Vec<Problem>> {
         );
     }
 
+    if let Some(z) = spec.datum.filter(|z| z.is_finite()) {
+        let info = core::ProjectInfo {
+            elevation: z,
+            ..Default::default()
+        };
+        c.commit(
+            "",
+            Transaction::new("Build").insert(Element::new("Project", ElementKind::Project(info))),
+            &root.key("datum"),
+        );
+    }
+
     for (i, m) in spec.materials.iter().enumerate() {
         material(&mut c, m, &root.key("materials").index(i));
     }
@@ -313,6 +325,7 @@ pub fn build(spec: &f::Model) -> Result<Built, Vec<Problem>> {
             start: c.p(g.start),
             end: c.p(g.end),
             group,
+            ..Default::default()
         };
         let name = g
             .name
@@ -373,6 +386,11 @@ pub fn build(spec: &f::Model) -> Result<Built, Vec<Problem>> {
     if !c.errors.is_empty() {
         return Err(c.errors);
     }
+    // a terrain's own `pads`, and its own few `points` and `lines`, are
+    // the earlier way: each becomes an element (see `site::earlier_pads`)
+    if let Some(tx) = site::earlier_pads(c.doc.model()) {
+        let _ = c.doc.commit(tx);
+    }
     let (model, _, _) = c.doc.into_parts();
     Ok(Built {
         model,
@@ -424,9 +442,19 @@ fn note(c: &mut Ctx, n: &f::Note, at: &Path) {
     note.leader = n.leader.map(|l| core::HostPoint::free(p(c, l)));
     note.elbow = n.elbow.map(|e| p(c, e));
     note.color = n.colour.map(|col| col.0);
+    note.symbol = n.symbol.as_ref().map(|s| core::PlacedSymbol {
+        kind: s.kind.clone(),
+        style: s.style.clone(),
+        angle: s.angle,
+    });
+    let name = if note.symbol.is_some() {
+        "Symbol"
+    } else {
+        "Note"
+    };
     c.commit(
         "",
-        Transaction::new("Build").insert(Element::new("Note", ElementKind::Note(note))),
+        Transaction::new("Build").insert(Element::new(name, ElementKind::Note(note))),
         at,
     );
 }
@@ -610,12 +638,129 @@ fn location(l: f::Location, boundary: Option<u32>) -> core::LocationLine {
     }
 }
 
-fn frame(c: &Ctx, fr: &f::Frame) -> core::OpeningFrame {
+fn frame(c: &Ctx, fr: &f::Frame, kind: core::OpeningKind) -> core::OpeningFrame {
+    use core::cells as k;
+    let grid = if fr.cells.is_empty() {
+        k::Grid::of_operation(
+            kind,
+            match fr.operation.unwrap_or(f::Operation::Standard) {
+                f::Operation::Standard => core::Operation::Standard,
+                f::Operation::DoubleSwing => core::Operation::DoubleSwing,
+                f::Operation::SurfaceSliding => core::Operation::SurfaceSliding,
+                f::Operation::SurfaceSlidingPair => core::Operation::SurfaceSlidingPair,
+                f::Operation::Pocket => core::Operation::Pocket,
+                f::Operation::PocketPair => core::Operation::PocketPair,
+                f::Operation::MultiSlide => core::Operation::MultiSlide,
+            },
+            fr.active_share.unwrap_or(0.5),
+            fr.panels.unwrap_or(2),
+            fr.fixed.as_ref().map_or(1, |v| {
+                v.iter()
+                    .filter(|i| (1..=32).contains(*i))
+                    .fold(0, |m, i| m | 1 << (i - 1))
+            }),
+            [fr.panes_across.unwrap_or(1), fr.panes_up.unwrap_or(1)],
+        )
+    } else {
+        let tracks = |t: &[f::Track]| -> Vec<k::Track> {
+            t.iter()
+                .map(|t| k::Track {
+                    share: t.share,
+                    bar: t.bar,
+                })
+                .collect()
+        };
+        k::Grid {
+            outline: match fr.outline {
+                f::Outline::Rectangle => k::Outline::Rectangle,
+                f::Outline::Segmental => k::Outline::Segmental { rise: fr.rise },
+                f::Outline::Round => k::Outline::Round,
+                f::Outline::Raked => k::Outline::Raked { drop: fr.rise },
+            },
+            columns: tracks(&fr.columns),
+            rows: tracks(&fr.rows),
+            cells: fr
+                .cells
+                .iter()
+                .map(|cl| k::Cell {
+                    mechanism: match cl.mechanism {
+                        f::Mechanism::Fixed => k::Mechanism::Fixed,
+                        f::Mechanism::Hinged => k::Mechanism::Hinged,
+                        f::Mechanism::TopHung => k::Mechanism::TopHung,
+                        f::Mechanism::BottomHung => k::Mechanism::BottomHung,
+                        f::Mechanism::Louvred => k::Mechanism::Louvred,
+                        f::Mechanism::SurfaceSliding => k::Mechanism::SurfaceSliding,
+                        f::Mechanism::Pocket => k::Mechanism::Pocket,
+                        f::Mechanism::Sliding => k::Mechanism::Sliding,
+                        f::Mechanism::Pivot => k::Mechanism::Pivot,
+                        f::Mechanism::CentrePivot => k::Mechanism::CentrePivot,
+                        f::Mechanism::DoubleAction => k::Mechanism::DoubleAction,
+                        f::Mechanism::Folding => k::Mechanism::Folding,
+                        f::Mechanism::TiltTurn => k::Mechanism::TiltTurn,
+                        f::Mechanism::VerticalSliding => k::Mechanism::VerticalSliding,
+                        f::Mechanism::HorizontalPivot => k::Mechanism::HorizontalPivot,
+                        f::Mechanism::Sectional => k::Mechanism::Sectional,
+                        f::Mechanism::Rolling => k::Mechanism::Rolling,
+                        f::Mechanism::Revolving => k::Mechanism::Revolving,
+                    },
+                    hand: cl.hand,
+                    flipped: cl.flipped,
+                    active: cl.active,
+                    track: cl.track.min(1) as u8,
+                    display: match cl.display {
+                        f::CellDisplay::Convention => k::Display::Convention,
+                        f::CellDisplay::Closed => k::Display::Closed,
+                        f::CellDisplay::Open => k::Display::Open,
+                    },
+                    panes: [cl.panes_across, cl.panes_up],
+                    across: cl.across.max(1),
+                })
+                .collect(),
+        }
+        .fitted()
+    };
+    use creabim_core::construction as k2;
     core::OpeningFrame {
         width: c.l(fr.width),
         depth: c.l(fr.depth),
-        panes_across: fr.panes_across,
-        panes_up: fr.panes_up,
+        grid,
+        construction: k2::Construction {
+            leaf: match fr.leaf {
+                f::LeafStyle::Flush => k2::LeafStyle::Flush,
+                f::LeafStyle::Panelled => k2::LeafStyle::Panelled,
+                f::LeafStyle::Glazed => k2::LeafStyle::Glazed,
+                f::LeafStyle::PartGlazed => k2::LeafStyle::PartGlazed,
+                f::LeafStyle::Louvred => k2::LeafStyle::Louvred,
+                f::LeafStyle::VisionPanel => k2::LeafStyle::VisionPanel,
+                f::LeafStyle::AllGlass => k2::LeafStyle::AllGlass,
+                f::LeafStyle::French => k2::LeafStyle::French,
+                f::LeafStyle::SlimSteel => k2::LeafStyle::SlimSteel,
+            },
+            fittings: match fr.fittings {
+                f::GlassFittings::Patch => k2::GlassFittings::Patch,
+                f::GlassFittings::BottomRail => k2::GlassFittings::BottomRail,
+                f::GlassFittings::Rails => k2::GlassFittings::Rails,
+            },
+            panes: match (fr.leaf_panes_across, fr.leaf_panes_up) {
+                (Some(a), Some(u)) => Some([a.clamp(1, 12) as u8, u.clamp(1, 12) as u8]),
+                _ => None,
+            },
+            trim: k2::Trim {
+                lining: c.l(fr.lining),
+                architrave: c.l(fr.architrave),
+                threshold: c.l(fr.threshold),
+            }
+            .fitted(),
+            ratings: k2::Ratings {
+                load_bearing: None,
+                external: None,
+                fire: fr.fire_rating.clone().unwrap_or_default(),
+                acoustic: fr.acoustic_rating.clone().unwrap_or_default(),
+                security: fr.security_rating.clone().unwrap_or_default(),
+                u_value: fr.u_value,
+                accessible: fr.accessible,
+            },
+        },
     }
 }
 
@@ -714,7 +859,14 @@ fn element_type(c: &mut Ctx, t: &f::Type, at: &Path) {
                 C::Window => 0.9,
                 _ => 0.0,
             });
-            o.frame = t.frame.as_ref().map(|fr| frame(c, fr)).unwrap_or_default();
+            let kind = match t.category {
+                C::Window => core::OpeningKind::Window,
+                _ => core::OpeningKind::Door,
+            };
+            o.frame = t.frame.as_ref().map_or_else(
+                || core::OpeningFrame::for_kind(kind),
+                |fr| frame(c, fr, kind),
+            );
             o.material = material;
         }
         core::TypeParams::Slab(s) | core::TypeParams::Roof(s) => {
@@ -874,14 +1026,26 @@ fn wall(c: &mut Ctx, w: &f::Wall, at: &Path) {
 }
 
 fn opening(c: &mut Ctx, o: &f::Opening, at: &Path) {
-    let Some(host) = c.get(&o.wall, &[Tag::Wall], &at.key("wall")) else {
+    // a roof window is set in a roof, the rest in a wall
+    let hosts: &[Tag] = if o.roof_at.is_some() {
+        &[Tag::Roof]
+    } else {
+        &[Tag::Wall]
+    };
+    let Some(host) = c.get(&o.wall, hosts, &at.key("wall")) else {
         return c.fail(&o.id);
     };
     let Some(material) = c.opt(&o.material, &[Tag::Material], &at.key("material")) else {
         return c.fail(&o.id);
     };
-    let Some(ElementKind::Wall(w)) = c.model().get(host).map(|e| e.kind.clone()) else {
+    if o.roof_at.is_some() && o.kind != f::OpeningKind::Window {
+        c.err(&at.key("roof_at"), "only a window can be set in a roof");
         return c.fail(&o.id);
+    }
+    let w = match c.model().get(host).map(|e| e.kind.clone()) {
+        Some(ElementKind::Wall(w)) => Some(w),
+        Some(ElementKind::Roof(_)) if o.roof_at.is_some() => None,
+        _ => return c.fail(&o.id),
     };
     let kind = match o.kind {
         f::OpeningKind::Door => core::OpeningKind::Door,
@@ -900,9 +1064,12 @@ fn opening(c: &mut Ctx, o: &f::Opening, at: &Path) {
         width: 0.9,
         height: 2.1,
         material: None,
-        frame: Default::default(),
+        frame: creabim_core::OpeningFrame::for_kind(kind),
         flip_hand: o.flip_hand,
         flip_facing: o.flip_facing,
+        roof_at: o.roof_at.map(|p| p * c.k),
+        roof_build: Default::default(),
+        arrangement: o.arrangement.as_ref().map(arrangement),
     };
     let mut e = Element::new(name_of(&o.name, &o.id), ElementKind::Opening(opening));
     let typed = match o.kind {
@@ -941,11 +1108,19 @@ fn opening(c: &mut Ctx, o: &f::Opening, at: &Path) {
         op.sill = c.k * v;
     }
     if let Some(fr) = &o.frame {
-        op.frame = frame(c, fr);
+        op.frame = frame(c, fr, op.kind);
     }
     if o.material.is_some() {
         op.material = material;
     }
+    let Some(w) = w else {
+        // a roof window: placed by its centre in plan
+        op.sill = 0.0;
+        op.offset = 0.0;
+        e.mark = o.mark.clone();
+        c.insert(&o.id, e, at);
+        return;
+    };
     op.offset = match (o.offset, o.centre) {
         (Some(v), None) => c.k * v,
         (None, Some(m)) => c.k * m - op.width / 2.0,
@@ -1207,10 +1382,32 @@ fn stair(c: &mut Ctx, s: &f::Stair, at: &Path) {
         c.get(&s.level, &[Tag::Level], &at.key("level")),
         c.opt(&s.material, &[Tag::Material], &at.key("material")),
     );
-    let (Some(level), Some(material)) = refs else {
+    let fat = at.key("finish");
+    let fin = s.finish.as_ref();
+    let none = None;
+    let fins = (
+        c.opt(
+            fin.map_or(&none, |f| &f.tread_material),
+            &[Tag::Material],
+            &fat.key("tread_material"),
+        ),
+        c.opt(
+            fin.map_or(&none, |f| &f.riser_material),
+            &[Tag::Material],
+            &fat.key("riser_material"),
+        ),
+    );
+    let typical = c.opt(&s.typical, &[Tag::Stair], &at.key("typical"));
+    let (Some(level), Some(material), (Some(tread_material), Some(riser_material)), Some(typical)) =
+        (refs.0, refs.1, fins, typical)
+    else {
         return c.fail(&s.id);
     };
-    let stair = core::Stair {
+    let turn_kind = |k: f::StairTurnKind, n: u32| match k {
+        f::StairTurnKind::Landing => core::members::TurnKind::Landing,
+        f::StairTurnKind::Winders => core::members::TurnKind::Winders(n),
+    };
+    let mut stair = core::Stair {
         level,
         start: c.p(s.start),
         direction: s.direction,
@@ -1225,7 +1422,79 @@ fn stair(c: &mut Ctx, s: &f::Stair, at: &Path) {
             left: l.turn == f::Side::Left,
         }),
         material,
+        line: vec![],
+        bends: vec![],
+        drawn: match s.drawn {
+            f::StairLine::Walk => core::members::StairLine::Walk,
+            f::StairLine::Left => core::members::StairLine::Left,
+            f::StairLine::Right => core::members::StairLine::Right,
+        },
+        pieces: core::members::StairPieces {
+            flights: s
+                .flights
+                .iter()
+                .map(|f| core::members::FlightEdit {
+                    straight: f.straight,
+                    treads: f.treads,
+                })
+                .collect(),
+            landings: s
+                .landings
+                .iter()
+                .map(|l| core::members::LandingEdit {
+                    turn: l.turn,
+                    deeper: c.l(l.deeper),
+                })
+                .collect(),
+            turns: s
+                .turn_kinds
+                .iter()
+                .map(|t| core::members::TurnEdit {
+                    turn: t.turn,
+                    kind: turn_kind(t.kind, t.winders),
+                })
+                .collect(),
+        },
+        at_turns: turn_kind(s.turns, s.winders),
+        rules: core::stairrules::StairCode::from_key(&s.rules),
+        ramp: None,
+        typical,
+        split: s.split,
+        // not in the text format yet: the head stays, and nothing kept from a ramp
+        fixed_foot: false,
+        as_steps: None,
+        up_offset: s.up_label.map(|v| glam::DVec2::new(c.l(v.x), c.l(v.y))),
+        build: {
+            use core::members::StairBuild as B;
+            match s.build {
+                f::StairBuild::Concrete => B::Concrete,
+                f::StairBuild::Stepped => B::Stepped,
+                f::StairBuild::FoldedPlate => B::FoldedPlate,
+                f::StairBuild::Stringers => B::Stringers,
+                f::StairBuild::CutStringers => B::CutStringers,
+                f::StairBuild::Spine => B::Spine,
+                f::StairBuild::Cantilever => B::Cantilever,
+                f::StairBuild::Post => B::Post,
+            }
+        },
+        finish: core::members::StairFinish {
+            tread: fin.map_or(0.0, |f| c.l(f.tread)),
+            tread_material,
+            riser: fin.map_or(0.0, |f| c.l(f.riser)),
+            riser_material,
+            nosing: fin.map_or(0.0, |f| c.l(f.nosing)),
+        },
     };
+    if let Some(slope) = s.ramp {
+        stair.set_slope(slope);
+    }
+    if s.line.len() >= 2 {
+        let pts: Vec<_> = s.line.iter().map(|p| c.p(*p)).collect();
+        stair.set_line(&pts);
+        for (i, b) in s.bends.iter().enumerate() {
+            stair.set_bend(i, *b);
+        }
+    }
     c.insert(
         &s.id,
         Element::new(name_of(&s.name, &s.id), ElementKind::Stair(stair)),
@@ -1277,6 +1546,19 @@ fn railing(c: &mut Ctx, r: &f::Railing, at: &Path) {
         stair,
         material,
         rail_profile: None,
+        extend: r.extend.as_ref().map(|e| core::members::RailExtend {
+            bottom: c.l(e.bottom),
+            top: c.l(e.top),
+            slope_bottom: e.slope_bottom,
+        }),
+        on_wall: r.on_wall,
+        infill: match r.infill {
+            f::RailInfill::Rail => core::members::RailInfill::Rail,
+            f::RailInfill::Balusters => core::members::RailInfill::Balusters,
+            f::RailInfill::Glass => core::members::RailInfill::Glass,
+        },
+        guard_height: r.guard_height.map(|h| c.l(h)),
+        newels: r.newels,
     };
     c.insert(
         &r.id,
@@ -1388,9 +1670,48 @@ fn site_element(c: &mut Ctx, s: &f::SiteElement, at: &Path) {
     };
     const COMMON: &[&str] = &["id", "name", "kind", "level", "material"];
     let own: &[&str] = match s.kind {
-        f::SiteKind::Terrain => &["outline", "top", "thickness", "points", "contour"],
+        f::SiteKind::Terrain => &[
+            "outline",
+            "top",
+            "thickness",
+            "points",
+            "contour",
+            "lines",
+            "survey",
+            "faceted",
+            "major",
+            "labels",
+            "levels",
+            "shift",
+            "pads",
+            "under_buildings",
+            "strata",
+            "analysis",
+            "flow",
+        ],
         f::SiteKind::Area => &["outline", "holes", "top", "thickness", "pattern"],
+        f::SiteKind::Pad => &[
+            "outline",
+            "top",
+            "thickness",
+            "cut",
+            "fill",
+            "depth",
+            "width",
+            "path",
+            "only_cut",
+            "retained",
+            "radius",
+        ],
         f::SiteKind::Plant => &["at", "base", "plant", "canopy", "height"],
+        f::SiteKind::Property => &["outline", "edges", "rules"],
+        f::SiteKind::Road => &["path", "road"],
+        f::SiteKind::Drain => &["drain"],
+        f::SiteKind::Tank => &["at", "tank"],
+        f::SiteKind::Path => &["walk"],
+        f::SiteKind::Investigation => &["at", "investigation"],
+        f::SiteKind::Spot => &["at", "top"],
+        f::SiteKind::GroundLine => &["lines"],
     };
     let allowed: Vec<&str> = COMMON.iter().chain(own).copied().collect();
     let kind = format!("a site {}", s.kind.key());
@@ -1419,6 +1740,60 @@ fn site_element(c: &mut Ctx, s: &f::SiteElement, at: &Path) {
                     thickness,
                     points: s.points.iter().map(|p| c.p3(*p)).collect(),
                     contour: c.l(s.contour),
+                    data: site::GroundData {
+                        lines: s
+                            .lines
+                            .iter()
+                            .map(|l| site::GroundLine {
+                                kind: if l.sharp {
+                                    site::GroundLineKind::Break
+                                } else {
+                                    site::GroundLineKind::Contour
+                                },
+                                points: l.points.iter().map(|p| c.p3(*p)).collect(),
+                                closed: l.closed,
+                            })
+                            .collect(),
+                        survey: s.survey,
+                        faceted: s.faceted,
+                        major: s.major,
+                        labels: s.labels,
+                        levels: s.levels,
+                        // a survey's own coordinates, in its own units
+                        shift: s.shift.unwrap_or_default(),
+                        pads: s
+                            .pads
+                            .iter()
+                            .map(|p| site::Pad {
+                                outline: p.outline.iter().map(|q| c.p(*q)).collect(),
+                                level: c.l(p.level),
+                                cut: p.cut,
+                                fill: p.fill,
+                                only_cut: false,
+                                depth: c.l(p.depth),
+                                heights: vec![],
+                                sunk: 0.0,
+                                upright: vec![],
+                                behind: vec![],
+                            })
+                            .collect(),
+                        under_buildings: s.under_buildings,
+                        strata: s
+                            .strata
+                            .iter()
+                            .map(|l| site::Stratum {
+                                name: l.name.clone(),
+                                thickness: c.l(l.thickness),
+                            })
+                            .collect(),
+                        analysis: match s.analysis {
+                            f::GroundShading::None => site::GroundAnalysis::None,
+                            f::GroundShading::Slope => site::GroundAnalysis::Slope,
+                            f::GroundShading::Aspect => site::GroundAnalysis::Aspect,
+                            f::GroundShading::Height => site::GroundAnalysis::Height,
+                        },
+                        flow: s.flow,
+                    },
                 }
             } else {
                 let pattern = match &s.pattern {
@@ -1434,7 +1809,68 @@ fn site_element(c: &mut Ctx, s: &f::SiteElement, at: &Path) {
                     top: c.l(s.top),
                     thickness,
                     pattern,
+                    parking: None,
                 }
+            }
+        }
+        f::SiteKind::Spot => {
+            let Some(position) = s.at else {
+                c.err(at, "a spot level needs `at`");
+                return c.fail(&s.id);
+            };
+            site::SiteForm::Spot {
+                position: c.p(position),
+                height: c.l(s.top),
+            }
+        }
+        f::SiteKind::GroundLine => {
+            let [l] = s.lines.as_slice() else {
+                c.err(at, "a ground line needs one line in `lines`");
+                return c.fail(&s.id);
+            };
+            site::SiteForm::Line(site::GroundLine {
+                kind: if l.sharp {
+                    site::GroundLineKind::Break
+                } else {
+                    site::GroundLineKind::Contour
+                },
+                points: l.points.iter().map(|p| c.p3(*p)).collect(),
+                closed: l.closed,
+            })
+        }
+        f::SiteKind::Pad => {
+            let mut boundary = c.pts(&s.outline);
+            if core::polygon::signed_area2(&boundary) < 0.0 {
+                boundary.reverse();
+            }
+            let flat: Vec<DVec2> = s.path.iter().map(|p| p.truncate()).collect();
+            let path = c.pts(&flat);
+            let width = c.l(s.width);
+            let bend = c.l(s.radius);
+            if path.len() >= 2 && width > 0.0 {
+                boundary = site::trench_round(&path, bend, width);
+                if core::polygon::signed_area2(&boundary) < 0.0 {
+                    boundary.reverse();
+                }
+            }
+            let depth = c.l(s.depth);
+            let dug = depth > 0.0;
+            site::SiteForm::Pad {
+                boundary,
+                top: c.l(s.top),
+                // a pad with no thickness given keeps the base course it
+                // always had; a pit or a trench has none
+                base: s.thickness.map_or(if dug { 0.0 } else { 0.15 }, |t| c.l(t)),
+                cut: s.cut.unwrap_or(if dug { 0.5 } else { 1.5 }),
+                fill: s.fill.unwrap_or(if dug { 0.0 } else { 2.0 }),
+                depth,
+                path: if width > 0.0 { path } else { vec![] },
+                width: if s.path.len() >= 2 { width } else { 0.0 },
+                only_cut: s.only_cut,
+                retained: s.retained.iter().map(|e| *e as usize).collect(),
+                // a wall on a retained edge is an element of its own
+                walls: vec![],
+                bend,
             }
         }
         f::SiteKind::Plant => {
@@ -1459,7 +1895,257 @@ fn site_element(c: &mut Ctx, s: &f::SiteElement, at: &Path) {
                 },
                 canopy,
                 height,
+                tree: None,
             }
+        }
+        f::SiteKind::Property => {
+            let r = s.rules.clone().unwrap_or_else(|| f::LotRules {
+                front: 6.0,
+                side: 3.0,
+                rear: 6.0,
+                height: 0.0,
+                coverage: 0.0,
+                floor_ratio: 0.0,
+                bearings: true,
+                setbacks: true,
+                angle: 0.0,
+                angle_from: 2.5,
+                envelope: true,
+                easements: vec![],
+                own: vec![],
+            });
+            let mut boundary = c.pts(&s.outline);
+            let mut edges = s
+                .edges
+                .iter()
+                .map(|e| match e {
+                    f::LotEdge::Front => core::LotEdge::Front,
+                    f::LotEdge::Side => core::LotEdge::Side,
+                    f::LotEdge::Rear => core::LotEdge::Rear,
+                    f::LotEdge::Open => core::LotEdge::Open,
+                })
+                .collect();
+            let mut easements: Vec<core::Easement> = r
+                .easements
+                .iter()
+                .map(|e| core::Easement {
+                    name: e.name.clone(),
+                    edge: e.edge as usize,
+                    width: c.l(e.width),
+                })
+                .collect();
+            let mut own: Vec<core::lot::EdgeRule> = r
+                .own
+                .iter()
+                .map(|o| core::lot::EdgeRule {
+                    edge: o.edge as usize,
+                    setback: o.setback.map(|v| c.l(v)),
+                    note: o.note.clone().unwrap_or_default(),
+                    note_off: o.note_offset.map(|v| DVec2::new(c.l(v.x), c.l(v.y))),
+                })
+                .collect();
+            core::lot::make_ccw(&mut boundary, &mut edges, &mut easements, &mut own);
+            site::SiteForm::Property {
+                boundary,
+                edges,
+                rules: core::PlanningRules {
+                    front: c.l(r.front),
+                    side: c.l(r.side),
+                    rear: c.l(r.rear),
+                    height: c.l(r.height),
+                    coverage: r.coverage,
+                    floor_ratio: r.floor_ratio,
+                    bearings: r.bearings,
+                    setbacks: r.setbacks,
+                    has_setbacks: true,
+                    angle: r.angle,
+                    angle_from: c.l(r.angle_from),
+                    envelope: r.envelope,
+                    easements,
+                    own,
+                },
+            }
+        }
+        f::SiteKind::Road => {
+            if s.path.len() < 2 {
+                c.err(at, "a road needs a `path` of two points");
+                return c.fail(&s.id);
+            }
+            let r = s.road.clone().unwrap_or_default();
+            let parking =
+                r.parking
+                    .as_ref()
+                    .map_or_else(Default::default, |p| core::road::Parking {
+                        side: match p.side {
+                            f::ParkingSide::Left => core::road::Side::Left,
+                            f::ParkingSide::Right => core::road::Side::Right,
+                            f::ParkingSide::Both => core::road::Side::Both,
+                        },
+                        width: c.l(p.width),
+                        length: c.l(p.length),
+                        angle: p.angle,
+                    });
+            site::SiteForm::Road(core::road::Road {
+                path: s.path.iter().map(|p| c.p3(*p)).collect(),
+                width: c.l(r.width),
+                fall: r.fall,
+                crowned: r.crowned,
+                kerb: c.l(r.kerb),
+                footpath: c.l(r.footpath),
+                thickness: c.l(r.thickness),
+                cut: r.cut,
+                fill: r.fill,
+                works: r.works,
+                parking,
+                gullies: c.l(r.gullies),
+                // the format gives the radius on the middle line; the
+                // road keeps its inside kerb's, which bends the same
+                radius: 0.0,
+                kerb_radius: Some((c.l(r.radius) - c.l(r.width) / 2.0).max(0.0)),
+                held: core::road::Side::None,
+                start_at: None,
+                end_at: None,
+                levels: core::road::Levels::Points,
+                profile: vec![],
+                profile_key: 0,
+            })
+        }
+        f::SiteKind::Path => {
+            let Some(w) = &s.walk else {
+                c.err(at, "a path needs `walk`");
+                return c.fail(&s.id);
+            };
+            if w.path.len() < 2 {
+                c.err(&at.key("walk"), "a path needs a `path` of two points");
+                return c.fail(&s.id);
+            }
+            site::SiteForm::Walk(core::walk::Walk {
+                path: w.path.iter().map(|p| c.p(*p)).collect(),
+                width: c.l(w.width),
+                surface: match w.surface {
+                    f::PathSurface::Gravel => core::walk::Surface::Gravel,
+                    f::PathSurface::Paving => core::walk::Surface::Paving,
+                    f::PathSurface::Asphalt => core::walk::Surface::Asphalt,
+                    f::PathSurface::Bark => core::walk::Surface::Bark,
+                },
+                edging: c.l(w.edging),
+                thickness: c.l(w.thickness),
+                radius: c.l(w.radius),
+            })
+        }
+        f::SiteKind::Drain => {
+            let Some(d) = &s.drain else {
+                c.err(at, "a drain needs `drain`");
+                return c.fail(&s.id);
+            };
+            if d.path.len() < 2 {
+                c.err(&at.key("drain"), "a drain needs a `path` of two points");
+                return c.fail(&s.id);
+            }
+            site::SiteForm::Drain(core::services::Drain {
+                path: d.path.iter().map(|p| c.p(*p)).collect(),
+                service: match d.service {
+                    f::DrainService::Foul => core::services::DrainUse::Foul,
+                    f::DrainService::Surface => core::services::DrainUse::Surface,
+                    f::DrainService::Combined => core::services::DrainUse::Combined,
+                    f::DrainService::Field => core::services::DrainUse::Field,
+                },
+                diameter: c.l(d.diameter),
+                fall: d.fall,
+                depth: c.l(d.depth),
+                chambers: d.chambers,
+                chamber: c.l(d.chamber),
+                trench: c.l(d.trench),
+                bed: c.l(d.bed),
+            })
+        }
+        f::SiteKind::Investigation => {
+            let (Some(p), Some(q)) = (s.at, &s.investigation) else {
+                c.err(at, "an investigation point needs `at` and `investigation`");
+                return c.fail(&s.id);
+            };
+            use core::investigation as inv;
+            let text = |t: &Option<String>| t.clone().unwrap_or_default();
+            site::SiteForm::Investigation(inv::Probe {
+                position: c.p(p),
+                kind: match q.kind {
+                    f::ProbeType::Borehole => inv::ProbeKind::Borehole,
+                    f::ProbeType::TrialPit => inv::ProbeKind::TrialPit,
+                    f::ProbeType::Probe => inv::ProbeKind::Probe,
+                },
+                ground: q.ground.map(|g| c.l(g)),
+                depth: c.l(q.depth),
+                layers: q
+                    .layers
+                    .iter()
+                    .map(|l| inv::LogLayer {
+                        to: c.l(l.to),
+                        soil: match l.soil {
+                            f::SoilType::Topsoil => inv::SoilKind::Topsoil,
+                            f::SoilType::MadeGround => inv::SoilKind::MadeGround,
+                            f::SoilType::Clay => inv::SoilKind::Clay,
+                            f::SoilType::Silt => inv::SoilKind::Silt,
+                            f::SoilType::Sand => inv::SoilKind::Sand,
+                            f::SoilType::Gravel => inv::SoilKind::Gravel,
+                            f::SoilType::Peat => inv::SoilKind::Peat,
+                            f::SoilType::Rock => inv::SoilKind::Rock,
+                        },
+                        unit: text(&l.unit),
+                        description: text(&l.description),
+                    })
+                    .collect(),
+                water: q
+                    .water
+                    .iter()
+                    .map(|w| inv::WaterStrike {
+                        depth: c.l(w.depth),
+                        rest: w.rest.map(|r| c.l(r)),
+                        note: text(&w.note),
+                    })
+                    .collect(),
+                tests: q
+                    .tests
+                    .iter()
+                    .map(|t| inv::FieldTest {
+                        depth: c.l(t.depth),
+                        kind: match t.kind {
+                            f::TestType::Spt => inv::TestKind::Spt,
+                            f::TestType::Vane => inv::TestKind::Vane,
+                            f::TestType::Penetrometer => inv::TestKind::Penetrometer,
+                            f::TestType::Dynamic => inv::TestKind::Dynamic,
+                        },
+                        value: t.value,
+                        text: text(&t.text),
+                    })
+                    .collect(),
+                method: text(&q.method),
+                date: text(&q.date),
+                report: text(&q.report),
+                notes: text(&q.notes),
+            })
+        }
+        f::SiteKind::Tank => {
+            let (Some(p), Some(t)) = (s.at, &s.tank) else {
+                c.err(at, "a tank needs `at` and `tank`");
+                return c.fail(&s.id);
+            };
+            site::SiteForm::Tank(core::services::Tank {
+                centre: c.p(p),
+                service: match t.service {
+                    f::TankService::Septic => core::services::TankUse::Septic,
+                    f::TankService::Treatment => core::services::TankUse::Treatment,
+                    f::TankService::Rainwater => core::services::TankUse::Rainwater,
+                    f::TankService::Attenuation => core::services::TankUse::Attenuation,
+                    f::TankService::Soakaway => core::services::TankUse::Soakaway,
+                },
+                length: c.l(t.length),
+                width: c.l(t.width),
+                depth: c.l(t.depth),
+                angle: t.angle,
+                cover: c.l(t.cover),
+                wall: c.l(t.wall),
+                working: c.l(t.working),
+            })
         }
     };
     let el = core::Site {
@@ -1545,6 +2231,47 @@ fn object(c: &mut Ctx, o: &f::Object, catalogue: &[CatalogueObject], at: &Path) 
     if !c.owns(&o.id, at) {
         return;
     }
+    // its light belongs to its type: set on the type as it is made, or
+    // on the one already there
+    if let Some(l) = &o.light {
+        let light = core::Light {
+            on: l.on,
+            lumens: l.lumens,
+            kelvin: l.kelvin,
+            beam: match l.beam {
+                f::LightBeam::Narrow => core::Spread::Narrow,
+                f::LightBeam::Medium => core::Spread::Medium,
+                f::LightBeam::Wide => core::Spread::Wide,
+                f::LightBeam::AllRound => core::Spread::AllRound,
+            },
+            group: l.group.clone().unwrap_or_default(),
+        };
+        let give = |e: &mut Element| -> bool {
+            if let ElementKind::ElementType(t) = &mut e.kind {
+                if let core::TypeParams::Object(ot) = &mut t.params {
+                    ot.light = Some(light.clone());
+                    return true;
+                }
+            }
+            false
+        };
+        let mut set = false;
+        for op in &mut tx.ops {
+            if let core::Op::Insert(e) = op {
+                set |= give(e);
+            }
+        }
+        if !set {
+            let there = core::objects::type_for_key(c.model(), &cat.key)
+                .and_then(|id| c.model().get(id).cloned());
+            if let Some(before) = there {
+                let mut after = before.clone();
+                if give(&mut after) && after != before {
+                    tx.ops.push(core::Op::Replace { before, after });
+                }
+            }
+        }
+    }
     let eid = c.eid(&o.id);
     let k = c.k;
     for op in &mut tx.ops {
@@ -1595,11 +2322,20 @@ fn view(c: &mut Ctx, v: &f::View, at: &Path) {
     use f::ViewKind as K;
     const COMMON: &[&str] = &["id", "name", "kind", "scale", "style", "callout"];
     let own: &[&str] = match v.kind {
-        K::Plan => &["level", "cut_height", "ceiling_plan", "room_colours"],
-        K::Section => &["start", "end", "depth", "room_colours"],
-        K::Elevation => &["start", "end", "depth"],
-        K::ThreeD => &["azimuth", "altitude"],
+        K::Plan => &[
+            "level",
+            "cut_height",
+            "ceiling_plan",
+            "room_colours",
+            "site",
+        ],
+        K::Section => &["start", "end", "depth", "room_colours", "site"],
+        K::Elevation => &["start", "end", "depth", "site"],
+        K::ThreeD => &["azimuth", "altitude", "site"],
         K::Schedule => &["category", "by_type"],
+        K::LongSection => &["drain"],
+        K::BoreholeLog => &["probe"],
+        K::WalkSection => &["stair"],
     };
     let allowed: Vec<&str> = COMMON.iter().chain(own).copied().collect();
     let article = if v.kind == K::Elevation { "an" } else { "a" };
@@ -1632,6 +2368,36 @@ fn view(c: &mut Ctx, v: &f::View, at: &Path) {
             core::View::section(c.p(start), c.p(end), c.l(depth), v.kind == K::Section)
         }
         K::ThreeD => core::View::axonometric(v.azimuth, v.altitude),
+        K::LongSection => {
+            let Some(d) = &v.drain else {
+                c.err(at, "a long section needs `drain`");
+                return c.fail(&v.id);
+            };
+            let Some(drain) = c.get(d, &[Tag::Site], &at.key("drain")) else {
+                return c.fail(&v.id);
+            };
+            core::View::long_section(drain)
+        }
+        K::BoreholeLog => {
+            let Some(d) = &v.probe else {
+                c.err(at, "a borehole log needs `probe`");
+                return c.fail(&v.id);
+            };
+            let Some(probe) = c.get(d, &[Tag::Site], &at.key("probe")) else {
+                return c.fail(&v.id);
+            };
+            core::View::borehole_log(probe)
+        }
+        K::WalkSection => {
+            let Some(d) = &v.stair else {
+                c.err(at, "a walk-line section needs `stair`");
+                return c.fail(&v.id);
+            };
+            let Some(stair) = c.get(d, &[Tag::Stair], &at.key("stair")) else {
+                return c.fail(&v.id);
+            };
+            core::View::walk_section(stair)
+        }
         K::Schedule => {
             let Some(cat) = v.category else {
                 c.err(at, "a schedule needs `category`");
@@ -1646,6 +2412,9 @@ fn view(c: &mut Ctx, v: &f::View, at: &Path) {
                 f::ScheduleCategory::Furniture => core::ScheduleCategory::Furniture,
                 f::ScheduleCategory::Fixtures => core::ScheduleCategory::Fixtures,
                 f::ScheduleCategory::Rooms => core::ScheduleCategory::Rooms,
+                f::ScheduleCategory::Drainage => core::ScheduleCategory::Drainage,
+                f::ScheduleCategory::Stairs => core::ScheduleCategory::Stairs,
+                f::ScheduleCategory::Parking => core::ScheduleCategory::Parking,
                 f::ScheduleCategory::Materials => core::ScheduleCategory::Materials,
             };
             let mut view = core::View::schedule(category);
@@ -1667,6 +2436,31 @@ fn view(c: &mut Ctx, v: &f::View, at: &Path) {
         };
     }
     view.room_colours = v.room_colours;
+    if let Some(sv) = &v.site {
+        view.site = core::SiteView {
+            look: None,
+            setbacks: None,
+            bearings: None,
+            along: true,
+            tints: true,
+            tags: vec![],
+            spot_tags: vec![],
+            ground: match sv.ground {
+                f::SiteGround::After => core::GroundState::After,
+                f::SiteGround::Before => core::GroundState::Before,
+                f::SiteGround::Both => core::GroundState::Both,
+            },
+            contours: sv.contours,
+            levels: sv.levels,
+            cut_fill: sv.cut_fill,
+            banks: sv.banks,
+            limit: sv.limit,
+            legal: sv.legal,
+            roads: sv.roads,
+            services: sv.services,
+            investigation: sv.investigation,
+        };
+    }
     if let Some(co) = &v.callout {
         let Some(parent) = c.get(&co.parent, &[Tag::View], &at.key("callout").key("parent")) else {
             return c.fail(&v.id);
@@ -1740,6 +2534,16 @@ fn sheet(c: &mut Ctx, s: &f::Sheet, at: &Path) {
             center: vp.at,
             target,
             crop: vp.crop.as_ref().map(|r| [c.p(r.min), c.p(r.max)]),
+            fit: match &vp.fit {
+                Some(f) => {
+                    let Some(id) = c.get(f, &[Tag::Stair], &vat.key("fit")) else {
+                        continue;
+                    };
+                    Some(id)
+                }
+                None => None,
+            },
+            pinned: false,
         };
         c.commit(
             &s.id,
@@ -1747,5 +2551,28 @@ fn sheet(c: &mut Ctx, s: &f::Sheet, at: &Path) {
                 .insert(Element::new("Viewport", ElementKind::Viewport(viewport))),
             &vat,
         );
+    }
+}
+
+/// A window's arrangement, as the file gives it.
+fn arrangement(a: &f::Arrangement) -> creabim_core::Arrangement {
+    creabim_core::Arrangement {
+        kind: match a.kind {
+            f::ArrangementKind::Ribbon => creabim_core::ArrangementKind::Ribbon,
+            f::ArrangementKind::Corner => creabim_core::ArrangementKind::Corner,
+            f::ArrangementKind::Bay => creabim_core::ArrangementKind::Bay,
+            f::ArrangementKind::Bow => creabim_core::ArrangementKind::Bow,
+        },
+        group: a.group,
+        corner_start: a.corner_start,
+        corner_end: a.corner_end,
+        left_start: a.left_start,
+        left_end: a.left_end,
+        angle_start: a.angle_start,
+        angle_end: a.angle_end,
+        joint: match a.joint {
+            f::CornerJoint::Post => creabim_core::CornerJoint::Post,
+            f::CornerJoint::Glass => creabim_core::CornerJoint::Glass,
+        },
     }
 }

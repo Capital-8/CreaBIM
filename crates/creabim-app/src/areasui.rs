@@ -38,6 +38,9 @@ pub(super) struct AreaState {
     /// to the area with focus (MU32: switching one area's plan switched
     /// the other's).
     pub menu_area: Option<usize>,
+    /// The areas standing at a phase of their own (MU133): what each
+    /// shows, which of the areas showing that it is, and its phase.
+    pub phases: Vec<(Shows, usize, u32)>,
 }
 
 impl Default for AreaState {
@@ -58,6 +61,7 @@ impl Default for AreaState {
             naming: None,
             drawing: None,
             menu_area: None,
+            phases: vec![],
         }
     }
 }
@@ -112,6 +116,10 @@ impl CreaBimApp {
             .iter()
             .position(|s| matches!(s, Shows::View(_)))
             .unwrap_or(0);
+        // Time: its Notes area shows the Work log
+        if w.name == "Time" {
+            self.notes_section = super::notesui::WORKLOG.to_string();
+        }
         self.areas.workspace = w.name.clone();
         self.shell.settings.workspace = w.name.clone();
         self.store_areas();
@@ -160,7 +168,46 @@ impl CreaBimApp {
 
     pub(super) fn store_areas(&mut self) {
         self.shell.settings.areas = Some(self.areas.root.clone());
+        self.shell.settings.area_phases = self.areas.phases.clone();
         self.shell.settings.store();
+    }
+
+    /// Area `i` as it is kept: what it shows, and which of the areas
+    /// showing that it is.
+    fn area_key(&self, i: usize) -> Option<(Shows, usize)> {
+        let shows = self.areas.root.areas();
+        let s = *shows.get(i)?;
+        Some((s, shows[..i].iter().filter(|x| **x == s).count()))
+    }
+
+    /// The phase area `i` stands at of its own, if it does (MU133).
+    pub(super) fn area_phase(&self, i: usize) -> Option<u32> {
+        let (s, n) = self.area_key(i)?;
+        self.areas
+            .phases
+            .iter()
+            .find(|e| e.0 == s && e.1 == n)
+            .map(|e| e.2)
+    }
+
+    /// Forget the phases of areas gone or showing something else now: such
+    /// an area starts at its view's phase (MU133).
+    pub(super) fn prune_area_phases(&mut self) {
+        let n = self.areas.root.len();
+        let keys: Vec<(Shows, usize)> = (0..n).filter_map(|i| self.area_key(i)).collect();
+        self.areas.phases.retain(|e| keys.contains(&(e.0, e.1)));
+    }
+
+    /// Stand area `i` at a phase of its own, or (none) at its view's.
+    pub(super) fn set_area_phase(&mut self, i: usize, phase: Option<u32>) {
+        let Some((s, n)) = self.area_key(i) else {
+            return;
+        };
+        self.areas.phases.retain(|e| !(e.0 == s && e.1 == n));
+        if let Some(p) = phase {
+            self.areas.phases.push((s, n, p));
+        }
+        self.store_areas();
     }
 
     /// Step to the next (`1`) or previous (`-1`) workspace.
@@ -224,16 +271,19 @@ impl CreaBimApp {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         child.set_clip_rect(body);
+        // a note of its own text shows that; a linked one, its section
         let note = self.selection.active.filter(|id| {
             matches!(
                 self.doc.model().get(*id).map(|e| &e.kind),
-                Some(ElementKind::Note(_))
+                Some(ElementKind::Note(n)) if n.section.is_none() && n.symbol.is_none()
             )
         });
         egui::ScrollArea::vertical()
             .id_salt("notes.area")
             .show(&mut child, |ui| {
-                ui.set_max_width(inner.width().min(760.0));
+                // the area's whole width (MU93: a 760 px cap left a band of
+                // unused space beside the text in a wide area)
+                ui.set_max_width(inner.width());
                 match note {
                     Some(id) => {
                         let Some(ElementKind::Note(n)) =
@@ -247,19 +297,35 @@ impl CreaBimApp {
                             .model()
                             .get(id)
                             .map_or(String::new(), |e| e.name.clone());
+                        // the tick box first at the right, the name cut to
+                        // the room left (owner: the name ran under it);
+                        // "Markdown", as the tick in Properties says
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("{name}: its text")).strong());
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.checkbox(&mut n.markdown, "Lists and headings")
-                                        .on_hover_text(
-                                        "- bullets, 1. numbers, # headings drawn as such on paper",
-                                    );
-                                },
+                            let tick_w = ui
+                                .painter()
+                                .layout_no_wrap(
+                                    "Markdown".into(),
+                                    egui::TextStyle::Body.resolve(ui.style()),
+                                    egui::Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                                + 30.0;
+                            let h = ui.spacing().interact_size.y;
+                            let w = (ui.available_width() - tick_w - 8.0).max(40.0);
+                            ui.allocate_ui(egui::vec2(w, h), |ui| {
+                                ui.set_width(w);
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(format!("{name}: its text")).strong())
+                                        .truncate(),
+                                );
+                            });
+                            crate::props::tickbox(ui, &mut n.markdown, "Markdown").on_hover_text(
+                                "Lists and headings: - bullets, 1. numbers, # headings drawn as such on paper",
                             );
                         });
-                        let h = (inner.height() - 60.0).max(160.0);
+                        // room left for the hint under it (it was cut)
+                        let h = (inner.height() - 100.0).max(160.0);
                         let r = ui.add_sized(
                             [ui.available_width(), h],
                             egui::TextEdit::multiline(&mut n.text).font(egui::TextStyle::Monospace),
@@ -278,14 +344,12 @@ impl CreaBimApp {
                                 self.status = format!("Couldn't do that: {e}");
                             }
                         }
-                        ui.label(
-                            egui::RichText::new(
-                                "Select something else to see the project's notepad here.",
-                            )
-                            .weak(),
+                        crate::props::empty(
+                            ui,
+                            "Pick nothing to see the Notes sections here again.",
                         );
                     }
-                    None => self.notes_pad(ui),
+                    None => self.notes_sections(ui, super::notesui::NotesAt::Area),
                 }
             });
     }
@@ -312,6 +376,7 @@ impl CreaBimApp {
                 .forget(&|id| model.get(id).is_some(), current);
         }
         let n = self.areas.root.len();
+        self.prune_area_phases();
         self.areas.focus = self.areas.focus.min(n - 1);
         self.areas.max = self.areas.max.filter(|m| *m < n);
         let (mut rects, dividers) = self.areas.root.layout(full);
@@ -375,7 +440,14 @@ impl CreaBimApp {
                     self.plan.area = own.then_some(i);
                     self.area_now = i;
                     self.plan.pane_now = Some(i);
-                    ui.push_id(("area", i), |ui| self.show_plan(ui, body, background));
+                    // standing at a phase of its own: everything that
+                    // reads the view's phase while it draws reads that
+                    crate::phaselens::set_lens(self.area_phase(i).map(|p| (*v, p)));
+                    ui.push_id(("area", i), |ui| {
+                        self.show_plan(ui, body, background);
+                        self.hidden_here_chip(ui, body, *v);
+                    });
+                    crate::phaselens::set_lens(None);
                     self.plan.pane_now = None;
                     self.plan.area = None;
                     timings.push(format!(
@@ -402,6 +474,18 @@ impl CreaBimApp {
                 Shows::Log => {
                     ui.push_id(("area", i), |ui| self.log_area(ui, body));
                 }
+                Shows::Time => {
+                    ui.push_id(("area", i), |ui| self.time_area(ui, body));
+                }
+                Shows::Renders => {
+                    ui.push_id(("area", i), |ui| self.renders_area(ui, body));
+                }
+                Shows::Libraries => {
+                    ui.push_id(("area", i), |ui| self.libraries_area(ui, body));
+                }
+                Shows::Patterns => {
+                    ui.push_id(("area", i), |ui| self.patterns_area(ui, body));
+                }
                 _ => {
                     let p = self.shell.theme.palette();
                     ui.painter().rect_filled(body, 0.0, p.panel2);
@@ -419,8 +503,25 @@ impl CreaBimApp {
         if let Some(r) = focus_rect {
             self.rect_2d = Some(r);
         }
-        if self.handle_drag.is_some() || self.plan.modal.is_some() {
-            crate::actlog::line(format!("areas: {}", timings.join(" | ")));
+        // while something follows the pointer, how long each area took. Not
+        // while a tool only waits for its first click (Pull stays in hand,
+        // so a line was written every frame for as long as it was, and the
+        // log view redrawing them took the frame rate down to four a
+        // second, MU45), and four times a second at most
+        let following = self.handle_drag.is_some()
+            || self
+                .plan
+                .modal
+                .as_ref()
+                .is_some_and(|m| m.stage() != crate::modal::Stage::Base);
+        if following {
+            let now = ui.input(|i| i.time);
+            let key = egui::Id::new("areas.logged");
+            let last: f64 = ui.ctx().data(|d| d.get_temp(key)).unwrap_or(-1.0);
+            if now - last >= 0.25 {
+                ui.ctx().data_mut(|d| d.insert_temp(key, now));
+                crate::actlog::line(format!("areas: {}", timings.join(" | ")));
+            }
         }
         if self.areas.max.is_none() {
             self.corners(ui, &rects);
@@ -440,14 +541,29 @@ impl CreaBimApp {
         if let Some(v) = self.active_view.filter(|v| !self.is_sheet(*v)) {
             self.areas.drawing = Some(v);
         }
-        // the area under the pointer is outlined: keys and tools act there
+        // the area last clicked has a thin accent outline: the View tab is
+        // about it (Properties order REV04 §4); the area under the pointer,
+        // where keys and tools act, a fainter one
         if n > 1 {
-            if let Some(r) = self.areas.hovered.and_then(|h| rects.get(h)) {
-                let p = self.shell.theme.palette();
+            let p = self.shell.theme.palette();
+            if let Some(r) = self
+                .areas
+                .hovered
+                .filter(|h| *h != self.areas.focus)
+                .and_then(|h| rects.get(h))
+            {
                 ui.painter().rect_stroke(
                     r.shrink(0.5),
                     0.0,
-                    egui::Stroke::new(1.0, p.accent.gamma_multiply(0.8)),
+                    egui::Stroke::new(1.0, p.accent.gamma_multiply(0.35)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(r) = rects.get(self.areas.focus) {
+                ui.painter().rect_stroke(
+                    r.shrink(0.5),
+                    0.0,
+                    egui::Stroke::new(1.0, p.accent),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -552,7 +668,7 @@ impl CreaBimApp {
         let p = self.shell.theme.palette();
         let r = rects[i];
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
+            crate::app::overlay_order(),
             ui.id().with("area-preview"),
         ));
         // a pill behind the words keeps them readable over the drawing
@@ -650,8 +766,22 @@ impl CreaBimApp {
     fn model_controls(&self) -> Vec<Value> {
         let s = &self.shell.settings;
         vec![
-            json!({"kind": "menu", "key": "render3d", "icon": s.render_3d.icon(), "label": "Shading",
-                   "hint": format!("How the 3D view draws: {}. Shaded, with edges, hidden line or wireframe", s.render_3d.label())}),
+            // the four display buttons and their caret (Visuals REV02)
+            // ...at the header's right end, where Blender has them, X-ray
+            // beside them as one of them (MU107)
+            json!({"kind": "display", "key": "display", "on": s.render_3d.family().key(), "label": "Display",
+                   "icon": s.render_3d.icon(), "value": s.render_3d.label(), "right": true}),
+            // (it has no say over a Style or Rendered look: greyed there,
+            // and back as it was left with Line or Solid, as Blender's:
+            // MU111)
+            json!({"kind": "ball", "id": "xray", "icon": "xray", "label": "X-ray",
+                   "on": s.xray && s.render_3d.rendered().is_none(), "off": s.render_3d.rendered().is_some(),
+                   "shortcut": "Alt+Z",
+                   "hint": if s.render_3d.rendered().is_some() {
+                       "X-ray works with the Line and Solid looks"
+                   } else {
+                       "See through walls, slabs and roofs to what is inside them"
+                   }, "right": true}),
             // (perspective / orthographic is the last button of the view's
             // own column, beside the cube: not twice, MU20)
             json!({"kind": "button", "id": "crop.add", "icon": "crop-box", "label": "Section box",
@@ -661,14 +791,16 @@ impl CreaBimApp {
                    "label": "Show", "hint": "What the 3D view shows: grids, annotation, guides, sketches and every category"}),
             // (Frame all and Frame the selection are in the view's own
             // column now, with zoom and pan: MU24)
-            json!({"kind": "toggle", "id": "xray", "icon": "xray", "label": "X-ray", "on": s.xray, "shortcut": "Alt+Z",
-                   "hint": "See through walls, slabs and roofs to what is inside them"}),
+            // (in ⋯ always: the view's cube looks from every side, and the
+            // header keeps what is used most, MU110)
             json!({"kind": "menu", "key": "look", "icon": "rotate-3d", "label": "Look from",
-                   "hint": "Look from the top, a side or the corner"}),
+                   "hint": "Look from the top, a side or the corner", "more": true}),
+            json!({"kind": "toggle", "id": "grids3d", "icon": "grid-lines", "label": "Grid lines", "on": !self.vis3d.hides_category(creabim_core::visibility::Category::Grids), "shortcut": "Alt+G",
+                   "hint": "The project's grid lines, flat on the working level and behind the model. Off, only a selected one shows"}),
             json!({"kind": "toggle", "id": "ground.grid", "icon": "grid-3x3", "label": "Ground grid", "on": s.ground_grid,
                    "hint": "The grid on the working level (or the workplane)"}),
             json!({"kind": "toggle", "id": "nav.orbitsel", "icon": "rotate-3d", "label": "Orbit around the selection",
-                   "on": self.orbit_selection, "hint": "Orbiting swings round the selected elements"}),
+                   "on": self.orbit_selection, "hint": "Orbiting swings round the selected elements", "more": true}),
         ]
     }
 
@@ -710,6 +842,11 @@ impl CreaBimApp {
             Shows::Profiles => self.profile_controls(),
             Shows::Masters => self.master_controls(),
             Shows::Log => self.log_controls(),
+            Shows::Time => self.time_controls(),
+            Shows::Renders => self.renders_controls(),
+            Shows::Libraries => vec![],
+            Shows::Patterns => self.patterns_controls(),
+            Shows::Notes => self.notes_controls(),
             _ => vec![],
         };
         let (kind_icon, kind_label, name) = match shows {
@@ -719,7 +856,8 @@ impl CreaBimApp {
                 let group = self.group_title(v);
                 (icon, group, e.map_or(String::new(), |e| e.name.clone()))
             }
-            Shows::Notes => ("sticky-note", "Notes", "Notepad".to_string()),
+            // the name is the section open in it
+            Shows::Notes => ("sticky-note", "Notes", self.notes_title()),
             // the name is the profile shown; it lists the project's (MU37)
             Shows::Profiles => (
                 "profile",
@@ -731,6 +869,12 @@ impl CreaBimApp {
             ),
             Shows::Masters => ("sheet-template", "Masters", self.master_title()),
             Shows::Log => ("log", "Log", "Activity log".to_string()),
+            // the clock says it is Project time: the name is the view shown
+            // (owner markup 2026-11-18)
+            Shows::Time => ("clock", "Time", self.time_view_name().to_string()),
+            Shows::Libraries => ("library", "Libraries", self.libraries_title()),
+            Shows::Patterns => ("hatch", "Patterns", self.patterns_title()),
+            Shows::Renders => ("image", "Renders", self.renders_title()),
             _ => ("box", "3D view", "Model".to_string()),
         };
         let mut asks: Vec<Ask> = vec![];
@@ -745,7 +889,27 @@ impl CreaBimApp {
         );
         child.spacing_mut().item_spacing.x = 2.0;
         child.spacing_mut().interact_size.y = 24.0;
+        // nothing is drawn past the area's own edges (MU93: the notes'
+        // pencil showed outside a narrow area)
+        child.set_clip_rect(head.intersect(ui.clip_rect()));
         let room = head.width() - 20.0;
+        // what gives way when the area is narrow (MU52-04: the maximise
+        // button was pushed out of the frame): its controls first (below),
+        // then maximise, then the mode, then the name is cut with …; the
+        // kind and ⋯ always stay, and what left the header is in ⋯
+        let modal_view = match shows {
+            Shows::Model => true,
+            Shows::View(v) => {
+                !self.is_sheet(v)
+                    && !matches!(
+                        self.view(v).map(|v| &v.kind),
+                        Some(ViewKind::Schedule { .. })
+                    )
+            }
+            _ => false,
+        };
+        let compact = room < 600.0;
+        let fit = header_fit(room, modal_view, compact);
         // what shows: the kind, then which one
         let r = pill(&mut child, kind_icon, "", true, &p).on_hover_text(format!(
             "{kind_label}: click to show another kind of view here"
@@ -758,19 +922,48 @@ impl CreaBimApp {
             (room * 0.16).clamp(80.0, 130.0)
         } else {
             (room * 0.32).clamp(70.0, 220.0)
-        };
-        let r = name_button(&mut child, &name, name_w, &p).on_hover_text(format!(
+        }
+        .min(fit.name_w);
+        let renaming =
+            matches!(shows, Shows::Notes) && self.notes_renaming_at(super::notesui::NotesAt::Area);
+        if renaming {
+            self.notes_rename_field(&mut child, name_w.max(120.0));
+        }
+        let r = if renaming {
+            child.allocate_response(egui::Vec2::ZERO, Sense::hover())
+        } else {
+            name_button(&mut child, &name, name_w, &p)
+        }
+        .on_hover_text(format!(
             "{name}: click to show another of the {}",
             kind_label.to_lowercase()
         ));
+        // the notes' header counts the name as wide as it is drawn: their
+        // buttons fit where a widest-name guess sent them into ⋯ (MU87)
+        let name_used = match shows {
+            Shows::Notes if renaming => name_w.max(120.0),
+            Shows::Notes => r.rect.width(),
+            _ => name_w,
+        };
+        if matches!(shows, Shows::Notes) && r.double_clicked() {
+            asks.push(Ask::Run("notes.rename:area".into()));
+        }
         if r.clicked() {
             asks.push(Ask::Popup(
                 if matches!(shows, Shows::Profiles) {
                     "prof.pick".into()
                 } else if matches!(shows, Shows::Masters) {
                     "master.pick".into()
-                } else if matches!(shows, Shows::Model | Shows::Notes) {
+                } else if matches!(shows, Shows::Notes) {
+                    "notes.pick:area".into()
+                } else if matches!(shows, Shows::Model) {
                     "area.kind".into()
+                } else if matches!(shows, Shows::Renders) {
+                    "render.pick".into()
+                } else if matches!(shows, Shows::Time) {
+                    "time.views".into()
+                } else if matches!(shows, Shows::Patterns) {
+                    "pat.pick".into()
                 } else {
                     "area.views".into()
                 },
@@ -796,6 +989,30 @@ impl CreaBimApp {
                 }
             }
         }
+        // a new section, beside the switch (MU87); in a narrow area only
+        // what fits beside the name and ⋯ (MU93; rename stays a
+        // double-click on the name, delete is in Properties)
+        let notes_room = room - 34.0 - name_used - 34.0;
+        if matches!(shows, Shows::Notes) && notes_room >= 28.0 {
+            let r = icon_btn(&mut child, "plus", false, true, &p)
+                .on_hover_text("A new section of your own");
+            if r.clicked() {
+                asks.push(Ask::Run("notes.add:area".into()));
+            }
+            plus_w += 28.0;
+            // rename and delete the one shown, beside + (MU88)
+            if let Some((ren, del)) = self.notes_edit_tips().filter(|_| notes_room >= 84.0) {
+                let r = icon_btn(&mut child, "pencil", false, true, &p).on_hover_text(ren);
+                if r.clicked() {
+                    asks.push(Ask::Run("notes.rename:area".into()));
+                }
+                let r = icon_btn(&mut child, "trash-2", false, true, &p).on_hover_text(del);
+                if r.clicked() {
+                    asks.push(Ask::Run("notes.delete".into()));
+                }
+                plus_w += 56.0;
+            }
+        }
         // what to do with masters, beside the list of them (MU40)
         if matches!(shows, Shows::Masters) {
             for (id, icon, tip, on) in self.master_buttons() {
@@ -813,23 +1030,11 @@ impl CreaBimApp {
         // the mode after what it shows, as Blender's (MU27): Object or Edit,
         // then in Edit mode what a click picks; sheets and schedules have
         // no Edit mode, so no menu
-        let modal_view = match shows {
-            Shows::Model => true,
-            Shows::View(v) => {
-                !self.is_sheet(v)
-                    && !matches!(
-                        self.view(v).map(|v| &v.kind),
-                        Some(ViewKind::Schedule { .. })
-                    )
-            }
-            _ => false,
-        };
         let mut mode_w = 0.0;
-        if modal_view {
+        if fit.mode {
             child.add_space(4.0);
             let editing = self.plan.edit.is_some();
             // narrow, it shrinks to its icon, as Blender's (MU30)
-            let compact = room < 600.0;
             let r = mode_button(&mut child, editing, compact, &p).on_hover_text(
                 "Object mode works on whole elements; Edit mode on one element's points, edges and faces. Tab switches",
             );
@@ -842,10 +1047,155 @@ impl CreaBimApp {
         }
         child.add_space(6.0);
         // its controls, as many as fit before More and maximise
-        let used = 34.0 + name_w + 10.0 + 2.0 * 26.0 + 8.0 + mode_w + plus_w;
+        let max_w = if fit.maximise { 26.0 } else { 0.0 };
+        let used = 34.0 + name_used + 10.0 + 26.0 + max_w + 8.0 + mode_w + plus_w;
         let mut left = room - used;
         let mut over = vec![];
+        // what a header keeps in ⋯ whatever its width
+        over.extend(controls.iter().filter(|c| c["more"] == true).cloned());
+        let controls: Vec<Value> = controls.into_iter().filter(|c| c["more"] != true).collect();
+        if modal_view && !fit.mode {
+            // the mode, folded into ⋯ (Tab still switches)
+            over.push(serde_json::json!({
+                "kind": "menu",
+                "key": "area.mode",
+                "label": "Object or Edit mode",
+                "icon": "box",
+            }));
+        }
+        // the controls kept at the right end (the 3D view's display
+        // buttons and X-ray) take their room first: used most, they are
+        // the last to give way as the area narrows (MU107)
+        let right: Vec<Value> = controls
+            .iter()
+            .filter(|c| c["right"] == true)
+            .cloned()
+            .collect();
+        let right_w = right.iter().map(control_width).sum::<f32>() + 6.0;
+        let show_right = !right.is_empty() && right_w <= left;
+        if show_right {
+            left -= right_w;
+        }
+        // too narrow even for them: the header's controls become one strip
+        // that scrolls (the wheel over it, or a drag), the display buttons
+        // first in it, so they are never out of reach (owner, 2026-11-20:
+        // "make it scroll"; elsewhere what doesn't fit still goes to ⋯)
+        let scrolls = !right.is_empty() && !show_right;
+        if scrolls {
+            // an arrow at each end, each in its own cell beside the strip
+            // (MU109: drawn over the strip they covered its buttons)
+            // (the room really left in the row, less ⋯ and maximise)
+            let strip = child.available_width() - (26.0 + max_w + 10.0) - 2.0 * ARROW_W - 8.0;
+            if strip < 26.0 {
+                // no room for a strip at all: everything to ⋯ (MU109: in
+                // a very narrow area it ran out over the area beside it)
+                over.extend(controls.iter().cloned());
+            } else {
+                let key = egui::Id::new(("area.header.offset", i));
+                // as wide as it was drawn last frame, else by its controls
+                let content: f32 = child
+                    .ctx()
+                    .data(|d| d.get_temp(key.with("content")))
+                    .unwrap_or_else(|| controls.iter().map(|c| control_width(c) + 2.0).sum());
+                let most = (content - strip).max(0.0);
+                // it opens at its end, where the display buttons are: its
+                // order is the wide header's (MU109)
+                // (at its end until it is moved by hand)
+                // ...and each time it appears: a place kept from before sent
+                // the display buttons out of sight as the area narrowed
+                // (MU111: "what we were looking at is gone from view")
+                let frame = child.ctx().cumulative_frame_nr();
+                let seen: Option<u64> = child.ctx().data(|d| d.get_temp(key.with("frame")));
+                if seen.is_none_or(|f| f + 1 < frame) {
+                    child.ctx().data_mut(|d| d.remove::<f32>(key));
+                }
+                child
+                    .ctx()
+                    .data_mut(|d| d.insert_temp(key.with("frame"), frame));
+                let moved: Option<f32> = child.ctx().data(|d| d.get_temp(key));
+                let mut offset = moved.unwrap_or(most);
+                let before = offset;
+                let zone: Option<Rect> = child.ctx().data(|d| d.get_temp(key.with("rect")));
+                if zone.is_some_and(|z| child.rect_contains_pointer(z)) {
+                    let roll = child.input(|i| i.smooth_scroll_delta);
+                    offset -= if roll.x.abs() > roll.y.abs() {
+                        roll.x
+                    } else {
+                        roll.y
+                    };
+                }
+                let arrow = |ui: &mut egui::Ui, icon: &str, on: bool| -> bool {
+                    let (r, resp) = ui.allocate_exact_size(
+                        egui::vec2(ARROW_W, 26.0),
+                        if on { Sense::click() } else { Sense::hover() },
+                    );
+                    // a button like the header's others, so it reads as
+                    // one to press (MU110); faint when there is no more
+                    let fill = if !on {
+                        p.raise.gamma_multiply(0.25)
+                    } else if resp.hovered() {
+                        p.raise2
+                    } else {
+                        p.raise
+                    };
+                    ui.painter()
+                        .rect_filled(r.shrink2(egui::vec2(0.0, 2.0)), 5.0, fill);
+                    let ic = Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
+                    let ink = if on {
+                        p.text
+                    } else {
+                        p.muted.gamma_multiply(0.35)
+                    };
+                    crate::svgicon::paint(ui.painter(), ic, icon, ink);
+                    on && resp
+                        .on_hover_text(
+                            "More of this view's buttons: click, or roll the wheel over them",
+                        )
+                        .clicked()
+                };
+                child.spacing_mut().item_spacing.x = 2.0;
+                if arrow(&mut child, "chevron-left", offset > 1.0) {
+                    offset -= 90.0;
+                }
+                offset = offset.clamp(0.0, most);
+                let out = egui::ScrollArea::horizontal()
+                    .id_salt(("area.header.strip", i))
+                    .max_width(strip)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .horizontal_scroll_offset(offset)
+                    .show(&mut child, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            for c in controls
+                                .iter()
+                                .filter(|c| c["right"] != true)
+                                .chain(right.iter().rev())
+                            {
+                                if let Some(a) = header_control(ui, c, &p) {
+                                    asks.push(a);
+                                }
+                            }
+                        });
+                    });
+                if arrow(&mut child, "chevron-right", offset < most - 1.0) {
+                    offset = (offset + 90.0).min(most);
+                }
+                child.ctx().data_mut(|d| {
+                    if moved.is_some() || (offset - before).abs() > 0.5 {
+                        d.insert_temp(key, offset);
+                    }
+                    d.insert_temp(key.with("rect"), out.inner_rect);
+                    d.insert_temp(key.with("content"), out.content_size.x);
+                });
+            }
+        }
         for c in &controls {
+            if scrolls {
+                break;
+            }
+            if c["right"] == true {
+                continue;
+            }
             let w = control_width(c);
             if w > left {
                 // a smaller one further on may still fit
@@ -860,20 +1210,23 @@ impl CreaBimApp {
         child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let maxed = self.areas.max == Some(i);
-            let r = icon_btn(
-                ui,
-                if maxed { "square" } else { "maximize-2" },
-                maxed,
-                true,
-                &p,
-            )
-            .on_hover_text(if maxed {
-                "Back to the other areas (Ctrl+Space)"
-            } else {
-                "Show this area alone (Ctrl+Space)"
-            });
-            if r.clicked() {
-                asks.push(Ask::Run(format!("area.max:{i}")));
+            // narrow, it is "Show this area alone" in ⋯
+            if fit.maximise {
+                let r = icon_btn(
+                    ui,
+                    if maxed { "square" } else { "maximize-2" },
+                    maxed,
+                    true,
+                    &p,
+                )
+                .on_hover_text(if maxed {
+                    "Back to the other areas (Ctrl+Space)"
+                } else {
+                    "Show this area alone (Ctrl+Space)"
+                });
+                if r.clicked() {
+                    asks.push(Ask::Run(format!("area.max:{i}")));
+                }
             }
             let r = icon_btn(ui, "ellipsis", false, true, &p).on_hover_text(if over.is_empty() {
                 "Split, join or close this area".to_string()
@@ -890,6 +1243,14 @@ impl CreaBimApp {
             });
             if r.clicked() {
                 asks.push(Ask::Popup("area.more".into(), r.rect));
+            }
+            if show_right {
+                ui.add_space(6.0);
+                for c in &right {
+                    if let Some(a) = header_control(ui, c, &p) {
+                        asks.push(a);
+                    }
+                }
             }
         });
         if !asks.is_empty() {
@@ -918,6 +1279,25 @@ impl CreaBimApp {
         }
     }
 
+    /// The sheet symbol the split button shows: the one used last.
+    pub(super) fn sheet_symbol_last(&self) -> String {
+        self.shell
+            .settings
+            .family_last
+            .get("sheet-symbols")
+            .cloned()
+            .unwrap_or_else(|| "sheet.north".to_string())
+    }
+
+    pub(super) fn set_sheet_symbol_last(&mut self, id: &str) {
+        let s = &mut self.shell.settings;
+        if s.family_last.get("sheet-symbols").map(String::as_str) != Some(id) {
+            s.family_last
+                .insert("sheet-symbols".to_string(), id.to_string());
+            s.store();
+        }
+    }
+
     /// The group a view is listed in ("Floor plans", "Sheets"…).
     fn group_title(&self, v: ElementId) -> &'static str {
         if self.is_sheet(v) {
@@ -931,11 +1311,33 @@ impl CreaBimApp {
 
     /// The menus of an area's header, by key.
     pub(super) fn area_menu(&self, key: &str) -> Option<Vec<Item>> {
+        if let Some(items) = self.renders_menu(key) {
+            return Some(items);
+        }
         if let Some(items) = self.profile_menu(key) {
             return Some(items);
         }
         if let Some(items) = self.master_menu(key) {
             return Some(items);
+        }
+        if let Some(items) = self.patterns_menu(key) {
+            return Some(items);
+        }
+        if let Some(items) = self.notes_menu(key) {
+            return Some(items);
+        }
+        if key == "sheet.symbols" {
+            let last = self.sheet_symbol_last();
+            return Some(vec![
+                Item::new("sheet.north", "North arrow")
+                    .icon("north-arrow")
+                    .checked(last == "sheet.north")
+                    .hint("Turned to the project's north; its style from the symbol bank"),
+                Item::new("sheet.scalebar", "Scale bar")
+                    .icon("scale-bar")
+                    .checked(last == "sheet.scalebar")
+                    .hint("At the sheet's drawing scale; its style from the symbol bank"),
+            ]);
         }
         let i = self.areas.menu_area.unwrap_or(self.areas.focus);
         let shows = self.areas.root.areas();
@@ -994,6 +1396,24 @@ impl CreaBimApp {
                         .hint("The sheet masters (title blocks and frames) and their editor: draw lines, text and fields"),
                 );
                 items.push(
+                    Item::new("area.show:patterns", "Patterns")
+                        .icon("hatch")
+                        .checked(here == Shows::Patterns)
+                        .hint("A hatch pattern and its tile, drawn large: draw, change and try the project's patterns"),
+                );
+                items.push(
+                    Item::new("area.show:renders", "Renders")
+                        .icon("image")
+                        .checked(here == Shows::Renders)
+                        .hint("The renders kept from the 3D view, one shown whole"),
+                );
+                items.push(
+                    Item::new("area.show:time", "Time")
+                        .icon("clock")
+                        .checked(here == Shows::Time)
+                        .hint("Project time: each stage against its fee and budget, the entries, the week"),
+                );
+                items.push(
                     Item::new("area.show:log", "Log")
                         .icon("log")
                         .checked(here == Shows::Log)
@@ -1001,6 +1421,7 @@ impl CreaBimApp {
                 );
                 items
             }
+            "time.views" => self.time_view_items(),
             "area.views" => {
                 let Shows::View(v) = here else {
                     return Some(vec![]);
@@ -1063,6 +1484,11 @@ impl CreaBimApp {
                             if !sub.is_empty() {
                                 items.push(Item::sub(label, sub).icon(icon));
                             }
+                        }
+                        // the display buttons, when they don't fit: every
+                        // look in one list
+                        Some("display") => {
+                            items.push(Item::sub(label, self.menu_items("render3d")).icon(icon));
                         }
                         _ => {}
                     }
@@ -1207,6 +1633,14 @@ impl CreaBimApp {
                     Shows::Masters
                 } else if arg == "log" {
                     Shows::Log
+                } else if arg == "renders" {
+                    Shows::Renders
+                } else if arg == "time" {
+                    Shows::Time
+                } else if arg == "libraries" {
+                    Shows::Libraries
+                } else if arg == "patterns" {
+                    Shows::Patterns
                 } else {
                     match self.doc.model().iter().find(|e| e.id.0.to_string() == arg) {
                         Some(e) => Shows::View(e.id),
@@ -1227,6 +1661,7 @@ impl CreaBimApp {
                 // its own Properties tab comes forward (MU40)
                 match new {
                     Shows::Masters => self.prop_tab = PropTab::Master,
+                    Shows::Patterns => self.prop_tab = PropTab::Pattern,
                     Shows::Profiles => self.prop_tab = PropTab::Profile,
                     _ => {}
                 }
@@ -1259,11 +1694,7 @@ impl CreaBimApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("A name for these areas, to pick from Workspace at the top right:");
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut name)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(220.0),
-                );
+                let r = crate::props::text_field(ui, egui::TextEdit::singleline(&mut name), 220.0);
                 r.request_focus();
                 done = ui.input(|i| i.key_pressed(egui::Key::Enter)) || ui.button("Save").clicked();
             });
@@ -1355,6 +1786,7 @@ pub(super) fn with_command(i: &egui::InputState, key: egui::Key, command: bool) 
 fn group_icon(title: &str) -> &'static str {
     match title {
         "Floor plans" => "map",
+        "Ceiling plans" => "ceiling",
         "3D views" => "box",
         "Sections" => "scissors-line-dashed",
         "Elevations" => "elevation",
@@ -1364,12 +1796,120 @@ fn group_icon(title: &str) -> &'static str {
     }
 }
 
+/// An end arrow of a header that scrolls.
+const ARROW_W: f32 = 18.0;
+
+/// The display buttons' width in a header: four of 26, the lit one's
+/// caret, and the 2 between controls.
+const DISPLAY_W: f32 = 4.0 * 26.0 + CARET_W + 2.0;
+
+/// The caret joined to the lit display button.
+const CARET_W: f32 = 14.0;
+
+/// One display button's sphere, drawn by code with tone (AMD-002: an SVG
+/// icon is outline only). On the lit button it takes the accent's ink.
+fn display_ball(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    family: crate::render3d::Family,
+    on: bool,
+    p: &crate::theme::Palette,
+) {
+    use crate::render3d::Family;
+    use egui::Color32;
+    let r = 6.5;
+    // a quiet outline in the icons' own tone, the accent when lit (MU110:
+    // the black ring and the white of the lit ones were too strong)
+    let ink = if on { p.accent } else { p.muted };
+    let line = egui::Stroke::new(1.2, ink);
+    let tone = |rgb: u32| Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
+    match family {
+        Family::Line => {
+            painter.circle_stroke(c, r, line);
+            for dx in [-3.2f32, 0.0, 3.2] {
+                let h = (r * r - dx * dx).sqrt();
+                painter.line_segment(
+                    [c + egui::vec2(dx, -h), c + egui::vec2(dx, h)],
+                    egui::Stroke::new(1.0, ink),
+                );
+            }
+        }
+        Family::Solid => {
+            painter.circle_filled(c, r, tone(0x9a9e98));
+            painter.circle_filled(c - egui::vec2(1.4, 1.6), r * 0.62, tone(0xc2c5bf));
+            painter.circle_filled(c - egui::vec2(2.3, 2.5), r * 0.28, tone(0xe6e7e3));
+            painter.circle_stroke(c, r, line);
+        }
+        Family::Style => {
+            painter.circle_filled(c, r, tone(0xc79a55));
+            painter.circle_filled(c - egui::vec2(1.3, 1.5), r * 0.64, tone(0xe4c486));
+            painter.circle_filled(c - egui::vec2(2.2, 2.4), r * 0.3, tone(0xf5ead2));
+            painter.circle_stroke(c, r, line);
+        }
+        Family::Rendered => {
+            for (k, col) in [
+                (1.0, 0x56687au32),
+                (0.8, 0x7089a0),
+                (0.58, 0x93a9bb),
+                (0.36, 0xbfcdd8),
+            ] {
+                painter.circle_filled(c - egui::vec2(1.4, 1.6) * (1.0 - k), r * k, tone(col));
+            }
+            painter.circle_filled(c - egui::vec2(2.4, 2.6), 1.3, tone(0xf0f4f7));
+            painter.circle_stroke(c, r, line);
+        }
+    }
+}
+
+/// X-ray's sphere: an outline you see through, to the far side's edge
+/// drawn dashed and a small solid ball inside it.
+fn xray_ball(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    on: bool,
+    enabled: bool,
+    p: &crate::theme::Palette,
+) {
+    let r = 6.5;
+    let ink = if on {
+        p.accent
+    } else if enabled {
+        p.muted
+    } else {
+        p.muted.gamma_multiply(0.4)
+    };
+    painter.circle_filled(c, r, ink.gamma_multiply(0.10));
+    painter.circle_stroke(c, r, egui::Stroke::new(1.2, ink));
+    // the far side's meridian, dashed
+    let pts: Vec<egui::Pos2> = (0..=16)
+        .map(|k| {
+            let a = std::f32::consts::PI * (k as f32 / 16.0 - 0.5);
+            c + egui::vec2(-3.2 * a.cos(), r * a.sin())
+        })
+        .collect();
+    painter.extend(egui::Shape::dashed_line(
+        &pts,
+        egui::Stroke::new(1.0, ink),
+        2.0,
+        1.6,
+    ));
+    // what is inside shows
+    painter.circle_filled(c + egui::vec2(1.6, 1.2), 2.2, ink);
+}
+
 /// How wide a control is in a header.
 fn control_width(c: &Value) -> f32 {
     match c["kind"].as_str() {
         Some("number") => 132.0,
         Some("menu") if c["icon"].as_str().is_none_or(|i| i.is_empty()) => 90.0,
         Some("menu") => 36.0,
+        Some("split") => 50.0,
+        Some("display") => DISPLAY_W,
+        Some("ball") => 28.0,
+        Some("sep") => 11.0,
+        Some("text") => c["label"]
+            .as_str()
+            .map_or(60.0, |l| l.chars().count() as f32 * 6.6 + 20.0),
         _ => 26.0,
     }
 }
@@ -1432,6 +1972,168 @@ fn header_control(ui: &mut egui::Ui, c: &Value, p: &crate::theme::Palette) -> Op
             r.clicked()
                 .then(|| Ask::Run(c["id"].as_str().unwrap_or("").into()))
         }
+        "split" => {
+            // two halves, each its own button: the icon places, the arrow
+            // opens the menu (MU91: the arrow was too small to hit)
+            let (r, _) = ui.allocate_exact_size(egui::vec2(48.0, 26.0), Sense::hover());
+            let main = Rect::from_min_max(r.min, egui::pos2(r.right() - 18.0, r.bottom()));
+            let more = Rect::from_min_max(egui::pos2(r.right() - 18.0, r.top()), r.max);
+            let id = ui.id().with(("split", c["key"].as_str().unwrap_or("")));
+            let a = ui
+                .interact(main, id.with(0), Sense::click())
+                .on_hover_text(tip);
+            let b = ui
+                .interact(more, id.with(1), Sense::click())
+                .on_hover_text("Choose which");
+            ui.painter().rect_filled(r, 6.0, p.raise2);
+            for (h, rr) in [(&a, main), (&b, more)] {
+                if h.hovered() {
+                    ui.painter()
+                        .rect_filled(rr, 6.0, p.raise2.gamma_multiply(1.25));
+                }
+            }
+            ui.painter().line_segment(
+                [
+                    more.left_top() + egui::vec2(0.0, 5.0),
+                    more.left_bottom() - egui::vec2(0.0, 5.0),
+                ],
+                egui::Stroke::new(1.0, p.border),
+            );
+            let ic = Rect::from_center_size(main.center(), egui::vec2(18.0, 18.0));
+            crate::svgicon::paint(
+                ui.painter(),
+                ic,
+                icon,
+                if a.hovered() { p.text } else { p.muted },
+            );
+            let cr = Rect::from_center_size(more.center(), egui::vec2(9.0, 9.0));
+            crate::svgicon::paint(
+                ui.painter(),
+                cr,
+                "chevron-down",
+                if b.hovered() { p.text } else { p.muted },
+            );
+            if a.clicked() {
+                return Some(Ask::Run(c["id"].as_str().unwrap_or("").into()));
+            }
+            if b.clicked() {
+                return Some(Ask::Popup(c["key"].as_str().unwrap_or("").into(), r));
+            }
+            None
+        }
+        // X-ray, drawn as a see-through sphere so it reads as one of the
+        // display buttons beside it (MU108: its outline icon "is not
+        // coherent with the others")
+        "ball" => {
+            let on = c["on"].as_bool().unwrap_or(false);
+            let enabled = !c["off"].as_bool().unwrap_or(false);
+            let (r, resp) = ui.allocate_exact_size(
+                egui::vec2(26.0, 26.0),
+                if enabled {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                },
+            );
+            let resp = resp.on_hover_text(tip);
+            let fill = if on {
+                p.accent.gamma_multiply(0.18)
+            } else if !enabled {
+                p.raise.gamma_multiply(0.25)
+            } else if resp.hovered() {
+                p.raise2
+            } else {
+                p.raise.gamma_multiply(0.55)
+            };
+            ui.painter().rect_filled(r, 6.0, fill);
+            xray_ball(ui.painter(), r.center(), on, enabled, p);
+            (enabled && resp.clicked()).then(|| Ask::Run(c["id"].as_str().unwrap_or("").into()))
+        }
+        // the four display buttons, joined, and a caret for the lit
+        // one's option (AMD-001, AMD-002; Visuals REV02)
+        "display" => {
+            use crate::render3d::Family;
+            let lit = c["on"].as_str().and_then(Family::of_key);
+            let (r, _) = ui.allocate_exact_size(egui::vec2(DISPLAY_W - 2.0, 26.0), Sense::hover());
+            ui.painter()
+                .rect_filled(r, 6.0, p.raise.gamma_multiply(0.55));
+            let id = ui.id().with("display");
+            let mut ask = None;
+            let mut x = r.left();
+            for (k, f) in Family::ALL.into_iter().enumerate() {
+                let on = lit == Some(f);
+                // the lit button carries its caret, joined to it in one
+                // shape, and its options drop under it (MU110: a caret at
+                // the group's end belonged to no button)
+                let w = if on { 26.0 + CARET_W } else { 26.0 };
+                let cell = Rect::from_min_size(egui::pos2(x, r.top()), egui::vec2(w, 26.0));
+                let ball = Rect::from_min_size(cell.min, egui::vec2(26.0, 26.0));
+                x += w;
+                let what = if on {
+                    format!(
+                        "{}: {}\n{}",
+                        f.label(),
+                        c["value"].as_str().unwrap_or(""),
+                        f.hint()
+                    )
+                } else {
+                    format!("{}\n{}", f.label(), f.hint())
+                };
+                let resp = ui
+                    .interact(ball, id.with(k), Sense::click())
+                    .on_hover_text(what);
+                if on {
+                    // a soft tone of the accent, as the header's other
+                    // toggles (MU110: the solid accent was too strong)
+                    ui.painter()
+                        .rect_filled(cell, 6.0, p.accent.gamma_multiply(0.18));
+                    let caret = Rect::from_min_max(egui::pos2(ball.right(), cell.top()), cell.max);
+                    let more = ui
+                        .interact(caret, id.with("caret"), Sense::click())
+                        .on_hover_text(format!("{}'s options", f.label()));
+                    if more.hovered() {
+                        ui.painter().rect_filled(
+                            caret,
+                            egui::CornerRadius {
+                                nw: 0,
+                                sw: 0,
+                                ne: 6,
+                                se: 6,
+                            },
+                            p.accent.gamma_multiply(0.16),
+                        );
+                    }
+                    let cr = Rect::from_center_size(
+                        caret.center() - egui::vec2(1.0, 0.0),
+                        egui::vec2(10.0, 10.0),
+                    );
+                    crate::svgicon::paint(ui.painter(), cr, "chevron-down", p.accent);
+                    if more.clicked() {
+                        ask = Some(Ask::Popup("display".into(), cell));
+                    }
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(ball, 6.0, p.raise2);
+                }
+                display_ball(ui.painter(), ball.center(), f, on, p);
+                if resp.clicked() {
+                    ask = Some(if on {
+                        // pressed again, it opens its options
+                        Ask::Popup("display".into(), cell)
+                    } else {
+                        Ask::Run(format!("display:{}", f.key()))
+                    });
+                }
+            }
+            ask
+        }
+        // a labelled tick box: an option that is simply on or off
+        "check" => {
+            let mut on = c["on"].as_bool().unwrap_or(false);
+            ui.checkbox(&mut on, label)
+                .on_hover_text(tip)
+                .clicked()
+                .then(|| Ask::Run(c["id"].as_str().unwrap_or("").into()))
+        }
         "menu" => {
             let r = if icon.is_empty() {
                 name_button(ui, c["value"].as_str().unwrap_or(label), 86.0, p)
@@ -1439,8 +2141,41 @@ fn header_control(ui: &mut egui::Ui, c: &Value, p: &crate::theme::Palette) -> Op
                 pill(ui, icon, "", false, p)
             }
             .on_hover_text(tip);
+            // its count, as a toggle shows one (MU89: Placed on)
+            if let Some(n) = c["badge"].as_u64().filter(|n| *n > 0) {
+                let at = r.rect.right_bottom() - egui::vec2(6.0, 4.0);
+                let g = ui.painter().layout_no_wrap(
+                    n.to_string(),
+                    egui::FontId::proportional(9.5),
+                    egui::Color32::WHITE,
+                );
+                let w = (g.size().x + 6.0).max(13.0);
+                let pill = egui::Rect::from_center_size(at, egui::vec2(w, 13.0));
+                ui.painter().rect(
+                    pill,
+                    6.5,
+                    p.accent,
+                    egui::Stroke::new(1.5, p.panel),
+                    egui::StrokeKind::Outside,
+                );
+                ui.painter()
+                    .galley(pill.center() - g.size() / 2.0, g, egui::Color32::WHITE);
+            }
             r.clicked()
                 .then(|| Ask::Popup(c["key"].as_str().unwrap_or("").into(), r.rect))
+        }
+        "sep" => {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(9.0, 18.0), Sense::hover());
+            ui.painter().line_segment(
+                [r.center_top(), r.center_bottom()],
+                egui::Stroke::new(1.0, p.border),
+            );
+            None
+        }
+        "text" => {
+            let enabled = !c["off"].as_bool().unwrap_or(false);
+            let r = text_btn(ui, label, enabled, p).on_hover_text(tip);
+            (r.clicked() && enabled).then(|| Ask::Run(c["id"].as_str().unwrap_or("").into()))
         }
         "number" => {
             let mut v = c["value"].as_f64().unwrap_or(0.0);
@@ -1474,7 +2209,37 @@ fn header_control(ui: &mut egui::Ui, c: &Value, p: &crate::theme::Palette) -> Op
     }
 }
 
-fn icon_btn(
+/// What an area's header keeps at width `room`, after its controls have
+/// gone into ⋯: the maximise button, the mode button and how wide the name
+/// may be (MU52-04).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HeaderFit {
+    maximise: bool,
+    mode: bool,
+    name_w: f32,
+}
+
+fn header_fit(room: f32, modal: bool, compact: bool) -> HeaderFit {
+    // the kind (34) and ⋯ (26) always, with their gaps
+    let fixed = 34.0 + 26.0 + 16.0;
+    let name_min = 56.0;
+    let mode_need = match (modal, compact) {
+        (false, _) => 0.0,
+        (true, true) => 48.0,
+        (true, false) => 114.0,
+    };
+    let free = room - fixed;
+    let maximise = free - mode_need - 28.0 >= name_min;
+    let mode = modal && free - mode_need >= name_min;
+    let taken = if maximise { 28.0 } else { 0.0 } + if mode { mode_need } else { 0.0 };
+    HeaderFit {
+        maximise,
+        mode,
+        name_w: (free - taken).max(24.0),
+    }
+}
+
+pub(super) fn icon_btn(
     ui: &mut egui::Ui,
     icon: &str,
     on: bool,
@@ -1513,6 +2278,41 @@ fn icon_btn(
     resp
 }
 
+/// A worded button, as quiet as the icons beside it.
+fn text_btn(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    p: &crate::theme::Palette,
+) -> egui::Response {
+    let font = egui::FontId::proportional(12.5);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, p.text);
+    let (r, resp) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + 18.0, 26.0),
+        if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let fill = if resp.hovered() && enabled {
+        p.raise2
+    } else {
+        p.raise
+    };
+    ui.painter().rect_filled(r, 5.0, fill);
+    let c = if !enabled {
+        p.muted.gamma_multiply(0.5)
+    } else if resp.hovered() {
+        p.text
+    } else {
+        p.muted
+    };
+    let at = r.center() - galley.size() / 2.0;
+    ui.painter().galley_with_override_text_color(at, galley, c);
+    resp
+}
+
 /// An icon with a small chevron: a menu.
 fn pill(
     ui: &mut egui::Ui,
@@ -1547,15 +2347,47 @@ fn pill(
 }
 
 /// A name with a chevron, as wide as `w` at most.
-fn name_button(ui: &mut egui::Ui, name: &str, w: f32, p: &crate::theme::Palette) -> egui::Response {
+pub(super) fn name_button(
+    ui: &mut egui::Ui,
+    name: &str,
+    w: f32,
+    p: &crate::theme::Palette,
+) -> egui::Response {
+    name_button_w(ui, name, w, false, p)
+}
+
+/// The name button exactly `w` wide when `fill` (MU90: Properties' notes
+/// switch left a gap before +).
+pub(super) fn name_button_w(
+    ui: &mut egui::Ui,
+    name: &str,
+    w: f32,
+    fill: bool,
+    p: &crate::theme::Palette,
+) -> egui::Response {
     let font = egui::FontId::proportional(12.5);
     let galley = ui
         .painter()
         .layout_no_wrap(name.to_string(), font.clone(), p.text);
-    let width = (galley.size().x + 26.0).min(w);
+    let width = if fill {
+        w
+    } else {
+        (galley.size().x + 26.0).min(w)
+    };
     let (r, resp) = ui.allocate_exact_size(egui::vec2(width, 26.0), Sense::click());
     ui.painter()
         .rect_filled(r, 6.0, if resp.hovered() { p.raise2 } else { p.raise });
+    // cut with … when narrow (MU52-04), never clipped mid-letter
+    let galley = if galley.size().x > width - 22.0 {
+        let mut job = egui::text::LayoutJob::single_section(
+            name.to_string(),
+            egui::TextFormat::simple(font.clone(), p.text),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width((width - 22.0).max(8.0));
+        ui.painter().layout_job(job)
+    } else {
+        galley
+    };
     let clip = Rect::from_min_max(r.min, egui::pos2(r.right() - 16.0, r.bottom()));
     ui.painter().with_clip_rect(clip).galley(
         egui::pos2(r.left() + 6.0, r.center().y - galley.size().y / 2.0),
@@ -1646,6 +2478,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_narrow_header_folds_maximise_then_the_mode_and_keeps_inside() {
+        // wide: everything stays
+        let f = header_fit(700.0, true, false);
+        assert!(f.maximise && f.mode);
+        // a 150 px Log area (MU52-04): maximise goes into ⋯, and what is
+        // kept fits the room
+        let f = header_fit(150.0 - 20.0, false, true);
+        assert!(!f.maximise && !f.mode);
+        assert!(34.0 + 26.0 + 16.0 + f.name_w <= 130.0 + 0.5, "{f:?}");
+        // a narrow plan: maximise first, then the mode
+        let f = header_fit(190.0, true, true);
+        assert!(!f.maximise && f.mode, "{f:?}");
+        let f = header_fit(160.0, true, true);
+        assert!(!f.maximise && !f.mode, "{f:?}");
+        // whatever the width, the kept parts fit
+        for w in (40..900).step_by(10) {
+            let room = w as f32;
+            let f = header_fit(room, true, room < 600.0);
+            let kept = 76.0
+                + f.name_w
+                + if f.maximise { 28.0 } else { 0.0 }
+                + if f.mode {
+                    if room < 600.0 {
+                        48.0
+                    } else {
+                        114.0
+                    }
+                } else {
+                    0.0
+                };
+            assert!(kept <= room.max(100.0) + 0.5, "{room}: {f:?}");
+        }
+    }
+
+    #[test]
     fn workspaces_fill_in_the_drawing_and_its_sheet() {
         let mut app = crate::app::test_app();
         let plan = app
@@ -1687,7 +2554,10 @@ mod tests {
         // stepping goes round the workspaces
         app.step_workspace(1);
         assert_eq!(app.areas.workspace, "Drawing");
+        // round from the first to the last: Time, then Sheets
         app.step_workspace(-2);
+        assert_eq!(app.areas.workspace, "Time");
+        app.step_workspace(-1);
         assert_eq!(app.areas.workspace, "Sheets");
     }
 

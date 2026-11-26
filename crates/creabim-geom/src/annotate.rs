@@ -6,8 +6,8 @@ use crate::annotation::{end_marks, measure, runs_past, Annotation, Ends, Shape, 
 use crate::plan::PlanItem;
 use crate::section::{AxoFrame, SectionFrame};
 use creabim_core::{
-    DimensionKind, ElementId, ElementKind, HostPoint, Model, Note, OpeningKind, RoomField,
-    TagShape, Terminator, View, ViewKind, Wall,
+    DimLeader, DimPlace, DimensionKind, ElementId, ElementKind, HostPoint, Model, Note,
+    OpeningKind, RoomField, TagShape, Terminator, View, ViewKind, Wall,
 };
 use glam::{DAffine3, DMat3, DVec2, DVec3};
 
@@ -28,7 +28,10 @@ impl Projector {
             ViewKind::Axonometric { azimuth, altitude } => {
                 Projector::Axo(AxoFrame::new(model, azimuth, altitude))
             }
-            ViewKind::Schedule { .. } => return None,
+            ViewKind::Schedule { .. }
+            | ViewKind::LongSection { .. }
+            | ViewKind::BoreholeLog { .. }
+            | ViewKind::WalkSection { .. } => return None,
         })
     }
 
@@ -245,6 +248,102 @@ pub fn centre(model: &Model, id: ElementId) -> Option<DVec3> {
     })
 }
 
+/// The size an element's tag would give it: a wall's or slab's thickness,
+/// a column's profile, a beam's width × depth, a pad's three sizes. None
+/// for what has no one size.
+pub fn size_text(model: &Model, id: ElementId) -> Option<String> {
+    let e = model.get(id)?;
+    let units = creabim_core::units::number_format(model, creabim_core::NumberKind::Tags, None)
+        .units(&model.units());
+    let tag = |m: f64| creabim_core::write_number(model, creabim_core::NumberKind::Tags, None, m);
+    Some(match &e.kind {
+        ElementKind::Wall(w) => tag(w.thickness),
+        ElementKind::Slab(s) => tag(s.thickness),
+        ElementKind::Column(c) => c.profile.label_in(&units),
+        ElementKind::Beam(b) => format!("{} × {}", tag(b.width), tag(b.depth)),
+        ElementKind::Roof(r) => format!("{} {:.0}°", tag(r.thickness), r.pitch),
+        ElementKind::Footing(f) => match f.kind {
+            creabim_core::FootingKind::Strip => format!("{} × {}", tag(f.width), tag(f.thickness)),
+            creabim_core::FootingKind::Pad => {
+                format!(
+                    "{} × {} × {}",
+                    tag(f.width),
+                    tag(f.length),
+                    tag(f.thickness)
+                )
+            }
+        },
+        _ => return None,
+    })
+}
+
+/// One field a reading note shows of the element `id` (see
+/// [`creabim_core::NOTE_FIELDS`]); none when it has no such value.
+pub fn note_field(model: &Model, id: ElementId, key: &str) -> Option<String> {
+    let e = model.get(id)?;
+    let some = |s: String| (!s.trim().is_empty()).then_some(s);
+    match key {
+        "name" => some(e.name.clone()),
+        "mark" => match &e.kind {
+            ElementKind::Object(_) => creabim_core::marks::object_mark(model, e),
+            _ => creabim_core::marks::mark_of(model, id),
+        },
+        "ifc" => some(e.ifc_class().to_string()),
+        "type" => creabim_core::types::type_of(model, e).and_then(|(t, _)| some(t.name.clone())),
+        // one material, or a layered build-up's, outside to inside
+        "material" => creabim_core::material_of(model, e)
+            .and_then(|(m, _)| some(m.name.clone()))
+            .or_else(|| {
+                let (_, a) = creabim_core::assembly_of(model, e)?;
+                let mut names: Vec<String> = vec![];
+                for l in &a.layers {
+                    if let Some(m) = l.material.and_then(|m| model.get(m)) {
+                        if !names.contains(&m.name) {
+                            names.push(m.name.clone());
+                        }
+                    }
+                }
+                some(names.join(", "))
+            }),
+        "level" => creabim_core::levels::level_of(&e.kind)
+            .and_then(|l| model.get(l))
+            .and_then(|l| some(l.name.clone())),
+        "size" => size_text(model, id),
+        // a layered element's build-up, one line a layer with its
+        // thickness, outside to inside, as a material tag writes it
+        "layers" => creabim_core::assembly_of(model, e)
+            .filter(|(_, a)| !a.layers.is_empty())
+            .map(|_| material_text(model, id)),
+        _ => None,
+    }
+}
+
+/// The words a note shows and whether they read as markdown: a notes
+/// section's text, its own text with `{Field}`s filled from what it
+/// reads, or its own text.
+pub fn note_shown_text(model: &Model, n: &Note) -> (String, bool) {
+    if let Some(t) = n
+        .section
+        .as_deref()
+        .and_then(|k| creabim_core::project::linked_text(model, k))
+    {
+        return (t, true);
+    }
+    if let Some(r) = &n.reads {
+        let from = n.reads_from();
+        let filled = creabim_core::fill_note_fields(&n.text, |k| {
+            from.and_then(|id| note_field(model, id, k))
+        });
+        let filled = if r.caps {
+            filled.to_uppercase()
+        } else {
+            filled
+        };
+        return (filled, n.markdown);
+    }
+    (n.text.clone(), n.markdown)
+}
+
 /// What a material tag on `id` reads: its layers, one line each with
 /// their thickness, outside to inside, or its one material's name.
 pub fn material_text(model: &Model, id: ElementId) -> String {
@@ -321,8 +420,9 @@ pub fn tag_text(model: &Model, id: ElementId) -> (String, bool) {
             false,
         ),
         ElementKind::Room(_) => (room_tag_text(model, id, &[]), false),
-        // a ceiling: its height above the floor, as reflected ceiling plans write it
-        ElementKind::Ceiling(c) => (format!("CLG +{}", tag(c.height)), false),
+        // a ceiling: its height above the floor, as its tag in a ceiling
+        // plan writes it (MU142: one tag language)
+        ElementKind::Ceiling(c) => (crate::rooms::ceiling_height_text(model, "CH", c), false),
         _ => (e.name.clone(), false),
     }
 }
@@ -401,6 +501,155 @@ pub fn room_tag_item(id: ElementId, text: String, at: DVec2, look: TextLook, mm:
 /// [`room_tag_text`] in one block. A tag moved out of its room (`room` is
 /// its outline in the drawing) gets a leader back to `centre`.
 #[allow(clippy::too_many_arguments)]
+/// `name` broken at the space nearest its middle, on two lines.
+pub fn two_lines(name: &str) -> String {
+    let mid = name.len() / 2;
+    match name
+        .match_indices(' ')
+        .map(|(i, _)| i)
+        .min_by_key(|i| i.abs_diff(mid))
+    {
+        Some(i) => format!("{}\n{}", &name[..i], &name[i + 1..]),
+        None => name.to_string(),
+    }
+}
+
+/// The fields a room tag shows in a view: what it asks for (name, area,
+/// number when nothing), less what the scale table's row leaves out at
+/// the view's scale (MU131: at 1:100 tags said as much as at 1:50 and ran
+/// into each other).
+pub fn room_fields_at(
+    fields: &[RoomField],
+    says: creabim_core::styles::RoomTagSays,
+) -> Vec<RoomField> {
+    use creabim_core::styles::RoomTagSays as S;
+    let all: Vec<RoomField> = if fields.is_empty() {
+        vec![RoomField::Name, RoomField::Area, RoomField::Number]
+    } else {
+        fields.to_vec()
+    };
+    let keep = |f: &RoomField| match says {
+        S::All => true,
+        S::NameNumber => matches!(f, RoomField::Name | RoomField::Number),
+        S::Number => matches!(f, RoomField::Number),
+    };
+    let some: Vec<RoomField> = all.iter().copied().filter(keep).collect();
+    if some.is_empty() {
+        all
+    } else {
+        some
+    }
+}
+
+/// The room tags of a plan's `items` too big for their room even fitted
+/// (broken and shrunk): the label pass may take them outside the plan.
+pub fn tags_too_big(
+    model: &Model,
+    view: ElementId,
+    items: &[PlanItem],
+    mm: f64,
+) -> std::collections::HashSet<ElementId> {
+    let mut out = std::collections::HashSet::new();
+    for e in model.iter() {
+        let ElementKind::Tag(t) = &e.kind else {
+            continue;
+        };
+        if t.view != view {
+            continue;
+        }
+        let Some(outline) = area_outline(model, t.host) else {
+            continue;
+        };
+        let (lo, hi) = outline
+            .iter()
+            .fold((DVec2::MAX, DVec2::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+        let own: Vec<PlanItem> = items.iter().filter(|i| i.id() == e.id).cloned().collect();
+        if let Some((a, b)) = tag_extent(&own, mm) {
+            if b.x - a.x > hi.x - lo.x - 1.0 * mm || b.y - a.y > hi.y - lo.y - 1.0 * mm {
+                out.insert(e.id);
+            }
+        }
+    }
+    out
+}
+
+/// The outline in plan of what an area tag reads: a room's, or a
+/// ceiling's. None for anything else.
+fn area_outline(model: &Model, host: ElementId) -> Option<Vec<DVec2>> {
+    match &model.get(host)?.kind {
+        ElementKind::Room(r) => creabim_core::room::shape_of(model, r).map(|s| s.outline),
+        ElementKind::Ceiling(c) => c.outline(model),
+        _ => None,
+    }
+    .filter(|o| o.len() > 2)
+}
+
+/// The room and ceiling tags of plan `view`, each with its room's or
+/// ceiling's outline: a tag the label pass nudges but keeps inside it
+/// needs no leader back.
+pub fn room_tag_rooms(
+    model: &Model,
+    view: ElementId,
+) -> std::collections::HashMap<ElementId, Vec<DVec2>> {
+    model
+        .iter()
+        .filter_map(|e| {
+            let ElementKind::Tag(t) = &e.kind else {
+                return None;
+            };
+            if t.view != view {
+                return None;
+            }
+            Some((e.id, area_outline(model, t.host)?))
+        })
+        .collect()
+}
+
+/// The box a room tag's lines cover, in drawing units.
+fn tag_extent(items: &[PlanItem], mm: f64) -> Option<(DVec2, DVec2)> {
+    items
+        .iter()
+        .filter_map(|it| crate::declutter::text_box(it, mm).map(|(b, _)| (b.lo, b.hi)))
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+}
+
+/// A room tag that fits its room: as it is, else its name on two lines,
+/// else smaller, down to 1.8 mm (MU131). `make` draws it with a size
+/// factor and the name wrapped or not; `room` is the room's outline.
+fn fitted_tag(
+    make: &dyn Fn(f64, bool) -> Vec<PlanItem>,
+    room: Option<&[DVec2]>,
+    size: f64,
+    mm: f64,
+) -> Vec<PlanItem> {
+    let first = make(1.0, false);
+    let Some(room) = room.filter(|r| r.len() > 2) else {
+        return first;
+    };
+    let (lo, hi) = room
+        .iter()
+        .fold((DVec2::MAX, DVec2::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+    let room_w = (hi.x - lo.x) - 1.0 * mm;
+    let room_h = (hi.y - lo.y) - 1.0 * mm;
+    let fits = |items: &[PlanItem]| {
+        tag_extent(items, mm).is_none_or(|(a, b)| b.x - a.x <= room_w && b.y - a.y <= room_h)
+    };
+    if fits(&first) {
+        return first;
+    }
+    let least = (1.8 / size.max(1e-9)).min(1.0);
+    for (k, wrap) in [(1.0, true), (0.85, false), (0.85, true), (least, true)] {
+        let k = k.max(least);
+        let items = make(k, wrap);
+        if fits(&items) {
+            return items;
+        }
+    }
+    // still too big: as small as it goes; the label pass moves it out
+    make(least, true)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn room_tag_items(
     model: &Model,
     id: ElementId,
@@ -412,9 +661,10 @@ pub fn room_tag_items(
     look: TextLook,
     mm: f64,
     style: creabim_core::styles::RoomTagStyle,
+    wrap_name: bool,
 ) -> Vec<PlanItem> {
     use creabim_core::styles::RoomTagStyle;
-    let outside = outline.is_some_and(|o| o.len() > 2 && !creabim_core::polygon::contains(o, at));
+    let outside = away_from(at, centre, outline, mm);
     let mut out = match style {
         RoomTagStyle::Inline => {
             vec![room_tag_item(
@@ -442,7 +692,14 @@ pub fn room_tag_items(
                     Some(match f {
                         RoomField::Name => {
                             l.bold = true;
-                            (v.to_uppercase(), l)
+                            (
+                                if wrap_name {
+                                    two_lines(&v.to_uppercase())
+                                } else {
+                                    v.to_uppercase()
+                                },
+                                l,
+                            )
                         }
                         RoomField::Number => {
                             l.size *= 0.72;
@@ -455,7 +712,11 @@ pub fn room_tag_items(
                     })
                 })
                 .collect();
-            let steps: Vec<f64> = lines.iter().map(|(_, l)| l.size * 1.45 * mm).collect();
+            // a name on two lines takes two steps
+            let steps: Vec<f64> = lines
+                .iter()
+                .map(|(t, l)| l.size * 1.45 * mm * t.split('\n').count() as f64)
+                .collect();
             let total: f64 = steps.iter().sum::<f64>() - steps.last().copied().unwrap_or(0.0);
             let mut y = at.y + total / 2.0;
             let mut items = vec![];
@@ -607,28 +868,86 @@ pub fn room_tag_items(
         }
     };
     if outside {
-        // a leader from the tag back to its room
-        let gap = look.size * mm;
-        let d = centre - at;
-        if d.length() > gap * 2.0 {
-            let from = at + d.normalize() * gap * 1.5;
-            out.push(PlanItem::Line {
-                id,
-                pen: crate::plan::Pen::Symbol,
-                a: from,
-                b: centre,
-            });
-            out.push(PlanItem::Polygon {
-                id,
-                pen: crate::plan::Pen::Symbol,
-                points: (0..12)
-                    .map(|i| {
-                        let t = i as f64 / 12.0 * std::f64::consts::TAU;
-                        centre + DVec2::new(t.cos(), t.sin()) * 0.6 * mm
-                    })
-                    .collect(),
-            });
+        lead_back(model, id, &mut out, at, centre, look, mm);
+    }
+    out
+}
+
+/// Is a tag at `at` away from what it tags, whose middle is `centre` and
+/// outline `outline` (a room, a ceiling): out of it, or put by hand well
+/// away from its spot inside it. Such a tag draws a leader back (MU142: a
+/// tag dragged inside its room lost the leader every other tag had).
+fn away_from(at: DVec2, centre: DVec2, outline: Option<&[DVec2]>, mm: f64) -> bool {
+    let away = (at - centre).length() > crate::declutter::LEADER_PAST * mm;
+    outline.is_some_and(|o| o.len() > 2 && (away || !creabim_core::polygon::contains(o, at)))
+}
+
+/// A leader from area tag `id`'s first line back to what it tags: to
+/// where its end was dragged, through its bend, both kept from the middle
+/// `centre` (MU142: the leader's grips showed but did not move it).
+fn lead_back(
+    model: &Model,
+    id: ElementId,
+    out: &mut [PlanItem],
+    at: DVec2,
+    centre: DVec2,
+    look: TextLook,
+    mm: f64,
+) {
+    let (end, elbow) = match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Tag(t)) => (t.end, t.elbow),
+        _ => (None, None),
+    };
+    let centre_mid = centre;
+    let centre = centre + end.unwrap_or(DVec2::ZERO);
+    let gap = look.size * mm;
+    let d = centre - at;
+    if d.length() > gap * 2.0 {
+        // the tag's own leader, from its first line, in its colour and
+        // with its end, as the label pass gives a tag it nudges (MU142:
+        // a white symbol line with a dot read apart from the others)
+        if let Some(PlanItem::Annotation { item, .. }) = out
+            .iter_mut()
+            .find(|i| matches!(i, PlanItem::Annotation { .. }))
+        {
+            if let Shape::Note {
+                leader,
+                elbow: bend,
+                ..
+            } = &mut item.shape
+            {
+                *leader = Some(centre);
+                *bend = elbow.map(|p| centre_mid + p);
+            }
         }
+    }
+}
+
+/// A ceiling's height tag in a ceiling plan: one line, "CH 7'-11 1/2"", in
+/// the tag's style and the annotation colour, as a room's tag is drawn,
+/// with a leader back once it is moved out of its ceiling (MU142, owner:
+/// one tag language for everything that labels the model).
+#[allow(clippy::too_many_arguments)]
+pub fn ceiling_tag_items(
+    model: &Model,
+    id: ElementId,
+    t: &creabim_core::Tag,
+    c: &creabim_core::Ceiling,
+    centre: DVec2,
+    outline: Option<&[DVec2]>,
+    look: TextLook,
+    mm: f64,
+) -> Vec<PlanItem> {
+    let at = centre + t.offset;
+    // a material tag reads the ceiling's material, as any tag set so does
+    let text = if t.material {
+        material_text(model, t.host)
+    } else {
+        crate::rooms::ceiling_height_text(model, t.prefix(), c)
+    };
+    let mut out = vec![room_tag_item(id, text, at, look, mm)];
+    if !t.no_leader && away_from(at, centre, outline, mm) {
+        lead_back(model, id, &mut out, at, centre, look, mm);
     }
     out
 }
@@ -781,8 +1100,41 @@ pub fn note_item(
     leader: Option<DVec2>,
     mm: f64,
 ) -> PlanItem {
+    if let Some(p) = &n.symbol {
+        let view = match model.get(n.view).map(|e| &e.kind) {
+            Some(ElementKind::View(v)) => Some(v),
+            _ => None,
+        };
+        if let Some(s) = creabim_core::symbols::placed_style(model, view, p) {
+            return crate::symbol::placed(id, s, n.at, n.text.clone(), p.angle, mm);
+        }
+    }
+    // a block of a long note shows its share of the lines, laid out with
+    // the first block's look so the parts read as one text
+    if let Some((lines, _)) = chain_share(model, id) {
+        let first = chain_first(model, id).unwrap_or(n);
+        let mut look = look_of(model, first.style, first.color);
+        look.leader_end = n.leader_end.or(look.leader_end);
+        return PlanItem::Annotation {
+            id,
+            item: Box::new(Annotation {
+                shape: Shape::Note {
+                    at: n.at,
+                    leader,
+                    elbow: leader.and(n.elbow),
+                },
+                text: lines.join("\n"),
+                look,
+                mm,
+            }),
+        };
+    }
     let mut look = look_of(model, n.style, n.color);
     look.leader_end = n.leader_end.or(look.leader_end);
+    // a notes section's text as Markdown, or its own text with what it
+    // reads from an object filled in
+    let (text, markdown) = note_shown_text(model, n);
+    let text = text.as_str();
     PlanItem::Annotation {
         id,
         item: Box::new(Annotation {
@@ -791,11 +1143,137 @@ pub fn note_item(
                 leader,
                 elbow: leader.and(n.elbow),
             },
-            text: crate::annotation::lay_out_note(&n.text, &look, n.width, n.markdown),
+            text: crate::annotation::lay_out_note(text, &look, n.width, markdown),
             look,
             mm,
         }),
     }
+}
+
+/// The first block of the long note `id` belongs to.
+fn chain_first(model: &Model, id: ElementId) -> Option<&Note> {
+    let n = match &model.get(id)?.kind {
+        ElementKind::Note(n) => n,
+        _ => return None,
+    };
+    let first = n.follows.map_or(id, |f| f.first);
+    match &model.get(first)?.kind {
+        ElementKind::Note(f) => Some(f),
+        _ => None,
+    }
+}
+
+/// The blocks of the long note whose first block is `first`, in order:
+/// the first, then those that carry it on by their part number.
+pub fn chain_blocks(model: &Model, first: ElementId) -> Vec<ElementId> {
+    let mut rest: Vec<(u32, ElementId)> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Note(n) => n
+                .follows
+                .filter(|f| f.first == first)
+                .map(|f| (f.part, e.id)),
+            _ => None,
+        })
+        .collect();
+    rest.sort();
+    std::iter::once(first)
+        .chain(rest.into_iter().map(|(_, id)| id))
+        .collect()
+}
+
+/// A long note's blocks share out its lines (Mockup_Long_Notes_REV00):
+/// the block `id`'s own lines, laid out, and how many are left over after
+/// the last block. None when `id` is a note of its own or a first block
+/// shown Whole; a later block of a Whole note gets no lines.
+pub fn chain_share(model: &Model, id: ElementId) -> Option<(Vec<String>, usize)> {
+    let n = match &model.get(id)?.kind {
+        ElementKind::Note(n) => n,
+        _ => return None,
+    };
+    let first_id = n.follows.map_or(id, |f| f.first);
+    let first = chain_first(model, id)?;
+    if !first.continued {
+        return n.follows.map(|_| (vec![], 0));
+    }
+    let (text, markdown) = note_shown_text(model, first);
+    let look = look_of(model, first.style, first.color);
+    let laid: Vec<String> = crate::annotation::lay_out_note(&text, &look, first.width, markdown)
+        .split('\n')
+        .map(String::from)
+        .collect();
+    let pitch = (look.size * 1.5).max(0.1);
+    let name = first
+        .section
+        .as_deref()
+        .and_then(|k| model.project_info().and_then(|(_, p)| p.section_name(k)))
+        .unwrap_or_default();
+    let mut i = 0;
+    let mut mine = None;
+    for (k, block) in chain_blocks(model, first_id).into_iter().enumerate() {
+        let Some(ElementKind::Note(b)) = model.get(block).map(|e| &e.kind) else {
+            continue;
+        };
+        let mut room = b
+            .height
+            .map_or(usize::MAX, |h| ((h / pitch).floor() as usize).max(1));
+        let mut out = vec![];
+        if k > 0 {
+            // a later block starts on a line with words, under its title
+            while laid.get(i).is_some_and(|l| l.trim().is_empty()) {
+                i += 1;
+            }
+            if let Some(t) = b.follows.and_then(|f| f.title.line(&name)) {
+                out.push(t);
+                room = room.saturating_sub(1).max(1);
+            }
+        }
+        let take = room.min(laid.len() - i);
+        out.extend(laid[i..i + take].iter().cloned());
+        i += take;
+        if block == id {
+            mine = Some(out);
+        }
+    }
+    Some((mine?, laid.len() - i))
+}
+
+/// Lines that run past the block `id`'s height: for a Whole note, those
+/// below its foot; for the last block of a Continued one, those no block
+/// holds. Shown on screen as a red mark, never printed.
+pub fn note_runs_past(model: &Model, id: ElementId) -> usize {
+    let Some(ElementKind::Note(n)) = model.get(id).map(|e| &e.kind) else {
+        return 0;
+    };
+    if n.follows.is_some() || n.continued {
+        return chain_overflow(model, id);
+    }
+    let Some(h) = n.height else { return 0 };
+    let (text, markdown) = note_shown_text(model, n);
+    let look = look_of(model, n.style, n.color);
+    let lines = crate::annotation::lay_out_note(&text, &look, n.width, markdown)
+        .split('\n')
+        .count();
+    let room = ((h / (look.size * 1.5).max(0.1)).floor() as usize).max(1);
+    lines.saturating_sub(room)
+}
+
+/// Lines a long note could not fit, when `id` is its last block.
+pub fn chain_overflow(model: &Model, id: ElementId) -> usize {
+    let Some(first) = chain_first(model, id) else {
+        return 0;
+    };
+    if !first.continued {
+        return 0;
+    }
+    let first_id = match &model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Note(n)) => n.follows.map_or(id, |f| f.first),
+        _ => return 0,
+    };
+    if chain_blocks(model, first_id).last() != Some(&id) {
+        return 0;
+    }
+    chain_share(model, id).map_or(0, |(_, left)| left)
 }
 
 /// The notes written straight on a sheet, in paper millimetres.
@@ -817,6 +1295,66 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
     let Some(project) = Projector::of(model, view) else {
         return vec![];
     };
+    let rule = creabim_core::styles::view_rule(model, view);
+    let mut out = annotation_items(model, view_id, view, &project, &rule);
+    to_scale(&mut out, &rule);
+    out
+}
+
+/// A length rounded to the scale table's step for its row: a millimetre
+/// in a detail, ten in a plan; 1/16" to 1" in feet and inches.
+pub fn rounded_to_scale(model: &Model, rule: &creabim_core::styles::ScaleRule, metres: f64) -> f64 {
+    let step = if model.units().length.is_imperial() {
+        0.0254 / f64::from(rule.round_in.max(1))
+    } else {
+        rule.round_mm.max(0.001) / 1000.0
+    };
+    (metres / step).round() * step
+}
+
+/// Ticks and lettering at the sizes the scale table gives the view's row,
+/// where a text style left them as they come (a style's own sizes stay).
+fn to_scale(items: &mut [PlanItem], rule: &creabim_core::styles::ScaleRule) {
+    use creabim_core::annotation::DEFAULT_TEXT_SIZE;
+    let size = |look: &mut crate::annotation::TextLook, to: f64| {
+        if (look.size - DEFAULT_TEXT_SIZE).abs() < 1e-9 {
+            look.size = to;
+        }
+    };
+    let tick = |look: &mut crate::annotation::TextLook| {
+        if (look.end_size - crate::annotation::END_SIZE).abs() < 1e-9 {
+            look.end_size = rule.dim_tick;
+        }
+    };
+    for it in items.iter_mut() {
+        match it {
+            PlanItem::Dimension { look, .. } => {
+                size(look, rule.dim_text);
+                tick(look);
+            }
+            PlanItem::Tag { look, .. } => size(look, rule.note_text),
+            PlanItem::Annotation { item, .. } => {
+                let note = matches!(item.shape, crate::annotation::Shape::Note { .. });
+                size(
+                    &mut item.look,
+                    if note { rule.note_text } else { rule.dim_text },
+                );
+                if !note {
+                    tick(&mut item.look);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn annotation_items(
+    model: &Model,
+    view_id: ElementId,
+    view: &View,
+    project: &Projector,
+    rule: &creabim_core::styles::ScaleRule,
+) -> Vec<PlanItem> {
     let mut out = Vec::new();
     for e in model.iter() {
         match &e.kind {
@@ -832,6 +1370,25 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
             ElementKind::View(v) => {
                 if let Some(c) = v.callout.filter(|c| c.parent == view_id) {
                     let mm = view.scale / 1000.0;
+                    let round = matches!(view.kind, ViewKind::Section { .. });
+                    if let Some(s) = creabim_core::symbols::pick(model, view, "callouts") {
+                        // the callout's symbol picked: the box, the symbol
+                        // on its corner (Mockup_Symbols_REV00)
+                        let parts = creabim_core::styles::active_pack(model)
+                            .marker_parts()
+                            .unwrap_or_default();
+                        let (bx, corner, _) =
+                            crate::markers::callout_box(e.id, c.lo, c.hi, round, &parts, mm);
+                        out.extend(bx);
+                        out.push(crate::symbol::callout_head(
+                            e.id,
+                            s,
+                            corner,
+                            crate::markers::number_of(model, e.id),
+                            mm,
+                        ));
+                        continue;
+                    }
                     match creabim_core::styles::active_pack(model).marker_parts() {
                         Some(parts) => {
                             // a detail called out of a section is ringed
@@ -871,20 +1428,28 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                 let Some((b2, witness)) = squared(d.axis, a, b) else {
                     continue;
                 };
+                // rounded to the scale table's step, unless the dimension
+                // carries a number format of its own
+                let length = match d.format {
+                    Some(_) => a.distance(b2),
+                    None => rounded_to_scale(model, rule, a.distance(b2)),
+                };
+                let measured = creabim_core::write_number(
+                    model,
+                    creabim_core::NumberKind::Dimensions,
+                    d.format,
+                    length,
+                );
                 out.push(PlanItem::Dimension {
                     id: e.id,
                     a,
                     b: b2,
                     offset: d.offset,
-                    text: creabim_core::write_number(
-                        model,
-                        creabim_core::NumberKind::Dimensions,
-                        d.format,
-                        a.distance(b2),
-                    ),
+                    text: d.label.compose(&measured),
                     look: look_of(model, d.style, d.color),
                     witness,
                     breaks: vec![],
+                    label: DimLabel::of(&d.label),
                 });
             }
             ElementKind::Tag(t) if t.view == view_id => {
@@ -911,17 +1476,54 @@ pub fn annotations(model: &Model, view_id: ElementId, view: &View) -> Vec<PlanIt
                         }
                         _ => None,
                     };
-                    out.extend(room_tag_items(
+                    let fields = room_fields_at(&t.fields, rule.room_tag);
+                    let look = look_of(model, t.style, t.color);
+                    let mm = view.scale / 1000.0;
+                    let style = creabim_core::styles::active_pack(model).room_tags;
+                    let make = |k: f64, wrap: bool| {
+                        let mut l = look;
+                        l.size *= k;
+                        room_tag_items(
+                            model,
+                            e.id,
+                            t.host,
+                            &fields,
+                            centre + t.offset,
+                            centre,
+                            // its outline tells a tag out of its room, which
+                            // draws a leader back unless it is turned off
+                            outline.as_deref().filter(|_| !t.no_leader),
+                            l,
+                            mm,
+                            style,
+                            wrap,
+                        )
+                    };
+                    // a tag moved by hand stays as it was put (MU131 d4)
+                    if t.offset.length() > 1e-9 {
+                        out.extend(make(1.0, false));
+                    } else {
+                        out.extend(fitted_tag(&make, outline.as_deref(), look.size, mm));
+                    }
+                    continue;
+                }
+                // a ceiling's height, in a ceiling plan that shows them
+                if let Some(ElementKind::Ceiling(cl)) = model.get(t.host).map(|h| &h.kind) {
+                    if !view.ceiling_plan || view.graphics.hide_ceiling_heights {
+                        continue;
+                    }
+                    let outline: Option<Vec<DVec2>> = cl
+                        .outline(model)
+                        .map(|o| o.iter().map(|p| project.project(p.extend(c.z))).collect());
+                    out.extend(ceiling_tag_items(
                         model,
                         e.id,
-                        t.host,
-                        &t.fields,
-                        centre + t.offset,
+                        t,
+                        cl,
                         centre,
                         outline.as_deref(),
                         look_of(model, t.style, t.color),
                         view.scale / 1000.0,
-                        creabim_core::styles::active_pack(model).room_tags,
                     ));
                     continue;
                 }
@@ -1072,6 +1674,111 @@ pub struct DimensionGeometry {
     pub angle: f64,
     /// Where the dimension line meets its witness lines.
     pub ends_at: (DVec2, DVec2),
+    /// Where a note below the line sits (MU80), centred, at `angle`.
+    pub below_at: DVec2,
+}
+
+/// A linear dimension's text beyond its number, as drawn (MU80): the note
+/// below its line, its place, and whether the number is its own text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DimLabel {
+    pub below: String,
+    pub place: DimPlace,
+    /// Moved text's shift from its centred place, drawing units.
+    pub moved: Option<DVec2>,
+    pub leader: DimLeader,
+    /// The number is the user's text: marked on screen, never on paper.
+    pub overridden: bool,
+    /// Its text has a grip to drag it by (Move text, MU81).
+    pub movable: bool,
+}
+
+impl DimLabel {
+    pub fn of(t: &creabim_core::DimText) -> Self {
+        DimLabel {
+            below: t.below.trim().to_string(),
+            place: t.place,
+            moved: t.moved.map(DVec2::from),
+            leader: t.leader,
+            overridden: t.overridden(),
+            movable: t.movable,
+        }
+    }
+}
+
+/// Size of a dimension's note below its line, against its text's.
+pub const BELOW_SIZE: f64 = 0.8;
+
+/// A linear dimension laid out with its text `text` placed as `label`
+/// says: past either end (the line runs on under it), or moved with a
+/// leader back to the line's middle when it sits outside the witness lines
+/// (or always, or never). The note below follows the text.
+#[allow(clippy::too_many_arguments)]
+pub fn dimension_layout(
+    a: DVec2,
+    b: DVec2,
+    offset: f64,
+    witness: Option<[DVec2; 2]>,
+    look: &TextLook,
+    mm: f64,
+    text: &str,
+    label: &DimLabel,
+) -> DimensionGeometry {
+    let mut g = dimension_geometry(a, b, offset, witness, look, mm);
+    let (pa, pb) = g.ends_at;
+    let r = DVec2::from_angle(g.angle);
+    let up = r.perp();
+    let half = look.width(text) * mm / 2.0;
+    let mid = (pa + pb) / 2.0;
+    let lift = g.text_at - mid;
+    match label.place {
+        DimPlace::Centre => {}
+        DimPlace::Left | DimPlace::Right => {
+            // the line's start and end as the text reads
+            let (s, e) = if (pb - pa).dot(r) >= 0.0 {
+                (pa, pb)
+            } else {
+                (pb, pa)
+            };
+            let gap = 1.5 * mm;
+            let (from, dir) = if label.place == DimPlace::Left {
+                (s, -r)
+            } else {
+                (e, r)
+            };
+            g.text_at = from + dir * (gap + half) + lift;
+            g.lines.push((from, from + dir * (gap + 2.0 * half)));
+        }
+        DimPlace::Moved => {
+            g.text_at += label.moved.unwrap_or_default();
+            let len = pa.distance(pb).max(1e-12);
+            let u = (pb - pa) / len;
+            let t = (g.text_at - pa).dot(u) / len;
+            let off_line = (g.text_at - mid).dot(u.perp()).abs();
+            let outside = !(0.0..=1.0).contains(&t) || off_line > (0.55 + look.size * 1.6) * mm;
+            let draw = match label.leader {
+                DimLeader::Always => true,
+                DimLeader::Never => false,
+                DimLeader::WhenOutside => outside,
+            };
+            if draw {
+                // a landing under the text, then back to the line's middle
+                let foot = g.text_at - up * (0.55 + look.size / 2.0) * mm;
+                let (near, far) = if (mid - foot).dot(r) < 0.0 {
+                    (foot - r * half, foot + r * half)
+                } else {
+                    (foot + r * half, foot - r * half)
+                };
+                g.lines.push((near, far));
+                g.lines.push((mid, near));
+                g.ends
+                    .extend(end_marks(Terminator::Dot, mid, mid - near, 1.0, mm));
+            }
+        }
+    }
+    let down = (0.55 + look.size / 2.0) + (0.55 + look.size * BELOW_SIZE / 2.0);
+    g.below_at = g.text_at - up * down * mm;
+    g
 }
 
 /// A linear dimension's linework: its line `offset` to the left of `a` →
@@ -1119,6 +1826,7 @@ pub fn dimension_geometry(
         text_at: (pa + pb) / 2.0 + up * (0.55 + look.size / 2.0) * mm,
         angle,
         ends_at: (pa, pb),
+        below_at: (pa + pb) / 2.0 - up * (0.55 + look.size * BELOW_SIZE / 2.0) * mm,
     }
 }
 
@@ -1133,6 +1841,8 @@ pub struct TagGeometry {
     pub leader: Vec<DVec2>,
     /// The mark at the leader's end: an arrow, a dot, or nothing.
     pub ends: Ends,
+    /// The tag drawn as its kind's symbol, in place of the outline.
+    pub symbol: Ends,
 }
 
 /// Text height of tags and dimensions, paper mm.
@@ -1242,12 +1952,25 @@ pub fn tag_geometry(
         (TagShape::Auto, true) => TagShape::Circle,
         (s, _) => s,
     };
-    let (outline, closed) = tag_outline(shape, at, half);
+    let (mut outline, mut closed) = tag_outline(shape, at, half);
+    // the tag's symbol picked (Mockup_Symbols_REV00): its box is the edge
+    // the leader starts from
+    let mut symbol = Ends::default();
+    let mut symbol_box = None;
+    if let Some(s) = look.symbol {
+        let sh = crate::symbol::tag_shapes(s, at, look.width(text), look.size, mm);
+        symbol_box = sh.bounds();
+        symbol = sh.into_ends();
+        outline.clear();
+        closed = false;
+    }
     // a leader back to the host, from the edge of the bubble (or of the
     // text's box when there is no bubble), towards its elbow if it has one
     let first = elbow.unwrap_or(anchor);
     let d = first - at;
-    let edge = if closed {
+    let edge = if let Some((lo, hi)) = symbol_box {
+        vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)]
+    } else if closed {
         outline.clone()
     } else {
         tag_outline(TagShape::Box, at, half).0
@@ -1277,8 +2000,10 @@ pub fn tag_geometry(
     }
     leader.dedup_by(|a, b| a.distance(*b) < 1e-9);
     let mut ends = Ends::default();
-    if let (Some(end), [.., from, tip]) = (look.leader_end, leader.as_slice()) {
-        ends = end_marks(end, *tip, *tip - *from, look.end_size, mm);
+    if let (Some(s), [.., from, tip]) = (look.leader_symbol, leader.as_slice()) {
+        ends = crate::symbol::leader_end(s, *tip, *tip - *from, look.end_size, mm);
+    } else if let (Some(end), [.., from, tip]) = (look.leader_end, leader.as_slice()) {
+        ends = crate::annotation::leader_marks(end, *tip, *tip - *from, look.end_size, mm);
     }
     if leader.len() < 2 {
         leader.clear();
@@ -1288,6 +2013,7 @@ pub fn tag_geometry(
         closed,
         leader,
         ends,
+        symbol,
     }
 }
 
@@ -1296,6 +2022,387 @@ mod tests {
     use super::*;
     use crate::section::view_drawing;
     use creabim_core::sample::sample_house;
+
+    /// A room tag put by hand well away from its spot has one leader back,
+    /// in its room or out of it, as every tag the label pass nudges has;
+    /// put a hair off its spot, none (MU142: dragged out it got a second
+    /// leader; dragged inside its room it lost the one it had).
+    #[test]
+    fn a_room_tag_put_by_hand_has_one_leader() {
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let tags: Vec<creabim_core::Element> = m
+            .iter()
+            .filter(|e| {
+                matches!(&e.kind, ElementKind::Tag(t) if t.view == view
+                && matches!(m.get(t.host).map(|h| &h.kind), Some(ElementKind::Room(_))))
+            })
+            .cloned()
+            .collect();
+        assert!(tags.len() > 5, "Ridgeline's rooms are tagged");
+        let leaders = |m: &Model, id: ElementId| {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .iter()
+                .filter(|i| match i {
+                    PlanItem::Line {
+                        id: l,
+                        pen: crate::plan::Pen::Symbol | crate::plan::Pen::Fine,
+                        ..
+                    } => *l == id,
+                    PlanItem::Annotation { id: a, item } => {
+                        *a == id
+                            && matches!(
+                                item.shape,
+                                Shape::Note {
+                                    leader: Some(_),
+                                    ..
+                                }
+                            )
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        // well away (out of most rooms, then inside them), and a hair off
+        for (off, want) in [
+            (DVec2::new(2.5, 0.3), 1),
+            (DVec2::new(-0.6, 2.8), 1),
+            (DVec2::new(0.6, 0.0), 1),
+            (DVec2::new(0.05, 0.02), 0),
+        ] {
+            for tag in &tags {
+                let mut e = m.get(tag.id).unwrap().clone();
+                if let ElementKind::Tag(t) = &mut e.kind {
+                    t.offset = off;
+                }
+                creabim_core::Transaction::new("tag")
+                    .replace(m.get(tag.id).unwrap().clone(), e)
+                    .apply(&mut m)
+                    .unwrap();
+            }
+            for tag in &tags {
+                let n = leaders(&m, tag.id);
+                assert_eq!(n, want, "{} put at {off:?}", tag.name);
+                // and it is the tag's own leader, in its colour, not a
+                // symbol line of another pen (MU142)
+                let symbol = view_drawing(&m, view)
+                    .unwrap()
+                    .items
+                    .iter()
+                    .filter(|i| matches!(i, PlanItem::Line { id, pen: crate::plan::Pen::Symbol, .. } if *id == tag.id))
+                    .count();
+                assert_eq!(
+                    symbol, 0,
+                    "{} put at {off:?}: a symbol-pen leader",
+                    tag.name
+                );
+            }
+        }
+    }
+
+    /// MU142 (owner): "CH" heights were plain text that took neither the
+    /// tag style nor the annotation colour and could not be moved. In a
+    /// ceiling plan each ceiling's height is its tag, one line, drawn as a
+    /// room tag: no leader in its ceiling, one back once moved out (none
+    /// with its leader off), and none at all with Heights hidden.
+    #[test]
+    fn a_ceiling_height_is_a_tag_drawn_as_a_room_tag() {
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m
+            .iter()
+            .find(|e| e.name == "Ground Floor ceiling plan")
+            .unwrap()
+            .id;
+        #[allow(clippy::type_complexity)]
+        let notes = |m: &Model| -> Vec<(ElementId, String, Option<DVec2>, Option<[f32; 3]>)> {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Annotation { id, item } => match (&m.get(*id)?.kind, &item.shape) {
+                        (ElementKind::Tag(t), Shape::Note { leader, .. })
+                            if matches!(
+                                m.get(t.host).map(|h| &h.kind),
+                                Some(ElementKind::Ceiling(_))
+                            ) =>
+                        {
+                            Some((*id, item.text.clone(), *leader, item.look.rgb))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        };
+        // no height left as plain text
+        assert!(!view_drawing(&m, view)
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| matches!(i, PlanItem::Text { text, .. } if text.starts_with("CH "))));
+        let ceilings = m
+            .iter()
+            .filter(|e| {
+                matches!(&e.kind, ElementKind::Ceiling(c)
+                if Some(c.level) == m.iter().find(|l| l.name == "Ground Floor").map(|l| l.id))
+            })
+            .count();
+        let tags = notes(&m);
+        assert!(ceilings > 0);
+        assert_eq!(tags.len(), ceilings, "{tags:?}");
+        for (_, text, leader, colour) in &tags {
+            assert!(text.starts_with("CH ") && !text.contains('\n'), "{text}");
+            assert!(leader.is_none(), "{text}: a leader in its own ceiling");
+            // the annotation colour: none of its own
+            assert!(colour.is_none());
+        }
+        // moved well out of its ceiling: a leader back, unless turned off
+        let tag = m.get(tags[0].0).unwrap().clone();
+        let mut out = tag.clone();
+        if let ElementKind::Tag(t) = &mut out.kind {
+            t.offset = DVec2::new(0.0, -30.0);
+        }
+        creabim_core::Transaction::new("out")
+            .replace(tag, out.clone())
+            .apply(&mut m)
+            .unwrap();
+        let out_id = out.id;
+        let lead = |m: &Model| notes(m).iter().find(|n| n.0 == out_id).and_then(|n| n.2);
+        assert!(lead(&m).is_some(), "moved out, it leads back");
+        let mut off = out.clone();
+        if let ElementKind::Tag(t) = &mut off.kind {
+            t.no_leader = true;
+        }
+        creabim_core::Transaction::new("off")
+            .replace(out, off)
+            .apply(&mut m)
+            .unwrap();
+        assert!(lead(&m).is_none(), "its leader turned off");
+        // Heights hidden: no tags
+        let v = m.get(view).unwrap().clone();
+        let mut hidden = v.clone();
+        if let ElementKind::View(x) = &mut hidden.kind {
+            x.graphics.hide_ceiling_heights = true;
+        }
+        creabim_core::Transaction::new("hide")
+            .replace(v.clone(), hidden.clone())
+            .apply(&mut m)
+            .unwrap();
+        assert!(notes(&m).is_empty());
+        // shown again, a tag set to read the material reads the ceiling's
+        // (its Properties offer the switch, as on every tag)
+        creabim_core::Transaction::new("show")
+            .replace(hidden, v)
+            .apply(&mut m)
+            .unwrap();
+        let first = m.get(tags[1].0).unwrap().clone();
+        let mut reads = first.clone();
+        if let ElementKind::Tag(t) = &mut reads.kind {
+            t.material = true;
+        }
+        let host = match &first.kind {
+            ElementKind::Tag(t) => t.host,
+            _ => unreachable!(),
+        };
+        creabim_core::Transaction::new("reads")
+            .replace(first, reads)
+            .apply(&mut m)
+            .unwrap();
+        let text = notes(&m).into_iter().find(|n| n.0 == tags[1].0).unwrap().1;
+        assert_eq!(text, material_text(&m, host));
+    }
+
+    /// MU142 (owner): "make sure even those light fixture tags work like
+    /// other tags". A tag on a ceiling light in a ceiling plan is drawn as
+    /// any tag: in the annotation colour (none of its own), in its style
+    /// once given one, its leader from where its end was put through its
+    /// bend.
+    #[test]
+    fn a_light_fixtures_tag_is_drawn_as_any_tag() {
+        use creabim_core::objects::{self, Mount};
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m
+            .iter()
+            .find(|e| e.name == "Ground Floor ceiling plan")
+            .unwrap()
+            .id;
+        let level = m.iter().find(|e| e.name == "Ground Floor").unwrap().id;
+        let light = m
+            .iter()
+            .find(|e| {
+                matches!(&e.kind, ElementKind::Object(o) if o.level == level)
+                    && objects::type_of(&m, e).is_some_and(|t| t.mount == Mount::Ceiling)
+            })
+            .expect("a ceiling light on the ground floor")
+            .id;
+        let style = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::TextStyle(_)))
+            .unwrap()
+            .id;
+        let mut t = creabim_core::Tag::new(view, light, DVec2::new(0.6, 0.4));
+        t.end = Some(DVec2::new(0.05, 0.0));
+        t.elbow = Some(DVec2::new(0.3, 0.4));
+        let tag = creabim_core::Element::new("Tag", ElementKind::Tag(t));
+        let tid = tag.id;
+        creabim_core::Transaction::new("tag")
+            .insert(tag.clone())
+            .apply(&mut m)
+            .unwrap();
+        let drawn = |m: &Model| {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .into_iter()
+                .find_map(|i| match i {
+                    PlanItem::Tag {
+                        id,
+                        anchor,
+                        elbow,
+                        look,
+                        ..
+                    } if id == tid => Some((anchor, elbow, look)),
+                    _ => None,
+                })
+        };
+        let (anchor, elbow, look) = drawn(&m).expect("drawn as a tag in the ceiling plan");
+        assert!(look.rgb.is_none(), "the annotation colour");
+        let c = centre(&m, light).unwrap().truncate();
+        assert!(
+            anchor.distance(c + DVec2::new(0.05, 0.0)) < 1e-9,
+            "its end: {anchor} vs {c}"
+        );
+        assert!(elbow.is_some_and(|e| e.distance(c + DVec2::new(0.3, 0.4)) < 1e-9));
+        // given a style, in it
+        let mut styled = tag.clone();
+        if let ElementKind::Tag(t) = &mut styled.kind {
+            t.style = Some(style);
+        }
+        creabim_core::Transaction::new("style")
+            .replace(tag, styled)
+            .apply(&mut m)
+            .unwrap();
+        let (_, _, styled_look) = drawn(&m).unwrap();
+        assert_eq!(styled_look, look_of(&m, Some(style), None));
+    }
+
+    /// A room tag's leader goes where its end was dragged, through its bend
+    /// (MU142: "why can't I move this?", the grips moved nothing).
+    #[test]
+    fn a_room_tags_leader_end_and_bend_are_its_own() {
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let kitchen = m.iter().find(|e| e.name == "Kitchen").unwrap().id;
+        let tag = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::Tag(t) if t.host == kitchen && t.view == view))
+            .unwrap()
+            .clone();
+        let note = |m: &Model| {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .iter()
+                .find_map(|i| match i {
+                    PlanItem::Annotation { id, item } if *id == tag.id => match item.shape {
+                        Shape::Note {
+                            leader: Some(l),
+                            elbow,
+                            ..
+                        } => Some((l, elbow)),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+        };
+        let mut e = tag.clone();
+        if let ElementKind::Tag(t) = &mut e.kind {
+            t.offset = DVec2::new(0.0, -4.0);
+        }
+        creabim_core::Transaction::new("out")
+            .replace(tag.clone(), e.clone())
+            .apply(&mut m)
+            .unwrap();
+        let (centre, bend) = note(&m).expect("moved out, it has a leader");
+        assert!(bend.is_none());
+        let mut e2 = e.clone();
+        if let ElementKind::Tag(t) = &mut e2.kind {
+            t.end = Some(DVec2::new(0.5, 0.25));
+            t.elbow = Some(DVec2::new(1.0, -2.0));
+        }
+        creabim_core::Transaction::new("leader")
+            .replace(e, e2)
+            .apply(&mut m)
+            .unwrap();
+        let (tip, bend) = note(&m).expect("still a leader");
+        assert!(
+            tip.distance(centre + DVec2::new(0.5, 0.25)) < 1e-9,
+            "its end: {tip:?}"
+        );
+        assert!(
+            bend.is_some_and(|b| b.distance(centre + DVec2::new(1.0, -2.0)) < 1e-9),
+            "its bend: {bend:?}"
+        );
+    }
+
+    /// A room's tag moved out of its room draws a leader back to it; with
+    /// its leader turned off it draws none (MU141: the owner could not turn
+    /// it off).
+    #[test]
+    fn a_room_tags_leader_can_be_turned_off() {
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let kitchen = m.iter().find(|e| e.name == "Kitchen").unwrap().id;
+        let tag = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::Tag(t) if t.host == kitchen && t.view == view))
+            .unwrap()
+            .clone();
+        let leader_lines = |m: &Model| {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .iter()
+                .filter(|i| match i {
+                    PlanItem::Line {
+                        id,
+                        pen: crate::plan::Pen::Symbol,
+                        ..
+                    } => *id == tag.id,
+                    PlanItem::Annotation { id, item } => {
+                        *id == tag.id
+                            && matches!(
+                                item.shape,
+                                Shape::Note {
+                                    leader: Some(_),
+                                    ..
+                                }
+                            )
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        // moved well out of the kitchen, south into the dining room
+        let set = |m: &mut Model, off: bool| {
+            let mut e = m.get(tag.id).unwrap().clone();
+            if let ElementKind::Tag(t) = &mut e.kind {
+                t.offset = DVec2::new(0.0, -4.0);
+                t.no_leader = off;
+            }
+            creabim_core::Transaction::new("tag")
+                .replace(m.get(tag.id).unwrap().clone(), e)
+                .apply(m)
+                .unwrap();
+        };
+        set(&mut m, false);
+        assert_eq!(leader_lines(&m), 1, "moved out, it points back to its room");
+        set(&mut m, true);
+        assert_eq!(leader_lines(&m), 0, "turned off, no leader");
+    }
 
     fn named(m: &Model, name: &str) -> ElementId {
         m.iter().find(|e| e.name == name).unwrap().id
@@ -1315,6 +2422,76 @@ mod tests {
         let (_, a) = creabim_core::assembly_of(&m, wall).unwrap();
         let text = material_text(&m, wall.id);
         assert_eq!(text.lines().count(), a.layers.len(), "{text}");
+    }
+
+    /// A reading note fills its fields from what its arrow points at; the
+    /// arrow moved onto another object reads that one; Follow off keeps
+    /// the first; a deleted object's fields read "—" (MU135).
+    #[test]
+    fn a_reading_note_follows_its_arrow() {
+        let m = creabim_core::starter::starter_house();
+        let walls: Vec<&creabim_core::Element> = m
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Wall(_)) && !e.name.is_empty())
+            .take(2)
+            .collect();
+        let (a, b) = (walls[0], walls[1]);
+        assert_ne!(a.name, b.name, "two walls of different names");
+        let view = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::View(_)))
+            .unwrap()
+            .id;
+        let mut n = Note::new(view, glam::DVec2::ZERO, "{Name} · {IFC class} · {Level}");
+        let on = |id: ElementId| creabim_core::element::HostPoint {
+            host: Some(id),
+            ..creabim_core::element::HostPoint::free(glam::DVec2::ZERO)
+        };
+        n.leader = Some(on(a.id));
+        // its own text while it does not read
+        assert_eq!(note_shown_text(&m, &n).0, n.text);
+        n.reads = Some(creabim_core::NoteReads::default());
+        let level = note_field(&m, a.id, "level").expect("a wall's level");
+        assert_eq!(
+            note_shown_text(&m, &n).0,
+            format!("{} · IfcWall · {level}", a.name)
+        );
+        // the arrow moved onto the other wall reads it
+        n.leader = Some(on(b.id));
+        assert!(note_shown_text(&m, &n).0.starts_with(&b.name));
+        // follow off keeps reading the first, wherever the arrow goes
+        n.reads = Some(creabim_core::NoteReads {
+            follow: false,
+            fixed: Some(a.id),
+            caps: true,
+        });
+        assert_eq!(
+            note_shown_text(&m, &n).0,
+            format!(
+                "{} · IFCWALL · {}",
+                a.name.to_uppercase(),
+                level.to_uppercase()
+            )
+        );
+        // a layered wall's material is its layers', outside to inside
+        // (it read — with only the one-material lookup)
+        let layered = m
+            .iter()
+            .find(|e| {
+                matches!(e.kind, ElementKind::Wall(_))
+                    && creabim_core::material_of(&m, e).is_none()
+                    && creabim_core::assembly_of(&m, e).is_some_and(|(_, a)| a.layers.len() > 1)
+            })
+            .expect("a layered wall");
+        let mat = note_field(&m, layered.id, "material").expect("its layers' materials");
+        assert!(mat.contains(", "), "{mat}");
+        // the object gone: every field reads —
+        n.reads = Some(creabim_core::NoteReads {
+            follow: false,
+            fixed: Some(ElementId::new()),
+            caps: false,
+        });
+        assert_eq!(note_shown_text(&m, &n).0, "— · — · —");
     }
 
     #[test]
@@ -1391,6 +2568,77 @@ mod tests {
         assert_eq!(lines[1].0, area);
         assert_eq!(lines[2].0, "0.01");
         assert!(lines[2].1 < lines[1].1 && lines[1].1 < lines[0].1);
+    }
+
+    #[test]
+    fn a_room_tag_says_less_at_smaller_scales_and_breaks_a_long_name() {
+        use creabim_core::styles::RoomTagSays as S;
+        let all = room_fields_at(&[], S::All);
+        assert_eq!(
+            all,
+            vec![RoomField::Name, RoomField::Area, RoomField::Number]
+        );
+        assert_eq!(
+            room_fields_at(&[], S::NameNumber),
+            vec![RoomField::Name, RoomField::Number]
+        );
+        assert_eq!(room_fields_at(&[], S::Number), vec![RoomField::Number]);
+        // a tag asking only for its area keeps it, rather than saying nothing
+        assert_eq!(
+            room_fields_at(&[RoomField::Area], S::Number),
+            vec![RoomField::Area]
+        );
+        assert_eq!(two_lines("PRIMARY BEDROOM"), "PRIMARY\nBEDROOM");
+        assert_eq!(two_lines("LANDING"), "LANDING");
+    }
+
+    #[test]
+    fn a_dimension_rounds_and_ticks_by_the_scale_of_its_view() {
+        let mut model = sample_house();
+        let plan = named(&model, "Ground Floor plan");
+        let ElementKind::View(v) = &model.get(plan).unwrap().kind else {
+            panic!()
+        };
+        let v = v.clone();
+        let a = attach(&model, &v, None, DVec2::new(0.0, -3.0));
+        let b = attach(&model, &v, None, DVec2::new(1.2343, -3.0));
+        let dim = creabim_core::Element::new(
+            "Dimension",
+            ElementKind::Dimension(creabim_core::Dimension::linear(plan, a, b, 0.5)),
+        );
+        let id = dim.id;
+        creabim_core::Transaction::new("dim")
+            .insert(dim)
+            .apply(&mut model)
+            .unwrap();
+        let at = |model: &mut Model, scale: f64| {
+            let before = model.get(plan).unwrap().clone();
+            let mut e = before.clone();
+            if let ElementKind::View(v) = &mut e.kind {
+                v.scale = scale;
+            }
+            creabim_core::Transaction::new("scale")
+                .replace(before, e)
+                .apply(model)
+                .unwrap();
+            view_drawing(model, plan)
+                .unwrap()
+                .items
+                .into_iter()
+                .find_map(|i| match i {
+                    PlanItem::Dimension {
+                        id: d, text, look, ..
+                    } if d == id => Some((text, look.end_size)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // a millimetre in a detail, ten in a plan; ticks by the row
+        let (detail, tick5) = at(&mut model, 5.0);
+        let (plan_text, tick100) = at(&mut model, 100.0);
+        assert!(detail.starts_with("1234"), "{detail}");
+        assert!(plan_text.starts_with("1230"), "{plan_text}");
+        assert!(tick5 > tick100, "{tick5} {tick100}");
     }
 
     #[test]
@@ -1513,6 +2761,48 @@ mod tests {
         .unwrap();
         let after = tag_at(doc.model());
         assert!((after.x - before.x - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dimension_text_goes_aside_and_moves_with_a_leader() {
+        let look = TextLook::default();
+        let (a, b, mm) = (DVec2::ZERO, DVec2::X * 1.0, 0.01);
+        let text = "0'-2 3/4\"";
+        let centred = dimension_geometry(a, b, 0.5, None, &look, mm);
+        let plain = dimension_layout(a, b, 0.5, None, &look, mm, text, &DimLabel::default());
+        assert_eq!(plain.text_at, centred.text_at);
+        assert_eq!(plain.lines.len(), centred.lines.len());
+        // Right: past the line's end, the line running on under it
+        let right = DimLabel {
+            place: DimPlace::Right,
+            ..Default::default()
+        };
+        let g = dimension_layout(a, b, 0.5, None, &look, mm, text, &right);
+        assert!(g.text_at.x > 1.0, "{:?}", g.text_at);
+        assert_eq!(g.lines.len(), centred.lines.len() + 1);
+        // moved well clear: a landing and a leader back to the middle
+        let moved = DimLabel {
+            place: DimPlace::Moved,
+            moved: Some(DVec2::new(0.9, 0.3)),
+            ..Default::default()
+        };
+        let g = dimension_layout(a, b, 0.5, None, &look, mm, text, &moved);
+        assert_eq!(g.lines.len(), centred.lines.len() + 2);
+        let never = DimLabel {
+            leader: DimLeader::Never,
+            ..moved.clone()
+        };
+        let g = dimension_layout(a, b, 0.5, None, &look, mm, text, &never);
+        assert_eq!(g.lines.len(), centred.lines.len());
+        // moved only a little, still between the witness lines: no leader
+        let near = DimLabel {
+            moved: Some(DVec2::new(0.1, 0.0)),
+            ..moved
+        };
+        let g = dimension_layout(a, b, 0.5, None, &look, mm, text, &near);
+        assert_eq!(g.lines.len(), centred.lines.len());
+        // the note below sits under the line
+        assert!(centred.below_at.y < 0.5 && centred.text_at.y > 0.5);
     }
 
     #[test]

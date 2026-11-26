@@ -93,3 +93,24 @@ fn members_round_trip_through_ifcx() {
         assert_eq!(r.model.get(e.id), Some(e), "{} changed", e.name);
     }
 }
+
+#[test]
+fn a_ramp_exports_as_an_ifc_ramp_and_round_trips() {
+    let mut m = sample_house();
+    let level = m.levels().next().unwrap().0.id;
+    let mut r = Stair::new(level, DVec2::new(1.0, 1.0), 0.0);
+    r.line = vec![DVec2::ZERO, DVec2::new(6.0, 0.0)];
+    r.height = Some(0.5);
+    r.make_ramp(1.0 / 12.0);
+    let e = Element::new("Ramp", ElementKind::Stair(r));
+    let id = e.id;
+    Transaction::new("ramp").insert(e).apply(&mut m).unwrap();
+    let text = export_ifc4(&m, &ExportOptions::default());
+    assert!(
+        text.lines()
+            .any(|l| l.contains("IFCRAMP(") && l.contains(".STRAIGHT_RUN_RAMP.")),
+        "no straight IFCRAMP"
+    );
+    let back = import_ifcx(&export_ifcx(&m)).unwrap();
+    assert_eq!(back.model.get(id), m.get(id));
+}

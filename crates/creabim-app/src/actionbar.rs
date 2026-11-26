@@ -22,7 +22,7 @@ pub(super) struct Act {
 }
 
 impl Act {
-    fn new(id: impl Into<String>, label: impl Into<String>, icon: &'static str) -> Self {
+    pub(super) fn new(id: impl Into<String>, label: impl Into<String>, icon: &'static str) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -33,15 +33,15 @@ impl Act {
             on: false,
         }
     }
-    fn key(mut self, k: &'static str) -> Self {
+    pub(super) fn key(mut self, k: &'static str) -> Self {
         self.key = k;
         self
     }
-    fn hint(mut self, h: impl Into<String>) -> Self {
+    pub(super) fn hint(mut self, h: impl Into<String>) -> Self {
         self.hint = h.into();
         self
     }
-    fn enabled(mut self, e: bool) -> Self {
+    pub(super) fn enabled(mut self, e: bool) -> Self {
         self.enabled = e;
         self
     }
@@ -76,6 +76,26 @@ const BUTTON: f32 = 22.0;
 const GAP: f32 = 1.0;
 /// The room between groups.
 const SPLIT: f32 = 3.0;
+
+/// How many elements are attached to those in `ids`, each counted once
+/// for every one of them it hangs on: the sum of their dependents, in one
+/// pass over the model instead of one pass for each.
+fn attached_count(model: &creabim_core::Model, ids: &[ElementId]) -> usize {
+    let picked: std::collections::HashSet<ElementId> = ids.iter().copied().collect();
+    model
+        .iter()
+        .map(|e| {
+            let mut refs: Vec<ElementId> = e
+                .references()
+                .into_iter()
+                .filter(|r| picked.contains(r))
+                .collect();
+            refs.sort_unstable_by_key(|r| r.0);
+            refs.dedup();
+            refs.len()
+        })
+        .sum()
+}
 
 impl CreaBimApp {
     /// One element's own actions: what this kind of element can do.
@@ -194,6 +214,10 @@ impl CreaBimApp {
         let alone = ids.len() == 1;
         let mut own: Vec<Act> = vec![];
         for (i, id) in ids.iter().enumerate() {
+            // nothing in common so far: nothing more can come back
+            if i > 0 && own.is_empty() {
+                break;
+            }
             let mine = self.own_actions(*id, alone);
             if i == 0 {
                 own = mine;
@@ -237,6 +261,12 @@ impl CreaBimApp {
                 Act::new("similar:cat.view", "Select similar", "select-similar")
                     .hint("Every element of the same category that this view shows")
             },
+            Act::new("like.similar", "Create similar", "create-similar")
+                .key("Shift+C")
+                .hint("Its tool, set like it: what you place next is the same"),
+            Act::new("like.pick", "Pick up settings", "settings-pick")
+                .key("Ctrl+Shift+C")
+                .hint("Hold how it is made and how it looks; Ctrl+Shift+V gives them to others"),
             cmd(
                 Command::Hide,
                 "eye-off",
@@ -253,14 +283,47 @@ impl CreaBimApp {
         common.push(
             Act::new("nav.fitsel", "Frame", "frame-selection")
                 .key(".")
-                .hint("Zoom the 3D view to it"),
+                .hint("Zoom the view you are working in to it"),
         );
         (own, common)
     }
 
+    /// What the bar shows for the selection: its own actions, the common
+    /// ones, and how many other elements are attached to it (for Delete's
+    /// hint). Worked out once for a selection, a model and an open view,
+    /// then kept: with 226 elements selected it took 28 ms, on every frame
+    /// (each element's dependents are a pass over the whole model). While
+    /// a button is held, a drag changes the model on every frame: what was
+    /// worked out for this selection stands until the button is let go.
+    fn bar_actions(&self) -> (Vec<Act>, Vec<Act>, usize) {
+        type Key = (u64, Option<ElementId>, Vec<ElementId>);
+        type Kept = (Vec<Act>, Vec<Act>, usize);
+        thread_local! {
+            static KEPT: std::cell::RefCell<Option<(Key, Kept)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let model = self.doc.model();
+        let key: Key = (model.revision(), self.active_view, self.selection.all());
+        if let Some(kept) = KEPT.with(|k| {
+            k.borrow()
+                .as_ref()
+                .filter(|(was, _)| {
+                    *was == key || (crate::trace::held() && was.1 == key.1 && was.2 == key.2)
+                })
+                .map(|(_, kept)| kept.clone())
+        }) {
+            return kept;
+        }
+        let (own, common) = self.element_actions();
+        let deps = attached_count(model, &key.2);
+        let kept = (own, common, deps);
+        KEPT.with(|k| *k.borrow_mut() = Some((key, kept.clone())));
+        kept
+    }
+
     /// The bar itself, under the element's name.
     pub(super) fn action_bar(&mut self, ui: &mut egui::Ui) {
-        let (own, common) = self.element_actions();
+        let (own, common, deps) = self.bar_actions();
         // what doesn't fit goes in More, the common ones first
         let room = ui.available_width();
         // More and Delete, and the gaps between the groups
@@ -306,12 +369,6 @@ impl CreaBimApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = GAP;
                 let n = self.selection.len();
-                let deps: usize = self
-                    .selection
-                    .all()
-                    .iter()
-                    .map(|id| self.doc.model().dependents(*id).len())
-                    .sum();
                 let del = Act::new("bar.cmd:delete", "Delete", "trash-2")
                     .key("Del")
                     .hint(match (n, deps) {
@@ -346,6 +403,7 @@ impl CreaBimApp {
                         Command::Move,
                         Command::Rotate,
                         Command::Scale,
+                        Command::Stretch,
                         Command::Copy,
                         Command::Cut,
                     ] {
@@ -535,6 +593,18 @@ mod tests {
         let (own, _) = app.element_actions();
         assert_eq!(ids(&own), ["wall.flip"]);
         assert!(own[0].tip().contains("Space"));
+    }
+
+    #[test]
+    fn attached_count_is_the_sum_of_dependents() {
+        let model = creabim_core::starter::starter_house();
+        let all: Vec<ElementId> = model.iter().map(|e| e.id).collect();
+        // every element, then a few handfuls of them
+        for ids in [&all[..], &all[..1], &all[10..60], &all[all.len() / 2..]] {
+            let slow: usize = ids.iter().map(|id| model.dependents(*id).len()).sum();
+            assert_eq!(attached_count(&model, ids), slow);
+        }
+        assert_eq!(attached_count(&model, &[]), 0);
     }
 
     #[test]

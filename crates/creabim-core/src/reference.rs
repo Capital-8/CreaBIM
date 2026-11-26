@@ -18,6 +18,10 @@ pub enum RefSource {
     Image { path: String, width: f64 },
     /// A DXF drawing's lines, in metres from its units.
     Dxf { path: String },
+    /// A map file's lines (GeoJSON, a shapefile, an OpenStreetMap export,
+    /// LandXML): boundaries, roads, buildings. In map coordinates, it is
+    /// placed where the project's map position puts it.
+    Map { path: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

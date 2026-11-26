@@ -10,12 +10,28 @@ A **mass** is a free 3D shape you can model like in Blender: for early design st
 ## Editing its shape
 
 - Click a face in the 3D view to select it, then press `E` to extrude it, or move it with `G`.
-- Use [Move face](move#move-a-face-push-and-pull) to push or pull a face by a typed distance.
+- Use [Pull](move#pull-p) (`P`) to take any face out or in with the pointer or a typed distance.
 - Rotate, tilt and scale it with `R` and `S` (see [Move, rotate and scale](move)).
+
+### Cutting a face with a line
+
+Draw a **Line** on a face of a mass in the 3D view, from one of its edges to another (through corners in between if you like), and finish it with `Enter`. The line cuts the face in two and is not kept: each part is now a face of its own, and [Pull](move#pull-p) takes either out or in. That is how a step, a recess or a raised part is made. One `Ctrl+Z` puts the face back.
+
+A line that stops short of an edge, or runs off the face, is left as a drawn line and cuts nothing.
+
+### An outline inside a face
+
+Draw a closed outline (a **Rectangle**, a **Circle**, or lines back to the first corner) inside a face of a mass, clear of its edges. It becomes a face of the mass, and is picked: [Pull](move#pull-p) sinks it for a recess or a niche, or raises it. The face round it is still one face; pulled, it rises round the outline. One `Ctrl+Z` takes the outline away.
+
+An outline that touches or crosses the face's edge is left as a drawing of its own, which Pull makes into a separate solid.
 
 Selected, a mass shows only its main grips: its base point (moves it), its turn grip and the clicked face's push and pull arrow. Every face's arrow, its corners, its edges and the lift arrow come in [Edit mode](edit-mode) (`Tab`).
 
 *Properties* shows its **Location**, **Rotation (XYZ Euler)** and **Scale**, as Blender's Transform panel: a mass turns about X, Y and Z, so a shape drawn on a wall turns about the wall's axes.
+
+Its **Role** in *Properties* says what it is for: **Solid** is part of the building; **Void** is something to cut with; **Guide** is something to draw by. A void or a guide shows in 3D and is left out of plans, sections, elevations and exports.
+
+A mass can be several pieces. In [Edit mode](edit-mode), double-click a point, an edge or a face to pick the whole piece it belongs to, or press `L` to grow what is picked to its pieces; then move, turn or scale it. **Separate** makes each piece a mass of its own; **Join**, with two or more masses selected, makes them one.
 
 Give a mass an IFC class in *Properties* (such as `IfcRoof`) and it is exported as that.
 
@@ -48,4 +64,6 @@ Each modifier is a card, as in Blender. Its icon switches it on and off, and fol
 
 ## Booleans: cutting one shape from another
 
-Select a wall, slab or mass, then under *Booleans* pick *Subtract…* and the element to cut away. The cutter stays as a see-through ghost you can select and move to change the cut. Switch it to *Union* or *Intersect*, or *Remove* it.
+Draw a shape (a mass), then select it together with the walls, slabs, roofs, columns, beams or other elements it should work on. The selection strip offers **Add** (join it on), **Subtract** (cut it out) and **Intersect** (keep only what both hold), and **Reach**: *As drawn*, or running on *Up*, *Down* or *Both* without end, so one rectangle cuts every floor. The shape stays as a see-through ghost: move or reshape it to change the result.
+
+The *Junctions and booleans* tab of an element lists what adds to or cuts it under **Booleans**, one folded box each: open it to change its *Kind* or *Reach*, click the shape's chip to select it, or × to remove it. A selected shape lists what it **Works on** the same way. If a shape is selected with something it can't work on (a door, a dimension), the status bar says which one to leave out.

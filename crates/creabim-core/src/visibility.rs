@@ -89,7 +89,7 @@ impl Category {
             Category::Slabs => "Slabs",
             Category::Doors => "Doors",
             Category::Windows => "Windows",
-            Category::Openings => "Openings, shafts and void cutters",
+            Category::Openings => "Openings, shafts and cutting shapes",
             Category::FreeMeshes => "Masses and meshes",
             Category::Grids => "Grids",
             Category::Levels => "Levels",
@@ -113,6 +113,17 @@ impl Category {
             Category::Ceilings => "Ceilings",
             Category::Other => "Other",
         }
+    }
+
+    /// The category whose switch shows or hides an element in a view: its
+    /// own ([`Category::of`]), or Site for what was made part of the site
+    /// (a stair outdoors goes with the site, not with the stairs). How it
+    /// is drawn still follows its own category.
+    pub fn shown_with(e: &Element, cutters: &HashSet<ElementId>) -> Option<Category> {
+        if e.is_site_part() {
+            return Some(Category::Site);
+        }
+        Category::of(e, cutters)
     }
 
     /// The category an element is in, if views can leave it out. `cutters`
@@ -168,6 +179,18 @@ pub fn cutters(model: &Model) -> HashSet<ElementId> {
         .collect()
 }
 
+/// Why a view leaves one element out (see [`ViewHidden::why`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhyHidden {
+    /// It was hidden in the view by itself.
+    ByHand,
+    /// Its whole category is off in the view.
+    Category(Category),
+    /// What it hangs on is hidden: a hidden wall's door, a hidden
+    /// element's tag.
+    Host(ElementId),
+}
+
 /// What a view leaves out.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ViewHidden {
@@ -210,6 +233,51 @@ impl ViewHidden {
         }
     }
 
+    /// Why this leaves `id` out, if it does: hidden by itself first, then
+    /// its category, then what it hangs on. It agrees with
+    /// [`ViewHidden::hidden_set`] for everything but grid groups, which
+    /// have a switch of their own.
+    pub fn why(&self, model: &Model, id: ElementId) -> Option<WhyHidden> {
+        if self.is_empty() {
+            return None;
+        }
+        if self.elements.contains(&id) {
+            return Some(WhyHidden::ByHand);
+        }
+        let e = model.get(id)?;
+        if let Some(c) = Category::shown_with(e, &cutters(model)) {
+            if self.categories.contains(&c) {
+                return Some(WhyHidden::Category(c));
+            }
+        }
+        let host = match &e.kind {
+            ElementKind::Opening(o) => Some(o.host),
+            ElementKind::Tag(t) => Some(t.host),
+            ElementKind::Cut(c) => Some(c.target),
+            _ => None,
+        }?;
+        // a tag on a door in a hidden wall: follow what it hangs on, a
+        // few steps at most
+        let mut at = host;
+        for _ in 0..4 {
+            if self.elements.contains(&at)
+                || model
+                    .get(at)
+                    .and_then(|h| Category::shown_with(h, &cutters(model)))
+                    .is_some_and(|c| self.categories.contains(&c))
+            {
+                return Some(WhyHidden::Host(host));
+            }
+            at = match model.get(at).map(|h| &h.kind) {
+                Some(ElementKind::Opening(o)) => o.host,
+                Some(ElementKind::Tag(t)) => t.host,
+                Some(ElementKind::Cut(c)) => c.target,
+                _ => return None,
+            };
+        }
+        None
+    }
+
     /// Every element of `model` this leaves out: the ones listed, those in
     /// a hidden category or grid group, and what hangs on them (a hidden
     /// wall's doors and windows, the tags of hidden elements).
@@ -221,7 +289,8 @@ impl ViewHidden {
         let cutters = cutters(model);
         for e in model.iter() {
             let listed = self.elements.contains(&e.id);
-            let category = Category::of(e, &cutters).is_some_and(|c| self.categories.contains(&c));
+            let category =
+                Category::shown_with(e, &cutters).is_some_and(|c| self.categories.contains(&c));
             let group = match &e.kind {
                 ElementKind::Grid(g) => g.group.is_some_and(|g| self.grid_groups.contains(&g)),
                 _ => false,
@@ -380,5 +449,84 @@ mod tests {
         let h: ViewHidden =
             serde_json::from_str(r#"{"categories":["Walls","StructuralColumns"]}"#).unwrap();
         assert_eq!(h.categories, vec![Category::Walls, Category::Other]);
+    }
+}
+
+#[cfg(test)]
+mod why_tests {
+    use super::*;
+
+    #[test]
+    fn what_is_part_of_the_site_shows_and_hides_with_the_site() {
+        let mut m = crate::starter::starter_house();
+        let stair = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Stair(_)))
+            .unwrap()
+            .clone();
+        let mut outdoors = stair.clone();
+        outdoors.on_site = true;
+        crate::Transaction::new("t")
+            .replace(stair.clone(), outdoors)
+            .apply(&mut m)
+            .unwrap();
+        let id = stair.id;
+        // a floor plan with the site off: it goes, though stairs are on
+        let mut floor = ViewHidden::default();
+        floor.set_category(Category::Site, true);
+        assert!(floor.hidden_set(&m).contains(&id));
+        assert_eq!(floor.why(&m, id), Some(WhyHidden::Category(Category::Site)));
+        // a site plan with stairs off: it stays, with the site
+        let mut site = ViewHidden::default();
+        site.set_category(Category::Stairs, true);
+        assert!(!site.hidden_set(&m).contains(&id));
+        assert_eq!(site.why(&m, id), None);
+        // what cannot be part of the site ignores the flag
+        let level = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .clone();
+        let mut odd = level.clone();
+        odd.on_site = true;
+        assert!(!odd.is_site_part());
+        assert_eq!(
+            Category::shown_with(&odd, &HashSet::new()),
+            Category::of(&level, &HashSet::new())
+        );
+    }
+
+    #[test]
+    fn a_view_says_why_it_leaves_an_element_out() {
+        let m = crate::starter::starter_house();
+        let kind_is = |f: fn(&ElementKind) -> bool| m.iter().find(|e| f(&e.kind)).unwrap().id;
+        let stair = kind_is(|k| matches!(k, ElementKind::Stair(_)));
+        let wall = kind_is(|k| matches!(k, ElementKind::Wall(_)));
+        let door = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::Opening(o) if o.host == wall))
+            .map(|e| e.id);
+        let mut h = ViewHidden::default();
+        assert_eq!(h.why(&m, stair), None);
+        // its category off
+        h.set_category(Category::Stairs, true);
+        assert_eq!(
+            h.why(&m, stair),
+            Some(WhyHidden::Category(Category::Stairs))
+        );
+        assert_eq!(h.why(&m, wall), None);
+        // hidden by itself: that is said first
+        h.set_element(stair, true);
+        assert_eq!(h.why(&m, stair), Some(WhyHidden::ByHand));
+        // what hangs on a hidden wall goes with it
+        h.set_element(wall, true);
+        if let Some(door) = door {
+            assert_eq!(h.why(&m, door), Some(WhyHidden::Host(wall)));
+        }
+        // and it never disagrees with what the view leaves out
+        let out = h.hidden_set(&m);
+        for e in m.iter() {
+            assert_eq!(h.why(&m, e.id).is_some(), out.contains(&e.id), "{}", e.name);
+        }
     }
 }

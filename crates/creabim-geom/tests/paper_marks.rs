@@ -93,6 +93,8 @@ fn a_sheet_draws_its_pictures_and_vector_pictures() {
             opacity: 0.5,
         },
         color: None,
+        copy_of: None,
+        measures: None,
     };
     assert_eq!(
         pic.bounds(),
@@ -120,6 +122,8 @@ fn a_sheet_draws_its_pictures_and_vector_pictures() {
             }],
         },
         color: None,
+        copy_of: None,
+        measures: None,
     };
     doc.commit(
         Transaction::new("pictures")

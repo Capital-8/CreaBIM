@@ -10,14 +10,22 @@ names+="""square""".split()
 names+="""drafting-compass radius diameter message-square-text arrow-up-right""".split()
 # for the building element tools
 names+="""rectangle-vertical rectangle-horizontal tent fence corner-down-right""".split()
+# a property: a parcel and its flag (Site polish 4, owner's pick E)
+names+="""land-plot""".split()
 # flipping a section or elevation round
 names+="""flip-horizontal-2""".split()
+# the Rotate bar's quarter turn anticlockwise (MU142)
+names+="""rotate-ccw""".split()
 # the Help menu and the Help panel
 names+="""circle-help book-open keyboard rocket x arrow-right info""".split()
 # folding the project browser's groups
 names+="""chevrons-down-up chevrons-up-down""".split()
+# pinning project time at the browser's foot (MU101)
+names+="""pin""".split()
 # snap markers, drawn like the markers in the views (not from Lucide)
 CUSTOM={
+ # Mirror: two triangles either side of a dashed line, as drawings show it (MU142)
+ "mirror": '<path d="M9 6 3 18h6z" /> <path d="M15 6l6 12h-6z" /> <line x1="12" x2="12" y1="3" y2="5.5" /> <line x1="12" x2="12" y1="8.5" y2="10.5" /> <line x1="12" x2="12" y1="13.5" y2="15.5" /> <line x1="12" x2="12" y1="18.5" y2="21" />',
  "snap-endpoint": '<rect x="6" y="6" width="12" height="12" />',
  "snap-midpoint": '<path d="M12 5.5 19.5 18.5h-15z" />',
  "snap-intersection": '<path d="m6 6 12 12M18 6 6 18" />',
@@ -27,6 +35,14 @@ CUSTOM={
  "snap-quadrant": '<path d="M12 4.5 19.5 12 12 19.5 4.5 12z" />',
  "snap-axis": '<path d="M3 12h18M12 3v18" stroke-dasharray="2.5 2.5" />',
  # the Level tool and the project browser's group buttons
+ # the site (2026-11-18): the ground tools that stood in with general icons
+ "contour": '<path d="M3 5c5 0 8 4 8 9s3 7 10 7" /> <path d="M3 10c3 0 5 2.5 5 5.5S10.5 21 15 21" /> <path d="M3 15c1.5 0 2.5 1 2.5 2.5S7 21 9 21" />',
+ "pit": '<path d="M2 8h3l3.5 9h7L19 8h3" />',
+ "trench": '<path d="M3 7h5v9h8V7h5" />',
+ "road": '<path d="M8 3 5 21M16 3l3 18M12 5v3M12 11v3M12 17v3" />',
+ "site-path": '<path d="M5 20c1-6 13-5 14-16" /> <path d="M9 20c1-4 11-3 12-14" />',
+ "drain": '<circle cx="5" cy="6" r="2.5" /> <circle cx="19" cy="18" r="2.5" /> <path d="M7 7.5l10 9" /> <path d="M11 14.5h3.5V11" />',
+ "tank": '<path d="M2 6h8M14 6h8" /> <path d="M10 6v3H7a3 3 0 0 0-3 3v5a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-5a3 3 0 0 0-3-3h-3V6" />',
  "spot-level": '<path d="M8 16l-3.5-5h7z" fill="currentColor" stroke="none" /> <path d="M2 16h20" /> <path d="M8 11L13 6h9" /> <path d="M15 3.5h2" />',
  "level": '<path d="M2 14h12" stroke-dasharray="3 2" /> <circle cx="18" cy="14" r="3.5" /> <path d="M18 10.5V14h3.5M18 14v3.5h-3.5" /> <path d="M3 7h9" />',
  "plus": '<path d="M5 12h14M12 5v14" />',
@@ -73,6 +89,16 @@ CUSTOM={
  "screen-wall": '<rect x="2" y="4" width="20" height="16" /> <rect x="5" y="7" width="4" height="4" /> <rect x="10" y="7" width="4" height="4" /> <rect x="15" y="7" width="4" height="4" /> <rect x="5" y="13" width="4" height="4" /> <rect x="10" y="13" width="4" height="4" /> <rect x="15" y="13" width="4" height="4" />',
  # the site: ground with a contour, paving units, a tree, a car
  "terrain": '<path d="M2 18c4-6 8-2 11-6s6-4 9-2v10H2z" /> <path d="M2 14c3-3 6-1 9-4" stroke-dasharray="2 2" />',
+ "area-driveway": '<rect x="14" y="3" width="7" height="5.5" rx="1" /> <path d="M4 21C4 14.5 8 12 15 12h6" /> <path d="M10 21c0-2.5 1.5-4 5-4h6" />',
+ "area-gravel": '<circle cx="7" cy="7.5" r="2.2" /> <circle cx="15" cy="5.5" r="1.5" /> <circle cx="17.5" cy="12" r="2.3" /> <circle cx="10" cy="14" r="1.7" /> <circle cx="15" cy="18.5" r="1.5" /> <circle cx="5.5" cy="18.5" r="1.4" /> <path d="M12 9.5h.01M20 18h.01M4 13h.01" />',
+ "plant-tree": '<path d="M12 22v-7" /> <path d="M12 19l2.5-1.7M12 17.5l-2-1.2" /> <path d="M8 15a4.5 4.5 0 0 1-1.8-8.2 6 6 0 0 1 11.6 0A4.5 4.5 0 0 1 16 15z" />',
+ "plant-conifer": '<path d="M12 2l4 5.800h-2.400l4 5.700H14l4.500 5.500h-13L10 13.500H6.400l4-5.700H8z" /> <path d="M12 19v3" />',
+ "plant-palm": '<path d="M10 22c0-4.5 0.6-8.5 2.5-12" /> <path d="M12.500 10C11 7 8 6 4 7.500M12.500 10c-2.2-0.8-5-0.3-7 2.8M12.500 10C14 7 17 6 20.500 7.500M12.500 10c2.2-0.8 5-0.3 6.5 3.2M12.500 10c0-3 0.5-5 2-7" />',
+ "plant-shrub": '<path d="M3 20h18" /> <path d="M5.500 20a4 4 0 0 1 0.8-7.6 5 5 0 0 1 9.600-1.300A4.500 4.500 0 0 1 18.500 20" /> <path d="M12 20v-4.500M9.500 20L8 17M14.500 20l1.500-3" />',
+ "area-paving": '<rect x="3" y="3" width="18" height="18" rx="1.5" /> <rect x="5.5" y="5.5" width="8" height="3.6" rx="0.6" /> <rect x="10.5" y="10.2" width="8" height="3.6" rx="0.6" /> <rect x="5.5" y="14.9" width="7" height="3.6" rx="0.6" />',
+ "area-asphalt": '<rect x="3" y="3" width="18" height="18" rx="2" /> <path d="M7.5 7.5h.01M12 7.5h.01M16.5 7.5h.01M7.5 12h.01M12 12h.01M16.5 12h.01M7.5 16.5h.01M12 16.5h.01M16.5 16.5h.01" />',
+ "area-decking": '<rect x="3" y="3" width="18" height="18" rx="1.5" /> <path d="M3 8l9 5 9-5M3 13.5l9 5 9-5M12 3v18" />',
+ "parking": '<rect x="3" y="3" width="18" height="18" rx="2" /> <path d="M9 17V7h4a3 3 0 0 1 0 6H9" />',
  "paving": '<rect x="3" y="3" width="18" height="18" /> <path d="M3 9h18M3 15h18M9 3v6M15 3v6M6 9v6M12 9v6M18 9v6M9 15v6M15 15v6" />',
  "tree": '<circle cx="12" cy="10" r="7" /> <path d="M12 17v5M9 22h6" /> <path d="M9 10h6M12 7v6" />',
  "car": '<path d="M3 16v-4l2-4h10l3 4h3v4z" /> <circle cx="7" cy="17" r="2" /> <circle cx="17" cy="17" r="2" /> <path d="M6 12h11" />',
@@ -167,6 +193,20 @@ FINAL={
  "mod-bevel": '<path d="M4 21V11l7-7h9" />',
  "mod-shell": '<path d="M3 4h18v16H3z" /><path d="M7 4v12h10V4" />',
  "offset": '<rect x="8" y="8" width="8" height="8" /><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5" />',
+ # Pull (MU43): a face lifted off where it lay, the one tool that grows a
+ # line into a surface, a face into a solid and a solid into a bigger one
+ "pull": '<path d="M3 17.5 12 13l9 4.5-9 4.5z" /><path d="M3 17.5V12M21 17.5V12" stroke-dasharray="1.5 2" /><path d="M12 15.5V2.5M8.5 6 12 2.5 15.5 6" />',
+ # drawing a shape (MU43): a line by its two ends, a rectangle by two corners
+ "shape-line": '<path d="M5.5 18.5 18.5 5.5" /><rect x="2.5" y="17.5" width="4" height="4" /><rect x="17.5" y="2.5" width="4" height="4" />',
+ "shape-rect": '<rect x="4" y="6.5" width="16" height="11" /><rect x="2.5" y="5" width="3" height="3" /><rect x="18.5" y="16" width="3" height="3" />',
+ # the strip beside a selected shape (MU43)
+ "shape-join": '<rect x="3" y="8" width="9" height="9" /><rect x="12" y="8" width="9" height="9" /><path d="M9 4.5h6M12 1.5v6" />',
+ "shape-separate": '<rect x="2.5" y="8" width="7" height="9" /><rect x="14.5" y="8" width="7" height="9" /><path d="M10.5 12.5h3" stroke-dasharray="1 1.5" /><path d="M7 4.5 4.5 2M17 4.5 19.5 2" />',
+ "shape-close": '<path d="M5 18 4 7l12-2 4 12" /><path d="M5 18l15-1" stroke-dasharray="2.5 2" /><rect x="3" y="16.5" width="3" height="3" /><rect x="18.5" y="15.5" width="3" height="3" />',
+ "shape-wire": '<path d="M4 9 12 4l8 5-2 10-11 1z" stroke-dasharray="3 2.2" />',
+ "shape-face": '<path d="M4 9 12 4l8 5-2 10-11 1z" /><path d="M8 16.5l8.5-8.5M6.5 12l5-5M12 18.5l6-6" />',
+ "shape-inset": '<rect x="3" y="3" width="18" height="18" /><rect x="8" y="8" width="8" height="8" /><path d="M3 3l5 5M21 3l-5 5M21 21l-5-5M3 21l5-5" />',
+ "shape-piece": '<path d="M3 9.5 9 6.5l6 3v6l-6 3-6-3z" /><path d="M3 9.5l6 3 6-3M9 12.5v6" /><rect x="16.5" y="4" width="5" height="5" stroke-dasharray="1.5 1.5" />',
  "sel-box": '<rect x="4" y="5" width="16" height="14" stroke-dasharray="3 2" />',
  "sel-circle": '<circle cx="12" cy="12" r="8" stroke-dasharray="3 2" />',
  "sel-lasso": '<path d="M7 18c-3-2-4-6-1-9s9-4 12-1 2 8-3 9c-3 1-6 0-6-2" stroke-dasharray="3 2" /><path d="M8 18l-2 4" />',
@@ -180,6 +220,8 @@ FINAL={
  "text-tool": '<path d="M4 7V4h16v3M9 20h6M12 4v16" />',
  "image": '<rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="M21 15 16 10 5 21" />',
  "log": '<path d="m8 4-4 4 4 4M16 4l4 4-4 4" /><path d="M4 16h16M4 20h11" />',
+ # the Data (IFC) tab: lines of what the file says (Properties order REV04, MU58)
+ "ifc-data": '<path d="M4 6h16M4 12h16M4 18h10" />',
  "problem": '<path d="M12 3 2 20h20z" /><path d="M12 10v4M12 17h.01" />',
  "corner-mitre": '<path d="M4 20V9l5-5h11v6h-7l-3 3v7z" /><path d="M10 13 4 9" />',
  "corner-butt": '<path d="M4 20V4h16v6H10v10z" /><path d="M10 10V4" />',
@@ -194,6 +236,24 @@ FINAL={
  "mod-taper": '<path d="M5 21h14L15 3H9z" />',
  "mod-twist": '<path d="M6 21h12M8 3h8" /><path d="M6 21 16 3M18 21 8 3" />',
  "mod-smooth": '<circle cx="12" cy="12" r="8" /><path d="M5 9c4 3 10 3 14 0" />',
+ # Stretch (wave 3): a box over one side of a shape, that side drawn out
+ "stretch": '<path d="M13 6H3v12h10" /><path d="M10 3h7v18h-7z" stroke-dasharray="2 2" /><path d="M12 12h9M18 9l3 3-3 3" />',
+ "solid-add": '<path d="M3 3h11v7h7v11H10v-7H3z" />',
+ "solid-subtract": '<path d="M3 3h11v7h-4v4H3z" /><path d="M10 10h11v11H10z" stroke-dasharray="2 2" />',
+ "solid-intersect": '<path d="M3 3h11v11H3zM10 10h11v11H10z" stroke-dasharray="2 2" /><path d="M10 10h4v4h-4z" />',
+ "reach-drawn": '<rect x="6" y="8" width="12" height="8" />',
+ "reach-up": '<rect x="6" y="13" width="12" height="8" /><path d="M12 10V2M9 5l3-3 3 3" />',
+ "reach-down": '<rect x="6" y="3" width="12" height="8" /><path d="M12 14v8M9 19l3 3 3-3" />',
+ "reach-both": '<rect x="6" y="9" width="12" height="6" /><path d="M12 7V1M9.5 3.5 12 1l2.5 2.5M12 17v6M9.5 20.5 12 23l2.5-2.5" />',
+ # the Visuals tab: a disc, half in shade (owner's pick A, 2026-11-20)
+ "visuals": '<circle cx="12" cy="12" r="9" /><path d="M12 3v18M12 7.5h7.8M12 12h9M12 16.5h7.8" />',
+ # a picture added to the renders, and reading a colour off one
+ "image-plus": '<path d="M16 5h6" /><path d="M19 2v6" /><path d="M21 11.5V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7.5" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /><circle cx="9" cy="9" r="2" />',
+ "pipette": '<path d="m2 22 1-1h3l9-9" /><path d="M3 21v-3l9-9" /><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />',
+ # X-ray as the 3D header draws it: a sphere seen through (MU108, MU118)
+ "xray-ball": '<circle cx="12" cy="12" r="9" /><path d="M12 3a5 9 0 0 0 0 18" stroke-dasharray="2.5 2" /><circle cx="14.5" cy="14" r="2.2" />',
+ # cropping a render
+ "crop": '<path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" />',
  "mod-solidify": '<path d="M3 9l9-5 9 5-9 5z" /><path d="M3 9v5l9 5 9-5V9" />',
 }
 out={}

@@ -17,3 +17,6 @@ glam.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+calamine = "0.38"
+roxmltree = "0.21"
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }

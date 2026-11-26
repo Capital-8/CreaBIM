@@ -59,14 +59,26 @@ pub fn plan_items(model: &Model, view: &View, level: ElementId, cut_height: f64)
                 if c.height < cut_height {
                     continue;
                 }
-                let Some(outline) = c.outline(model) else {
+                let Some(mut outline) = c.outline(model) else {
                     continue;
                 };
+                // from its lowest-left corner, so the drawing is the same
+                // every time (a room's shape can start at any corner)
+                if let Some(i) = (0..outline.len()).min_by(|a, b| {
+                    let (p, q) = (outline[*a], outline[*b]);
+                    (p.y, p.x)
+                        .partial_cmp(&(q.y, q.x))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) {
+                    outline.rotate_left(i);
+                }
                 out.push(PlanItem::Polygon {
                     id: e.id,
                     pen: Pen::Projection,
                     points: outline.clone(),
                 });
+                // its height is its tag's ("CH 2700", issue #70), drawn with
+                // the view's annotation (MU142, see `ceiling_height_text`)
                 if c.grid > 0.0 {
                     // a square grid, its lines from the outline's corner
                     for (a, b) in grid_lines(&outline, c.grid) {
@@ -83,6 +95,118 @@ pub fn plan_items(model: &Model, view: &View, level: ElementId, cut_height: f64)
         }
     }
     out
+}
+
+/// What a ceiling's height tag reads: its prefix ("CH" unless set) and the
+/// ceiling's height above its floor, as ceiling plans write it (issue #70).
+pub fn ceiling_height_text(model: &Model, prefix: &str, c: &creabim_core::Ceiling) -> String {
+    let h = model.units().length(c.height);
+    let h = h.trim_end_matches(" mm");
+    if prefix.is_empty() {
+        h.to_string()
+    } else {
+        format!("{prefix} {h}")
+    }
+}
+
+/// Is `id` a tag on a ceiling?
+fn is_ceiling_tag(model: &Model, id: ElementId) -> bool {
+    match model.get(id).map(|e| &e.kind) {
+        Some(ElementKind::Tag(t)) => {
+            matches!(
+                model.get(t.host).map(|h| &h.kind),
+                Some(ElementKind::Ceiling(_))
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Move each ceiling's height tag off the marks drawn over the plan
+/// (section marks, grid bubbles, tags, notes), to the nearest clear spot a
+/// few text heights away (MU94: the study's sat under a section mark). A
+/// tag put by hand stays put. Ceiling grid lines don't count: a tag is
+/// read across them.
+pub fn clear_ceiling_tags(model: &Model, items: &mut [PlanItem], mm: f64) {
+    let marks: Vec<crate::declutter::TextBox> = items
+        .iter()
+        .filter(|it| {
+            !matches!(
+                model.get(it.id()).map(|e| &e.kind),
+                Some(ElementKind::Ceiling(_))
+            ) && !is_ceiling_tag(model, it.id())
+        })
+        .filter_map(|it| match it {
+            // section and elevation marks, bubbles drawn with a symbol
+            PlanItem::Symbol {
+                symbol,
+                at,
+                unit,
+                angle,
+                origin,
+                ..
+            } => crate::symbol::shapes_at(symbol, *at, DVec2::splat(*unit), *angle, *origin)
+                .bounds()
+                .map(|(lo, hi)| crate::declutter::TextBox { lo, hi }),
+            // a section head's letter and sheet: plain text in a circle,
+            // so its box is grown to the circle round it
+            PlanItem::Text {
+                at, size, mm: tm, ..
+            } => {
+                let r = *size * 1.4 * tm;
+                Some(crate::declutter::TextBox {
+                    lo: *at - DVec2::splat(r),
+                    hi: *at + DVec2::splat(r),
+                })
+            }
+            _ => crate::declutter::text_box(it, mm).map(|b| b.0),
+        })
+        .collect();
+    for it in items.iter_mut() {
+        let PlanItem::Annotation { id, .. } = it else {
+            continue;
+        };
+        // put by hand, or led out of its ceiling: where it was put
+        let by_hand = match model.get(*id).map(|e| &e.kind) {
+            Some(ElementKind::Tag(t)) => t.offset.length() > 1e-9,
+            _ => true,
+        };
+        if by_hand || !is_ceiling_tag(model, *id) {
+            continue;
+        }
+        let Some((b, _)) = crate::declutter::text_box(it, mm) else {
+            continue;
+        };
+        let PlanItem::Annotation { item, .. } = it else {
+            continue;
+        };
+        let size = item.look.size;
+        let crate::annotation::Shape::Note {
+            at, leader: None, ..
+        } = &mut item.shape
+        else {
+            continue;
+        };
+        let hit = |d: DVec2| marks.iter().any(|m| m.overlaps(&b.moved(d)));
+        if !hit(DVec2::ZERO) {
+            continue;
+        }
+        let step = size * 1.6 * mm;
+        let found = (1..=6).find_map(|k| {
+            let d = step * k as f64;
+            [
+                DVec2::new(0.0, -d),
+                DVec2::new(0.0, d),
+                DVec2::new(d * 1.5, 0.0),
+                DVec2::new(-d * 1.5, 0.0),
+            ]
+            .into_iter()
+            .find(|o| !hit(*o))
+        });
+        if let Some(d) = found {
+            *at += d;
+        }
+    }
 }
 
 /// A square grid of `size` over `outline`, clipped to it.
@@ -146,6 +270,53 @@ fn clip_line(poly: &[DVec2], a: DVec2, b: DVec2) -> Vec<(DVec2, DVec2)> {
 /// railings) and the swings of doors are left out; walls, windows, what
 /// hangs from the ceiling and the ceilings themselves stay.
 pub fn as_ceiling_plan(model: &Model, items: &mut Vec<PlanItem>) {
+    // roof windows looked up at: frame and glass as seen, and a splayed
+    // lining's hole at the ceiling with its splay (MU142, S1)
+    let mut roof_windows: Vec<ElementId> = vec![];
+    for it in items.iter() {
+        let id = it.id();
+        if matches!(model.get(id).map(|e| &e.kind), Some(ElementKind::Opening(o)) if o.roof_at.is_some())
+            && !roof_windows.contains(&id)
+        {
+            roof_windows.push(id);
+        }
+    }
+    if !roof_windows.is_empty() {
+        items.retain(|it| {
+            !(roof_windows.contains(&it.id())
+                && matches!(it, PlanItem::Polygon { .. } | PlanItem::Line { .. }))
+        });
+        for id in roof_windows {
+            if let Some(ElementKind::Opening(o)) = model.get(id).map(|e| &e.kind) {
+                items.extend(crate::opening::roof_window_ceiling(model, id, o));
+            }
+        }
+    }
+    // beams over the cut, and what hangs from the ceiling, are what a
+    // ceiling plan looks up at: drawn as seen, not dashed as overhead
+    // (issue #70; F-07)
+    for it in items.iter_mut() {
+        let seen = match model.get(it.id()) {
+            Some(e) if matches!(e.kind, ElementKind::Beam(_)) => true,
+            Some(e) if matches!(e.kind, ElementKind::Object(_)) => {
+                objects::type_of(model, e).is_some_and(|t| t.mount == Mount::Ceiling)
+            }
+            _ => false,
+        };
+        if !seen {
+            continue;
+        }
+        match it {
+            PlanItem::Line { pen, .. }
+            | PlanItem::Polygon { pen, .. }
+            | PlanItem::Arc { pen, .. }
+                if *pen == Pen::Hidden =>
+            {
+                *pen = Pen::Projection
+            }
+            _ => {}
+        }
+    }
     items.retain(|it| {
         let id = it.id();
         match model.get(id).map(|e| &e.kind) {
@@ -217,6 +388,91 @@ pub fn section_items(model: &Model, start: DVec2, end: DVec2) -> Vec<PlanItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A roof window over a floor is overhead in its plan: dashed, as the
+    /// roof round it is (owner, MU141: the stair's roof window drew solid
+    /// in the first floor plan).
+    #[test]
+    fn roof_windows_are_overhead_in_the_floor_plan_under_them() {
+        let m = creabim_core::ridgeline::ridgeline_house();
+        let fp = m.iter().find(|e| e.name == "First Floor plan").unwrap().id;
+        let d = crate::section::view_drawing(&m, fp).unwrap();
+        let windows: Vec<(String, Pen)> = d
+            .items
+            .iter()
+            .filter_map(|i| {
+                let e = m.get(i.id())?;
+                let ElementKind::Opening(o) = &e.kind else {
+                    return None;
+                };
+                o.roof_at?;
+                let pen = match i {
+                    PlanItem::Line { pen, .. }
+                    | PlanItem::Polygon { pen, .. }
+                    | PlanItem::Arc { pen, .. } => *pen,
+                    _ => return None,
+                };
+                Some((e.name.clone(), pen))
+            })
+            .collect();
+        assert!(!windows.is_empty(), "no roof window drawn");
+        assert!(
+            windows.iter().all(|(_, p)| *p == Pen::Hidden),
+            "{windows:?}"
+        );
+    }
+
+    /// A floor plan dashes what hangs from the ceiling, lights included;
+    /// the switches and sockets on the walls stay drawn in full; a ceiling
+    /// plan draws the lights in full (Builder 2's F-07 on Ridgeline).
+    #[test]
+    fn ceiling_lights_are_overhead_in_a_floor_plan_and_seen_in_a_ceiling_plan() {
+        let m = creabim_core::ridgeline::ridgeline_house();
+        let view = |name: &str| {
+            m.iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .id
+        };
+        let pens = |view_name: &str, hung: bool| -> Vec<Pen> {
+            let d = crate::section::view_drawing(&m, view(view_name)).unwrap();
+            d.items
+                .iter()
+                .filter(|i| {
+                    let Some(e) = m.get(i.id()) else { return false };
+                    let Some(t) = objects::type_of(&m, e) else {
+                        return false;
+                    };
+                    t.category.is_services() && (t.mount == Mount::Ceiling) == hung
+                })
+                .filter_map(|i| match i {
+                    PlanItem::Line { pen, .. }
+                    | PlanItem::Polygon { pen, .. }
+                    | PlanItem::Arc { pen, .. } => Some(*pen),
+                    _ => None,
+                })
+                .collect()
+        };
+        // on both floors: the first floor's landing is vaulted, its lights
+        // hang from no ceiling a plan's cut could be under
+        for plan in ["Ground Floor plan", "First Floor plan"] {
+            let lights = pens(plan, true);
+            assert!(
+                !lights.is_empty() && lights.iter().all(|p| *p == Pen::Hidden),
+                "{plan}: {lights:?}"
+            );
+        }
+        let on_walls = pens("Ground Floor plan", false);
+        assert!(
+            !on_walls.is_empty() && on_walls.iter().all(|p| *p != Pen::Hidden),
+            "{on_walls:?}"
+        );
+        let seen = pens("Ground Floor ceiling plan", true);
+        assert!(
+            !seen.is_empty() && seen.iter().all(|p| *p != Pen::Hidden),
+            "{seen:?}"
+        );
+    }
 
     #[test]
     fn grids_and_lines_clip_to_the_outline() {

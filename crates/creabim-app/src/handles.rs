@@ -84,12 +84,23 @@ impl Constraint {
 pub enum Ring {
     Outline,
     Hole(usize),
+    /// An open line of the element beside its outline: a car park's
+    /// aisle drawn by hand.
+    Line(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HandleKind {
     WallEnd {
         end: bool,
+    },
+    /// In Edit mode, a curtain wall's grid line where it stands (`at`,
+    /// in micrometres along the wall for an upright, up it for a
+    /// transom): slid along or up, set by hand (curtain grids, decision
+    /// 2); dropped on its neighbour, it goes.
+    CurtainLine {
+        upright: bool,
+        at: i64,
     },
     WallTop,
     WallFace,
@@ -101,6 +112,28 @@ pub enum HandleKind {
     OpeningHead,
     OpeningSill,
     GridEnd {
+        end: bool,
+    },
+    /// A grid line's bubble, dragged sideways onto an elbow (grid
+    /// settings, decision 2).
+    GridBubble {
+        end: bool,
+    },
+    /// The middle of an arc grid line: dragged, how far it bows (MU66).
+    GridRise,
+    /// The setback line along edge `i` of a property: slid in or out, it
+    /// gives that edge a setback of its own.
+    Setback(usize),
+    /// In Edit mode, the inner line of the strip along edge `i` of a car
+    /// park's outline: slid in or out, it sets the strip's width.
+    Strip(usize),
+    /// In Edit mode, an end of a car park's row: the one down the `left`
+    /// (or right) of stretch `seg` of aisle `aisle`, its start or its
+    /// `end`, slid along the aisle to take bays off or put them back.
+    RowEnd {
+        aisle: usize,
+        seg: usize,
+        left: bool,
         end: bool,
     },
     /// Push or pull a face of a mass along its normal.
@@ -146,6 +179,13 @@ pub enum HandleKind {
         ring: Ring,
         i: usize,
     },
+    /// Edge `i` of an outline taken by its body in Edit mode: it moves as
+    /// it is, the edges beside it stretching (MU46). Not a grip that
+    /// shows; a drag that starts on the edge.
+    EdgeMove {
+        ring: Ring,
+        i: usize,
+    },
     /// In Edit mode, the middle of edge `i`: dragging it pulls a new
     /// corner out of the edge (a click adds nothing, so a double-click
     /// can't add a corner and take it away again).
@@ -162,6 +202,11 @@ pub enum HandleKind {
     ShaftTop,
     /// Turn an object, a column or a stair about its own point.
     Rotate,
+    /// Corner `i` of an object's outline (lo, then anticlockwise in its own
+    /// frame): shown only under the pointer, as a bracket; dragged, it
+    /// scales the object from the opposite corner; clicked, its palette
+    /// (MU142, Grip Palette REV01).
+    ScaleCorner(u8),
     /// A rectangular column's width (along its own x) or depth; a round
     /// one's diameter.
     ColumnSize {
@@ -184,6 +229,12 @@ pub enum HandleKind {
     PlantCanopy,
     /// A plant's height, at its top (in 3D and sections).
     PlantHeight,
+    /// A grown tree's clear trunk, at the crown's underside.
+    PlantCrownBase,
+    /// How far a grown tree's crown reaches on side `i` (east, then
+    /// counter-clockwise in its own frame), at its widest: pulled in off
+    /// a wall, its trunk stays.
+    PlantReach(u8),
     /// Corner `i` of a callout's box on its parent view (lo, then
     /// counter-clockwise); the opposite corner stays.
     CalloutCorner(usize),
@@ -208,6 +259,19 @@ pub enum HandleKind {
         layer: usize,
         edge: usize,
     },
+    /// In a line stair's pieces (Shift+Tab in Edit mode), the top riser
+    /// of the flight along straight `straight`: more or fewer treads.
+    StairFlight {
+        straight: usize,
+    },
+    /// In a line stair's pieces, the landing at turn `turn`: pushed back
+    /// to make it deeper.
+    StairLanding {
+        turn: usize,
+    },
+    /// A stair's UP label, moved off what it covers; its arrow stays
+    /// (MU144).
+    StairUp,
 }
 
 impl HandleKind {
@@ -217,6 +281,8 @@ impl HandleKind {
             self,
             HandleKind::WallEnd { .. }
                 | HandleKind::GridEnd { .. }
+                | HandleKind::GridBubble { .. }
+                | HandleKind::GridRise
                 | HandleKind::Member { free: true, .. }
                 | HandleKind::ViewEnd { .. }
                 | HandleKind::CropMove
@@ -224,10 +290,12 @@ impl HandleKind {
                 | HandleKind::RefScale(_)
                 | HandleKind::Vertex { .. }
                 | HandleKind::AddVertex { .. }
+                | HandleKind::EdgeMove { .. }
                 | HandleKind::CalloutCorner(_)
                 | HandleKind::MeshVertex(_)
                 | HandleKind::MeshEdge(..)
                 | HandleKind::MeshMove
+                | HandleKind::StairUp
         )
     }
 
@@ -239,9 +307,11 @@ impl HandleKind {
             | HandleKind::ShaftTop => "Change height of",
             HandleKind::Vertex { .. }
             | HandleKind::Edge { .. }
+            | HandleKind::EdgeMove { .. }
             | HandleKind::AddVertex { .. }
             | HandleKind::Ring { .. } => "Reshape",
             HandleKind::Rotate => "Rotate",
+            HandleKind::ScaleCorner(_) => "Scale",
             HandleKind::ColumnSize { .. } => "Resize",
             HandleKind::WallSlide | HandleKind::OpeningSlide => "Slide",
             HandleKind::WallBend => "Bend",
@@ -249,10 +319,15 @@ impl HandleKind {
             HandleKind::DetailSpacing => "Change the unit of",
             HandleKind::PlantCanopy => "Change the canopy of",
             HandleKind::PlantHeight => "Change height of",
+            HandleKind::PlantCrownBase => "Change the clear trunk of",
+            HandleKind::PlantReach(_) => "Shape the crown of",
             HandleKind::CalloutCorner(_) | HandleKind::CalloutEdge(_) => "Resize the callout of",
             HandleKind::LayerEnd { .. } => "Move a layer end of",
             HandleKind::LayerEdge { .. } => "Move a layer edge of",
             HandleKind::LayerHeight { .. } => "Move a layer's base or top of",
+            HandleKind::StairFlight { .. } => "Change a flight of",
+            HandleKind::StairLanding { .. } => "Change a landing of",
+            HandleKind::StairUp => "Move the UP label of",
             HandleKind::WallFace | HandleKind::SlabUnderside | HandleKind::SlabTop => {
                 "Change thickness of"
             }
@@ -277,6 +352,7 @@ impl HandleKind {
             HandleKind::Vertex { .. } => format!("Move a corner of {name}"),
             HandleKind::AddVertex { .. } => format!("Add a corner to {name}"),
             HandleKind::Edge { .. } => format!("Offset an edge of {name}"),
+            HandleKind::EdgeMove { .. } => format!("Move an edge of {name}"),
             HandleKind::Ring {
                 ring: Ring::Hole(k),
             } => format!("Move hole {} of {name}", k + 1),
@@ -297,6 +373,17 @@ impl HandleKind {
             HandleKind::OpeningHead => "Head: raise",
             HandleKind::OpeningSill => "Sill: raise",
             HandleKind::GridEnd { .. } => "Grid end",
+            HandleKind::CurtainLine { upright: true, .. } => "Mullion: slide",
+            HandleKind::CurtainLine { upright: false, .. } => "Transom: slide",
+            HandleKind::GridBubble { .. } => "Bubble: move aside",
+            HandleKind::GridRise => "Rise: bow it",
+            HandleKind::Setback(_) => "Setback: slide",
+            HandleKind::Strip(_) => {
+                "Edge strip: slide to set its width · Right-click the edge: more"
+            }
+            HandleKind::RowEnd { .. } => {
+                "Row end: slide along the aisle to add or drop bays · Right-click a bay: more"
+            }
             HandleKind::Face(_) => "Face: push",
             HandleKind::Member { .. } => "Point",
             HandleKind::ViewEnd { .. } => "Line end",
@@ -307,11 +394,13 @@ impl HandleKind {
             HandleKind::RefScale(_) => "Corner: scale",
             HandleKind::Vertex { .. } => "Corner",
             HandleKind::Edge { .. } => "Edge: push",
+            HandleKind::EdgeMove { .. } => "Edge",
             HandleKind::AddVertex { .. } => "Add a corner",
             HandleKind::Ring { .. } => "Outline: move",
             HandleKind::ShaftBase => "Base",
             HandleKind::ShaftTop => "Top",
             HandleKind::Rotate => "Turn",
+            HandleKind::ScaleCorner(_) => "Corner",
             HandleKind::ColumnSize { depth: false } => "Width",
             HandleKind::ColumnSize { depth: true } => "Depth",
             HandleKind::WallSlide => "Wall: slide",
@@ -321,12 +410,17 @@ impl HandleKind {
             HandleKind::DetailSpacing => "Unit",
             HandleKind::PlantCanopy => "Canopy",
             HandleKind::PlantHeight => "Height",
+            HandleKind::PlantCrownBase => "Clear trunk",
+            HandleKind::PlantReach(i) => REACH_NAMES[i as usize % 8],
             HandleKind::CalloutCorner(_) => "Callout corner",
             HandleKind::CalloutEdge(_) => "Callout edge: push",
             HandleKind::LayerEnd { .. } => "Layer end",
             HandleKind::LayerEdge { .. } => "Layer edge",
             HandleKind::LayerHeight { top: false, .. } => "Layer bottom",
             HandleKind::LayerHeight { top: true, .. } => "Layer top",
+            HandleKind::StairFlight { .. } => "Flight",
+            HandleKind::StairLanding { .. } => "Landing",
+            HandleKind::StairUp => "UP label",
             HandleKind::MeshVertex(_) => "Corner",
             HandleKind::MeshEdge(..) => "Edge",
             HandleKind::MeshMove => "Base point: move",
@@ -365,6 +459,7 @@ impl HandleKind {
             HandleKind::RefMove => "Drag: move the reference",
             HandleKind::RefScale(_) => "Drag: scale it about its middle (Calibrate in Properties sets an exact size)",
             HandleKind::Rotate => "Drag: turn it about its middle (steps of 5°; Alt for any angle)",
+            HandleKind::ScaleCorner(_) => "Drag: scale from the opposite corner · Click: more",
             HandleKind::ColumnSize { depth: false } => "Drag: change the width",
             HandleKind::ColumnSize { depth: true } => "Drag: change the depth",
             HandleKind::WallSlide => "Drag: slide the wall square to itself (joined walls follow)",
@@ -374,6 +469,8 @@ impl HandleKind {
             HandleKind::DetailSpacing => "Drag: change the unit's length (the joint stays)",
             HandleKind::PlantCanopy => "Drag: change how wide the crown is",
             HandleKind::PlantHeight => "Drag: change how tall it is",
+            HandleKind::PlantCrownBase => "Drag: raise or lower where the crown starts (the clear trunk)",
+            HandleKind::PlantReach(_) => "Drag: pull this side of the crown in, or push it out; the trunk stays",
             HandleKind::CalloutCorner(_) => {
                 "Drag: resize the callout's box (its detail view follows)"
             }
@@ -386,6 +483,15 @@ impl HandleKind {
             }
             HandleKind::LayerHeight { .. } => {
                 "Drag: run the layer down or up past the wall, or stop it short · Tab: type how far · Right-click: reset"
+            }
+            HandleKind::StairFlight { .. } => {
+                "Drag: more or fewer treads on this flight; the others take the rest · Right-click: reset"
+            }
+            HandleKind::StairLanding { .. } => {
+                "Drag back: a deeper landing; the flight before it stops sooner · Right-click: reset"
+            }
+            HandleKind::StairUp => {
+                "Drag: the UP label, off what it covers; its arrow stays · Back by its place, it goes home"
             }
             _ => "Drag to change it",
         }
@@ -415,10 +521,89 @@ pub fn handles_in(model: &Model, id: ElementId, face: Option<usize>, edit: bool)
     out.extend(crate::editmode::outline_handles(model, id, edit));
     if edit {
         out.extend(mass_edit_handles(model, id, face));
+        out.extend(curtain_line_handles(model, id));
+        out.extend(row_end_handles(model, id));
         // vertex, edge or face picking (MU27)
         out.retain(|h| pick_allows(&h.kind));
     }
     out
+}
+
+/// In Edit mode, a grip at each end of every row of a car park whose
+/// aisles are drawn by hand, sliding along its aisle.
+fn row_end_handles(model: &Model, id: ElementId) -> Vec<Handle> {
+    let Some(ElementKind::Site(s)) = model.get(id).map(|e| &e.kind) else {
+        return vec![];
+    };
+    let Some(lay) = s.car_park_layout(model) else {
+        return vec![];
+    };
+    let top = match &s.form {
+        creabim_core::SiteForm::Area { top, .. } => *top,
+        _ => 0.0,
+    };
+    let z = elevation(model, Some(s.level)) + top;
+    let mut out = vec![];
+    for r in &lay.rows_at {
+        if !lay.by_hand {
+            break;
+        }
+        for (end, at) in [(false, r.from), (true, r.to)] {
+            let p = (r.o + r.d * at + r.back).extend(z);
+            out.push(Handle {
+                kind: HandleKind::RowEnd {
+                    aisle: r.aisle,
+                    seg: r.seg,
+                    left: r.left,
+                    end,
+                },
+                at: p,
+                constraint: Constraint::Line {
+                    point: p,
+                    dir: r.d.extend(0.0),
+                },
+                nudge: 0.0,
+            });
+        }
+    }
+    // a grip in the middle of each edge strip's inner line
+    for (i, ring, _) in &lay.strips {
+        let inward = (ring[1] - ring[0]).normalize_or_zero().perp();
+        let p = ((ring[2] + ring[3]) / 2.0).extend(z);
+        out.push(Handle {
+            kind: HandleKind::Strip(*i),
+            at: p,
+            constraint: Constraint::Line {
+                point: p,
+                dir: inward.extend(0.0),
+            },
+            nudge: 0.0,
+        });
+    }
+    out
+}
+
+/// The bay or island of a car park under `p`: its middle.
+fn bay_at(model: &Model, e: &Element, input: &PaneInput, p: Pos2) -> Option<DVec2> {
+    let ElementKind::Site(s) = &e.kind else {
+        return None;
+    };
+    let lay = s.car_park_layout(model)?;
+    let top = match &s.form {
+        creabim_core::SiteForm::Area { top, .. } => *top,
+        _ => 0.0,
+    };
+    let z = elevation(model, Some(s.level)) + top;
+    let under = |c: &[DVec2; 4]| {
+        let pts: Option<Vec<Pos2>> = c.iter().map(|q| (input.project)(q.extend(z))).collect();
+        pts.is_some_and(|pts| in_screen_polygon(&pts, p))
+    };
+    lay.bays
+        .iter()
+        .map(|b| b.corners)
+        .chain(lay.islands.iter().copied())
+        .find(|c| under(c))
+        .map(|c| c.iter().copied().sum::<DVec2>() / 4.0)
 }
 
 static LAYERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -437,8 +622,75 @@ pub fn pick() -> u8 {
 }
 
 /// Does grip `k` belong to Edit mode's selection kind?
+/// A curtain wall's grid lines as they are now, each way: `(uprights,
+/// transoms)` inside its edges, in its own coordinates, and its height
+/// (to the roof's highest point when attached).
+pub fn curtain_lines(model: &Model, w: &creabim_core::Wall) -> Option<(Vec<f64>, Vec<f64>, f64)> {
+    let g = w.curtain.as_ref()?;
+    let at = creabim_geom::curtain::setting(model, w);
+    let height = at.top.as_ref().map_or(w.height, |t| t.highest());
+    let inner = |mut v: Vec<f64>| {
+        v.pop();
+        v.remove(0);
+        v
+    };
+    Some((
+        inner(g.grid_lines(true, w.length(), &at.forced.us)),
+        inner(g.grid_lines(false, height, &at.forced.vs)),
+        height,
+    ))
+}
+
+/// In Edit mode, a grip on each of a curtain wall's grid lines: an
+/// upright's at its middle height, sliding along the wall; a transom's
+/// at the wall's middle, sliding up.
+fn curtain_line_handles(model: &Model, id: ElementId) -> Vec<Handle> {
+    let Some(ElementKind::Wall(w)) = model.get(id).map(|e| &e.kind) else {
+        return vec![];
+    };
+    let Some((us, vs, height)) = curtain_lines(model, w) else {
+        return vec![];
+    };
+    let z0 = elevation(model, Some(w.level)) + w.base_offset;
+    let line = |kind, at: DVec3, dir: DVec3| Handle {
+        kind,
+        at,
+        constraint: Constraint::Line {
+            point: at,
+            dir: dir.normalize(),
+        },
+        nudge: 0.0,
+    };
+    let mut out = vec![];
+    for u in us {
+        out.push(line(
+            HandleKind::CurtainLine {
+                upright: true,
+                at: (u * 1e6).round() as i64,
+            },
+            w.place(u, 0.0).extend(z0 + height / 2.0),
+            w.tangent_at(u).extend(0.0),
+        ));
+    }
+    let mid = w.length() / 2.0;
+    for v in vs {
+        out.push(line(
+            HandleKind::CurtainLine {
+                upright: false,
+                at: (v * 1e6).round() as i64,
+            },
+            w.place(mid, 0.0).extend(z0 + v),
+            DVec3::Z,
+        ));
+    }
+    out
+}
+
 pub fn pick_allows(k: &HandleKind) -> bool {
     use HandleKind as K;
+    if matches!(k, K::CurtainLine { .. }) {
+        return true;
+    }
     match pick() {
         1 => matches!(
             k,
@@ -500,6 +752,9 @@ pub fn layer_handles(model: &Model, id: ElementId) -> Vec<Handle> {
     let Some(e) = model.get(id) else {
         return vec![];
     };
+    if let ElementKind::Stair(s) = &e.kind {
+        return stair_piece_handles(model, s);
+    }
     let ElementKind::Wall(w) = &e.kind else {
         return edge_handles(model, e);
     };
@@ -560,10 +815,101 @@ pub fn layer_handles(model: &Model, id: ElementId) -> Vec<Handle> {
     out
 }
 
+/// A grip on each flight's top riser and in each landing of line stair
+/// `s`: its pieces, changed one at a time. Empty for a stair from before
+/// lines, or one of a single flight.
+fn stair_piece_handles(model: &Model, s: &creabim_core::Stair) -> Vec<Handle> {
+    if s.line.len() < 2 {
+        return vec![];
+    }
+    let rise = s.rise(model);
+    let base = s.base(model);
+    let lay = s.layout(rise);
+    if lay.flights.len() < 2 {
+        return vec![];
+    }
+    let mut out = vec![];
+    let last = lay.flights.len() - 1;
+    for (i, f) in lay.flights.iter().enumerate() {
+        // the last flight takes what is left: it has no grip
+        if i == last || f.risers < 2 {
+            continue;
+        }
+        let at = f
+            .end(s.tread)
+            .extend(base + f.z0 + f.risers as f64 * lay.riser);
+        out.push(Handle {
+            kind: HandleKind::StairFlight {
+                straight: f.straight,
+            },
+            at,
+            constraint: Constraint::Line {
+                point: at,
+                dir: f.end_dir(s.tread).extend(0.0),
+            },
+            nudge: 0.0,
+        });
+    }
+    for ((outline, z), &turn) in lay.landings.iter().zip(&lay.turns) {
+        // pushed back along the flight that climbs to it
+        let Some(before) = lay.flights.iter().rev().find(|f| f.straight <= turn) else {
+            continue;
+        };
+        let mid = outline.iter().copied().sum::<DVec2>() / outline.len().max(1) as f64;
+        let at = mid.extend(base + z);
+        out.push(Handle {
+            kind: HandleKind::StairLanding { turn },
+            at,
+            constraint: Constraint::Line {
+                point: at,
+                dir: before.end_dir(s.tread).extend(0.0),
+            },
+            nudge: 0.0,
+        });
+    }
+    out
+}
+
+/// What grip `kind` of a line stair's pieces says by it: the flight's
+/// treads or how much deeper the landing is.
+fn stair_piece_name(model: &Model, id: ElementId, kind: HandleKind) -> Option<String> {
+    let ElementKind::Stair(s) = &model.get(id)?.kind else {
+        return None;
+    };
+    let lay = s.layout(s.rise(model));
+    match kind {
+        HandleKind::StairFlight { straight } => {
+            let i = lay.flights.iter().position(|f| f.straight == straight)?;
+            let t = lay.flights[i].risers.saturating_sub(1);
+            let own = if s.pieces.treads(straight).is_some() {
+                ", kept"
+            } else {
+                ""
+            };
+            Some(format!("Flight {}: {t} treads{own}", i + 1))
+        }
+        HandleKind::StairLanding { turn } => {
+            let i = lay.turns.iter().position(|t| *t == turn)?;
+            let by = s.pieces.deeper(turn);
+            Some(if by > 0.0 {
+                format!("Landing {}: {:+.0} mm deeper", i + 1, by * 1000.0)
+            } else {
+                format!("Landing {}", i + 1)
+            })
+        }
+        _ => None,
+    }
+}
+
 /// How far the layer end or edge of grip `kind` was moved by hand on
-/// `e`; `None` when `kind` is no such grip of it.
+/// `e`; `None` when `kind` is no such grip of it. A stair's flight gives
+/// its kept treads (0: none kept), a landing how much deeper it is.
 fn layer_offset(e: &ElementKind, kind: HandleKind) -> Option<f64> {
     match (e, kind) {
+        (ElementKind::Stair(s), HandleKind::StairFlight { straight }) => {
+            Some(s.pieces.treads(straight).map_or(0.0, |t| t as f64))
+        }
+        (ElementKind::Stair(s), HandleKind::StairLanding { turn }) => Some(s.pieces.deeper(turn)),
         (ElementKind::Wall(w), HandleKind::LayerEnd { layer, end }) => {
             Some(w.layer_ext(layer)[usize::from(end)])
         }
@@ -580,9 +926,16 @@ fn layer_offset(e: &ElementKind, kind: HandleKind) -> Option<f64> {
     }
 }
 
-/// Set how far the layer end or edge of grip `kind` is moved.
+/// Set how far the layer end or edge of grip `kind` is moved (a stair's
+/// flight: the treads it keeps, 0 none).
 fn set_layer_offset(e: &mut ElementKind, kind: HandleKind, by: f64) {
     match (e, kind) {
+        (ElementKind::Stair(s), HandleKind::StairFlight { straight }) => s
+            .pieces
+            .set_treads(straight, (by >= 1.0).then_some(by.round() as u32)),
+        (ElementKind::Stair(s), HandleKind::StairLanding { turn }) => {
+            s.pieces.set_deeper(turn, by.max(0.0))
+        }
         (ElementKind::Wall(w), HandleKind::LayerEnd { layer, end }) => {
             w.set_layer_ext(layer, end, by)
         }
@@ -724,6 +1077,27 @@ pub fn reset_layer_ends(
     let e = doc.model().get(id).ok_or("it is gone")?.clone();
     let mut after = e.clone();
     let done = match (which, &mut after.kind) {
+        (Some(k @ HandleKind::StairFlight { .. }), kind) => {
+            set_layer_offset(kind, k, 0.0);
+            (
+                "Reset flight",
+                "The flight takes the treads that fit again.",
+            )
+        }
+        (Some(k @ HandleKind::StairLanding { .. }), kind) => {
+            set_layer_offset(kind, k, 0.0);
+            (
+                "Reset landing",
+                "The landing is as deep as its line leaves it.",
+            )
+        }
+        (None, ElementKind::Stair(s)) => {
+            s.pieces = Default::default();
+            (
+                "Reset all pieces",
+                "Every flight and landing fills the line again.",
+            )
+        }
         (Some(k), kind) => {
             set_layer_offset(kind, k, 0.0);
             (
@@ -783,7 +1157,11 @@ fn layer_name(model: &Model, id: ElementId, kind: HandleKind) -> Option<String> 
     Some(if by == 0.0 {
         format!("{what}: {side}")
     } else {
-        format!("{what}: {side}, {:+.0} mm", by * 1000.0)
+        format!(
+            "{what}: {side}, {}{}",
+            if by > 0.0 { "+" } else { "" },
+            crate::units::len(by)
+        )
     })
 }
 
@@ -839,6 +1217,18 @@ fn ref_local(model: &Model, r: &creabim_core::Reference, w: DVec3) -> DVec2 {
         None => w.truncate(),
     }
 }
+
+/// A grown tree's side grips' names, east and counter-clockwise.
+const REACH_NAMES: [&str; 8] = [
+    "Crown east",
+    "Crown north-east",
+    "Crown north",
+    "Crown north-west",
+    "Crown west",
+    "Crown south-west",
+    "Crown south",
+    "Crown south-east",
+];
 
 pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle> {
     let Some(e) = model.get(id) else {
@@ -1036,7 +1426,31 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                 height,
                 ..
             } => {
-                let z = elevation(model, Some(s.level)) + base;
+                let _ = base;
+                let z = creabim_geom::earth::plant_z(model, s);
+                if let Some(t) = s.tree_shape() {
+                    // the top, the crown's underside, and its eight sides
+                    // at its widest: shaped in plan, a section or 3D
+                    let wide = z + t.crown_base + t.widest() * (height - t.crown_base);
+                    let mut out: Vec<Handle> = (0..8u8)
+                        .map(|i| {
+                            let dir = t.side(i as usize);
+                            let at = position + dir * t.radius_towards(canopy, dir);
+                            line(HandleKind::PlantReach(i), at.extend(wide), dir.extend(0.0))
+                        })
+                        .collect();
+                    out.push(line(
+                        HandleKind::PlantHeight,
+                        position.extend(z + height),
+                        DVec3::Z,
+                    ));
+                    out.push(line(
+                        HandleKind::PlantCrownBase,
+                        position.extend(z + t.crown_base),
+                        DVec3::Z,
+                    ));
+                    return out;
+                }
                 vec![
                     line(
                         HandleKind::PlantCanopy,
@@ -1050,13 +1464,54 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                     ),
                 ]
             }
+            // a property: a grip on each setback line, sliding it in or out
+            creabim_core::SiteForm::Property {
+                ref boundary,
+                ref edges,
+                ref rules,
+            } => {
+                let z = elevation(model, Some(s.level));
+                let n = boundary.len();
+                let Some(b) = creabim_core::lot::buildable(boundary, edges, rules) else {
+                    return vec![];
+                };
+                (0..n)
+                    .filter_map(|i| {
+                        if creabim_core::lot::edge_kind(edges, i, n) == creabim_core::LotEdge::Open
+                        {
+                            return None;
+                        }
+                        let d = (boundary[(i + 1) % n] - boundary[i]).normalize_or_zero();
+                        let mid = (b[i] + b[(i + 1) % n]) / 2.0;
+                        Some(line(
+                            HandleKind::Setback(i),
+                            mid.extend(z),
+                            d.perp().extend(0.0),
+                        ))
+                    })
+                    .collect()
+            }
             // its outline's grips are every outline's (see handles_in)
             _ => vec![],
         },
-        ElementKind::Grid(g) => vec![
-            flat(HandleKind::GridEnd { end: false }, g.start.extend(0.0)),
-            flat(HandleKind::GridEnd { end: true }, g.end.extend(0.0)),
-        ],
+        ElementKind::Grid(g) => {
+            let mut out = vec![
+                flat(HandleKind::GridEnd { end: false }, g.start.extend(0.0)),
+                flat(HandleKind::GridEnd { end: true }, g.end.extend(0.0)),
+            ];
+            for (end, on) in [(false, g.bubbles.at_start()), (true, g.bubbles.at_end())] {
+                if on {
+                    let (at, _) =
+                        creabim_core::grids::bubble(g, end, creabim_core::grids::BUBBLE_OUT);
+                    out.push(flat(HandleKind::GridBubble { end }, at.extend(0.0)));
+                }
+            }
+            if g.bulge != 0.0 {
+                let mid = creabim_core::grids::curve(g).at(0.5);
+                out.push(flat(HandleKind::GridRise, mid.extend(0.0)));
+            }
+            out
+        }
         ElementKind::FreeMesh(m) => {
             // at rest only the main shape editing (MU18): its base point
             // to move it, the turn grip, and the clicked face's push/pull;
@@ -1088,7 +1543,14 @@ pub fn handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<Handle>
                 .map(|t| t.bounds())
                 .unwrap_or((DVec3::new(-0.3, -0.6, 0.0), DVec3::new(0.3, 0.0, 1.0)));
             let front = DVec2::new((lo.x + hi.x) / 2.0, lo.y - 0.25);
-            vec![flat(HandleKind::Rotate, o.to_plan(front).extend(z))]
+            let mut out = vec![flat(HandleKind::Rotate, o.to_plan(front).extend(z))];
+            // its corners, shown one at a time under the pointer (MU142)
+            if let Some(corners) = object_corners(model, e) {
+                for (i, c) in corners.iter().enumerate() {
+                    out.push(flat(HandleKind::ScaleCorner(i as u8), c.extend(z)));
+                }
+            }
+            out
         }
         _ => creabim_core::members::grips(model, e)
             .into_iter()
@@ -1273,16 +1735,188 @@ fn member_extras(model: &Model, e: &Element) -> Vec<Handle> {
         }
         ElementKind::Stair(s) => {
             let dir = DVec2::from_angle(s.direction.to_radians());
-            vec![flat(
+            let mut out = vec![flat(
                 HandleKind::Rotate,
                 (s.start - dir * 0.6).extend(s.base(model)),
-            )]
+            )];
+            // its UP label: moved by itself, off a room's tag or a
+            // fitting it covered (MU144)
+            if let Some(up) = s.up_label_at(&s.layout(s.rise(model))) {
+                out.push(flat(HandleKind::StairUp, up.extend(s.base(model))));
+            }
+            out
         }
         _ => vec![],
     }
 }
 
 /// The point a rotate grip turns its element about, in plan.
+/// How far a drag of the turn dot turns (MU142), from the `raw` angle the
+/// pointer has gone round: in Rotate's step from its row (5° when Free),
+/// locking to 0, ±90 and 180 as it passes them, as the R key does; free
+/// with Alt or Step off (`step` 0). Returns the turn and the angle it
+/// locked to.
+pub(crate) fn grip_turn(raw: f64, _step: f64) -> (f64, Option<f64>) {
+    // free only with Alt held: the length step (Grid snap) has nothing to
+    // say about angles (MU142: with Grid snap Off it never stepped or
+    // locked)
+    if GRIP_FREE.load(std::sync::atomic::Ordering::Relaxed) {
+        (raw, None)
+    } else {
+        crate::modal::turn_degrees(raw, false, 1.0, crate::modal::rotate_step())
+    }
+}
+
+/// How far outside the held turn dot the protractor's ring runs, px.
+pub(crate) const RING_CLEAR: f32 = 22.0;
+
+/// Alt held while a grip is dragged: a turn goes free (set each frame).
+pub(crate) static GRIP_FREE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The protractor round what a turn-dot drag turns (MU142): from where
+/// the dot was grabbed to where the pointer has taken it.
+fn draw_grip_protractor(painter: &Painter, input: &PaneInput, model: &Model, d: &Drag, now: DVec3) {
+    let Some(e) = d.edit.originals().first() else {
+        return;
+    };
+    let Some(c) = pivot_of(model, e) else {
+        return;
+    };
+    let z = creabim_core::objects::base_z(model, e).unwrap_or(d.grab.z);
+    let (Some(ps), Some(g)) = ((input.project)(c.extend(z)), (input.project)(d.grab)) else {
+        return;
+    };
+    let (a0, a1) = (d.grab.truncate() - c, now.truncate() - c);
+    if a1.length() < 1e-6 {
+        return;
+    }
+    let (by, locked) = grip_turn(a0.angle_to(a1).to_degrees(), crate::snaps::current_step());
+    // on screen the plan's anticlockwise may read either way (a view from
+    // below): the arc follows the screen
+    let screen = |p: Pos2| (-(p.y - ps.y)).atan2(p.x - ps.x);
+    let start = screen(g);
+    let toward =
+        (input.project)((c + DVec2::from_angle(a0.to_angle() + 0.3) * a0.length()).extend(z))
+            .map_or(1.0, |q| {
+                let d = (screen(q) - start + std::f32::consts::PI)
+                    .rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                if d < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            });
+    // the ring a step outside the turn dot, so the two don't sit on top
+    // of each other (MU142: "too close for comfort"); taken on the ring,
+    // it stays the ring it was taken on
+    let r = turn_ring(model, e, input).map_or((ps.distance(g) + RING_CLEAR).max(56.0), |(_, r)| r);
+    let ink = if locked.is_some() {
+        crate::modal::GUIDE_PINK
+    } else {
+        crate::theme::interaction()
+    };
+    let from = crate::modal::OrientFrom {
+        look: Some(input.look),
+        ..Default::default()
+    };
+    let way = crate::modal::zero_way_from(
+        model,
+        d.edit.originals(),
+        crate::modal::rotate_orient(),
+        from,
+    );
+    let zero = (input.project)((c + way).extend(z)).map_or(start, screen);
+    let (mut shapes, labels) =
+        crate::modal::protractor(ps, r, zero, start, by as f32 * toward, ink);
+    // the held dot marks where the turn is: no second dot beside it
+    shapes.pop();
+    for s in shapes {
+        painter.add(s);
+    }
+    let text = crate::theme::Palette::of(painter.ctx()).muted;
+    for (at, label) in labels {
+        painter.text(
+            at,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(10.0),
+            text,
+        );
+    }
+}
+
+/// The protractor's ring round what `e`'s turn dot turns, on screen: its
+/// middle and its radius, a step outside the dot.
+fn turn_ring(model: &Model, e: &Element, input: &PaneInput) -> Option<(Pos2, f32)> {
+    let c = pivot_of(model, e)?;
+    let dot = handles_in(model, e.id, None, false)
+        .into_iter()
+        .find(|h| h.kind == HandleKind::Rotate)?;
+    let z = creabim_core::objects::base_z(model, e).unwrap_or(dot.at.z);
+    let (ps, g) = ((input.project)(c.extend(z))?, (input.project)(dot.at)?);
+    Some((ps, (ps.distance(g) + RING_CLEAR).max(56.0)))
+}
+
+/// The protractor shown round `e` while the pointer rests on its turn dot
+/// or on the ring (MU142, decision 10): a press anywhere on the ring turns
+/// it as the dot does.
+fn draw_turn_ring(painter: &Painter, input: &PaneInput, model: &Model, e: &Element) {
+    let (Some((ps, r)), Some(c)) = (turn_ring(model, e, input), pivot_of(model, e)) else {
+        return;
+    };
+    let z = creabim_core::objects::base_z(model, e).unwrap_or(0.0);
+    let screen = |p: Pos2| (-(p.y - ps.y)).atan2(p.x - ps.x);
+    let from = crate::modal::OrientFrom {
+        look: Some(input.look),
+        ..Default::default()
+    };
+    let way = crate::modal::zero_way_from(
+        model,
+        std::slice::from_ref(e),
+        crate::modal::rotate_orient(),
+        from,
+    );
+    let zero = (input.project)((c + way).extend(z)).map_or(0.0, screen);
+    let ink = crate::theme::interaction().gamma_multiply(0.75);
+    let (mut shapes, labels) = crate::modal::protractor(ps, r, zero, zero, 0.0, ink);
+    // no dot of its own: the turn dot is there
+    shapes.pop();
+    for s in shapes {
+        painter.add(s);
+    }
+    let text = crate::theme::Palette::of(painter.ctx()).muted;
+    for (at, label) in labels {
+        painter.text(
+            at,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(10.0),
+            text,
+        );
+    }
+}
+
+/// The element whose protractor is shown at rest, and the pane it shows
+/// in: lit by resting on its turn dot, kept while the pointer stays within
+/// the ring. Only that pane lets go of it: the other panes, the pointer
+/// away from them, put it out on every frame (MU142, seen in the app: a
+/// press on the ring moved the object).
+static RING_LIT: std::sync::Mutex<Option<(ElementId, egui::Id)>> = std::sync::Mutex::new(None);
+
+fn ring_lit(pane: egui::Id) -> Option<ElementId> {
+    RING_LIT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .filter(|(_, p)| *p == pane)
+        .map(|(id, _)| id)
+}
+
+fn set_ring_lit(lit: Option<(ElementId, egui::Id)>) {
+    *RING_LIT.lock().unwrap_or_else(|e| e.into_inner()) = lit;
+}
+
 fn pivot_of(model: &Model, e: &Element) -> Option<DVec2> {
     match &e.kind {
         ElementKind::Object(o) => {
@@ -1357,8 +1991,8 @@ fn mass_edit_handles(model: &Model, id: ElementId, face: Option<usize>) -> Vec<H
 
 /// Above these, a mass shows only the clicked face's arrow: grips on
 /// every corner of a detailed mesh would bury it.
-const MASS_GRIP_FACES: usize = 24;
-const MASS_GRIP_CORNERS: usize = 48;
+const MASS_GRIP_FACES: usize = 2000;
+const MASS_GRIP_CORNERS: usize = 4000;
 
 /// Each edge of a mesh once, its corners in order.
 pub fn mesh_edges(mesh: &creabim_core::editmesh::EditMesh) -> Vec<(u32, u32)> {
@@ -1374,6 +2008,20 @@ pub fn mesh_edges(mesh: &creabim_core::editmesh::EditMesh) -> Vec<(u32, u32)> {
 }
 
 /// An object turned `by` degrees about the middle of its footprint.
+/// The corners of an object's outline in plan: its type's extent, lo
+/// first, anticlockwise in its own frame, placed as it stands.
+pub fn object_corners(model: &Model, e: &Element) -> Option<[DVec2; 4]> {
+    let ElementKind::Object(o) = &e.kind else {
+        return None;
+    };
+    let (lo, hi) = creabim_core::objects::type_of(model, e)?.bounds();
+    let (lo, hi) = (lo.truncate(), hi.truncate());
+    if (hi - lo).min_element() < 1e-6 {
+        return None;
+    }
+    Some([lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)].map(|q| o.to_plan(q)))
+}
+
 pub fn turn_object(model: &Model, e: &mut Element, by: f64) {
     let pivot = pivot_of(model, e);
     if let ElementKind::Object(o) = &mut e.kind {
@@ -1482,6 +2130,47 @@ pub fn apply(
     let mut moved_end = None;
     let first = out.first_mut().ok_or("nothing to drag")?;
     match (&mut first.kind, kind) {
+        (ElementKind::Wall(w), HandleKind::CurtainLine { upright, at }) => {
+            let old = at as f64 / 1e6;
+            let Some((us, vs, height)) = curtain_lines(model, w) else {
+                return Err("not a curtain wall".into());
+            };
+            let (len, lines) = if upright {
+                (w.length(), us)
+            } else {
+                (height, vs)
+            };
+            let along = if upright {
+                d.truncate().dot(w.tangent_at(old))
+            } else {
+                d.z
+            };
+            let new = round(old + along, step).clamp(0.0, len);
+            let Some(g) = w.curtain.as_mut() else {
+                return Err("not a curtain wall".into());
+            };
+            let hand = if upright {
+                &mut g.vertical_hand
+            } else {
+                &mut g.horizontal_hand
+            };
+            // where it was: a hand line moves, a rule line is taken away
+            if let Some(i) = hand.added.iter().position(|x| (x - old).abs() < 1e-4) {
+                hand.added.remove(i);
+            } else {
+                hand.removed.push(old);
+            }
+            // dropped on its neighbour or an edge, it goes; else it stands
+            // where it was dropped
+            let onto = lines
+                .iter()
+                .filter(|x| (**x - old).abs() > 1e-4)
+                .chain([0.0, len].iter())
+                .any(|x| (x - new).abs() < 0.03);
+            if !onto {
+                hand.added.push(new);
+            }
+        }
         (ElementKind::Wall(w), HandleKind::WallEnd { end }) => {
             // the grip is on the location line: move that, and the
             // centreline with it
@@ -1517,6 +2206,41 @@ pub fn apply(
                 return Err("a layer can't stop short past the wall's middle height".into());
             }
             w.set_layer_vext(layer, top, old + by);
+        }
+        (ElementKind::Stair(s), HandleKind::StairFlight { straight }) => {
+            let lay = s.layout(s.rise(model));
+            let f = lay
+                .flights
+                .iter()
+                .find(|f| f.straight == straight)
+                .ok_or("that flight is gone")?;
+            let more = (d.truncate().dot(f.end_dir(s.tread)) / s.tread.max(0.01)).round() as i64;
+            let t = (f.risers as i64 - 1 + more).max(1) as u32;
+            s.pieces.set_treads(straight, Some(t));
+        }
+        (ElementKind::Stair(s), HandleKind::StairUp) => {
+            // from where it stands before the flight; dropped by it, it
+            // goes home and keeps no offset
+            let lay = s.layout(s.rise(model));
+            let mut home = s.clone();
+            home.up_offset = None;
+            let at = home.up_label_at(&lay).ok_or("the stair has no flight")?;
+            let now = s.up_label_at(&lay).unwrap_or(at) + d.truncate();
+            let off = now - at;
+            s.up_offset = (off.length() > 0.05).then_some(off);
+        }
+        (ElementKind::Stair(s), HandleKind::StairLanding { turn }) => {
+            let lay = s.layout(s.rise(model));
+            let f = lay
+                .flights
+                .iter()
+                .rev()
+                .find(|f| f.straight <= turn)
+                .ok_or("that landing is gone")?;
+            // back down the flight is deeper
+            let by = round(-d.truncate().dot(f.end_dir(s.tread)), step / 5.0);
+            s.pieces
+                .set_deeper(turn, (s.pieces.deeper(turn) + by).max(0.0));
         }
         (
             ek @ (ElementKind::Slab(_) | ElementKind::Roof(_)),
@@ -1599,11 +2323,133 @@ pub fn apply(
             o.sill += dz;
             o.height -= dz;
         }
-        (ElementKind::Grid(g), HandleKind::GridEnd { end }) => {
-            if end {
-                g.end = now.truncate();
+        (ElementKind::Site(st), HandleKind::Strip(i)) => {
+            let creabim_core::SiteForm::Area {
+                boundary,
+                parking: Some(cp),
+                ..
+            } = &mut st.form
+            else {
+                return Err("only a car park has edge strips".into());
+            };
+            let n = boundary.len();
+            if n < 3 || i >= n {
+                return Err("that edge is gone".into());
+            }
+            let (a, b) = (boundary[i], boundary[(i + 1) % n]);
+            let inward = (b - a).normalize_or_zero().perp();
+            let step = if step > 0.0 { step } else { 0.05 };
+            let w = round((now.truncate() - a).dot(inward), step).clamp(0.1, 30.0);
+            match cp.strips.iter_mut().find(|s| s.edge == i) {
+                Some(s) => s.width = w,
+                None => return Err("that edge has no strip".into()),
+            }
+        }
+        (
+            ElementKind::Site(st),
+            HandleKind::RowEnd {
+                aisle,
+                seg,
+                left,
+                end,
+            },
+        ) => {
+            let creabim_core::SiteForm::Area {
+                parking: Some(cp), ..
+            } = &mut st.form
+            else {
+                return Err("only a car park has rows".into());
+            };
+            let Some(a) = cp.aisles.get_mut(aisle) else {
+                return Err("that aisle is gone".into());
+            };
+            let (Some(p), Some(q)) = (a.path.get(seg), a.path.get(seg + 1)) else {
+                return Err("that stretch of the aisle is gone".into());
+            };
+            let len = p.distance(*q);
+            let along = (*q - *p).normalize_or_zero();
+            // where along the stretch the grip now is, to the nearest
+            // 50 mm when nothing else sets the step
+            let step = if step > 0.0 { step } else { 0.05 };
+            let s = round((now.truncate() - *p).dot(along), step).clamp(0.0, len);
+            a.trim(seg, left, end, s);
+        }
+        (ElementKind::Site(st), HandleKind::Setback(i)) => {
+            use creabim_core::LotEdge;
+            let creabim_core::SiteForm::Property {
+                boundary,
+                edges,
+                rules,
+            } = &mut st.form
+            else {
+                return Err("only a property has setbacks".into());
+            };
+            let n = boundary.len();
+            if n < 3 {
+                return Err("its outline is gone".into());
+            }
+            let (a, b) = (boundary[i % n], boundary[(i + 1) % n]);
+            let inward = (b - a).normalize_or_zero().perp();
+            // how far in from the edge the grip now is, to the nearest
+            // 50 mm when nothing else sets the step
+            let step = if step > 0.0 { step } else { 0.05 };
+            let far = round((now.truncate() - a).dot(inward), step).clamp(0.0, 500.0);
+            if creabim_core::lot::edge_kind(edges, i, n) == LotEdge::Open {
+                return Err("this edge has no setback".into());
+            }
+            // the edge's own: back on its kind's when slid to that value
+            let kinds = rules.setback(creabim_core::lot::edge_kind(edges, i, n));
+            rules.set_own_setback(i, ((far - kinds).abs() > 1e-6).then_some(far));
+            if creabim_core::lot::buildable(boundary, edges, rules).is_none() {
+                return Err("the setbacks would leave nothing to build on".into());
+            }
+        }
+        (ElementKind::Grid(g), HandleKind::GridRise) => {
+            // the arc through its ends and where the grip is now; on the
+            // straight line it stays an arc, just barely
+            let b = creabim_core::sketch::bulge_through(g.start, g.end, now.truncate());
+            if b.is_finite() {
+                g.bulge = if b.abs() < 1e-3 {
+                    1e-3_f64.copysign(b)
+                } else {
+                    b.clamp(-1.0, 1.0)
+                };
+            }
+        }
+        (ElementKind::Grid(g), HandleKind::GridBubble { end }) => {
+            // how far across the line the bubble now sits: its elbow
+            let base = creabim_core::grids::curve(g).at(if end { 1.0 } else { 0.0 });
+            let n = creabim_core::grids::outward(g, end).perp();
+            let side = (now.truncate() - base).dot(n);
+            g.elbows[usize::from(end)] = if side.abs() < 0.05 {
+                0.0
             } else {
-                g.start = now.truncate();
+                round(side, step).clamp(-20.0, 20.0)
+            };
+        }
+        (ElementKind::Grid(g), HandleKind::GridEnd { end }) => {
+            // a stretch stays on the line's own axis unless pulled well off
+            // it (MU74: it drifted off square when stretched); a curved
+            // grid line's end moves freely
+            let mut p = now.truncate();
+            let (here, other) = if end {
+                (g.end, g.start)
+            } else {
+                (g.start, g.end)
+            };
+            if g.bulge.abs() < 1e-9 {
+                if let Some(dir) = (here - other).try_normalize() {
+                    let on = other + dir * (p - other).dot(dir);
+                    let len = here.distance(other);
+                    if p.distance(on) < (len * 0.1).clamp(0.2, 0.5) {
+                        p = on;
+                    }
+                }
+            }
+            if end {
+                g.end = p;
+            } else {
+                g.start = p;
             }
         }
         (ElementKind::View(v), HandleKind::ViewEnd { end: which }) => {
@@ -1673,6 +2519,7 @@ pub fn apply(
             r.scale *= n / g;
         }
         (ElementKind::CropBox(c), HandleKind::CropMove) => {
+            c.fit = None;
             // the grabbed corner lands on a rounded spot
             let to = DVec3::new(
                 round(c.min.x + d.x, step),
@@ -1764,14 +2611,41 @@ pub fn apply(
             c.lo = lo;
             c.hi = hi;
         }
-        (ElementKind::Site(st), HandleKind::PlantCanopy | HandleKind::PlantHeight) => {
-            let creabim_core::SiteForm::Plant { canopy, height, .. } = &mut st.form else {
+        (
+            ElementKind::Site(st),
+            HandleKind::PlantCanopy
+            | HandleKind::PlantHeight
+            | HandleKind::PlantCrownBase
+            | HandleKind::PlantReach(_),
+        ) => {
+            let creabim_core::SiteForm::Plant {
+                canopy,
+                height,
+                tree,
+                ..
+            } = &mut st.form
+            else {
                 return Err("only plants have that grip".into());
             };
-            if kind == HandleKind::PlantCanopy {
-                *canopy = round(*canopy + 2.0 * d.x, step).max(0.1);
-            } else {
-                *height = round(*height + d.z, step).max(0.1);
+            match (kind, tree.as_deref_mut()) {
+                (HandleKind::PlantCanopy, _) => *canopy = round(*canopy + 2.0 * d.x, step).max(0.1),
+                (HandleKind::PlantHeight, t) => {
+                    let low = t.map_or(0.1, |t| t.crown_base + 0.3);
+                    *height = round(*height + d.z, step).max(low);
+                }
+                (HandleKind::PlantCrownBase, Some(t)) => {
+                    t.crown_base =
+                        round(t.crown_base + d.z, step).clamp(0.0, (*height - 0.3).max(0.0));
+                }
+                (HandleKind::PlantReach(i), Some(t)) => {
+                    // the side's reach, so its edge lands where dragged to
+                    let dir = t.side(i as usize);
+                    let was = t.radius_towards(*canopy, dir);
+                    let now = round(was + d.truncate().dot(dir), step).max(0.05);
+                    let i = i as usize % 8;
+                    t.reach[i] = (t.reach[i] * now / was.max(1e-6)).clamp(0.1, 2.5);
+                }
+                _ => return Err("only a grown tree has that grip".into()),
             }
         }
         (ElementKind::Wall(w), HandleKind::WallBend) => {
@@ -1810,9 +2684,7 @@ pub fn apply(
             if a1.length() < 1e-6 {
                 return Err("too close to its middle".into());
             }
-            // in 5° steps, free with Alt or Step off, as lengths are
-            let raw = a0.angle_to(a1).to_degrees();
-            let by = if step > 0.0 { round(raw, 5.0) } else { raw };
+            let (by, _) = grip_turn(a0.angle_to(a1).to_degrees(), step);
             match &mut first.kind {
                 ElementKind::Object(_) => turn_object(model, first, by),
                 ElementKind::Column(col) => col.rotation = (col.rotation + by).rem_euclid(360.0),
@@ -1822,6 +2694,26 @@ pub fn apply(
                 _ => return Err("this doesn't turn".into()),
             }
         }
+        (_, HandleKind::ScaleCorner(i)) => {
+            // from the opposite corner, by how far along the diagonal the
+            // corner has gone, in hundredths (MU142)
+            let original = originals.first().ok_or("nothing to scale")?;
+            let corners = object_corners(model, original).ok_or("this doesn't scale")?;
+            let (c, opp) = (corners[i as usize % 4], corners[(i as usize + 2) % 4]);
+            let d = c - opp;
+            let f = ((now.truncate() - opp).dot(d) / d.length_squared()).max(0.05);
+            let f = (f * 100.0).round() / 100.0;
+            let z = creabim_core::objects::base_z(model, original).unwrap_or(grab.z);
+            *first = creabim_core::transform::transformed(
+                model,
+                original,
+                &creabim_core::Xform::Scale {
+                    center: opp.extend(z),
+                    factor: f,
+                },
+            )
+            .ok_or("this doesn't scale")?;
+        }
         (_, HandleKind::Member { i, .. }) => {
             creabim_core::members::drag_grip(model, first, i, grab, now, step)?
         }
@@ -1829,6 +2721,7 @@ pub fn apply(
             _,
             HandleKind::Vertex { .. }
             | HandleKind::Edge { .. }
+            | HandleKind::EdgeMove { .. }
             | HandleKind::AddVertex { .. }
             | HandleKind::Ring { .. }
             | HandleKind::ShaftBase
@@ -2016,6 +2909,9 @@ pub struct GripSel {
     /// The element the picks are on.
     pub id: Option<ElementId>,
     pub corners: Vec<(Ring, usize)>,
+    /// The two corners picked were picked as an edge, by a click on it:
+    /// Delete then opens the outline there and keeps the corners (MU48).
+    pub by_edge: bool,
     pub holes: Vec<usize>,
     /// A mass's picked vertices in Edit mode (an edge picks its two ends,
     /// a face its corners), kept lit until another pick (MU39).
@@ -2031,29 +2927,7 @@ pub struct GripSel {
     pub typing: bool,
     /// What the app should do next with Edit mode.
     pub request: Option<GripRequest>,
-    /// The small palette on the outline edge under the pointer (3.6).
-    palette: Option<EdgePalette>,
 }
-
-/// The palette on a selected element's outline edge: Offset edge, Offset
-/// all, Insert point.
-#[derive(Clone, Copy, Debug)]
-struct EdgePalette {
-    pane: egui::Id,
-    ring: Ring,
-    i: usize,
-    /// The model point the pointer was at on the edge.
-    at: DVec3,
-    /// Where it shows, on screen.
-    pos: Pos2,
-    /// When the pointer came to the edge (seconds): it shows after a rest.
-    since: f64,
-    /// Where it was drawn last frame, to keep it while the pointer is on it.
-    rect: Option<Rect>,
-}
-
-/// How long (seconds) the pointer rests on an edge before its palette shows.
-const PALETTE_REST: f64 = 0.35;
 
 /// Something only the app can do, asked for from a grip.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2062,14 +2936,18 @@ pub enum GripRequest {
     Finish,
     /// Open the selected element in Edit mode.
     Enter,
-    /// From the edge palette: push edge `i` of outline `ring` out or in,
-    /// following the pointer.
+    /// Push edge `i` of outline `ring` out or in, following the pointer.
     OffsetEdge(Ring, usize),
-    /// From the edge palette: offset the whole outline, in place.
+    /// Offset the whole outline, in place.
     OffsetAll,
-    /// From the edge palette: a corner on edge `i` of `ring` at this
-    /// point, then moved with the pointer.
+    /// A corner on edge `i` of `ring` at this point, then moved with the
+    /// pointer.
     InsertPoint(Ring, usize, DVec3),
+    /// A part of the handle was taken: Move, Rotate or Scale what is
+    /// picked, as the part says. By a drag (true) it ends when the button
+    /// comes up; by a click, at the next click. The last is Shift: a
+    /// cube then scales every way at once.
+    Handle(HandlePart, bool, bool),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2088,6 +2966,8 @@ enum MenuOn {
     Hole(usize),
     /// A layer's start, end or edge, in Layers.
     Layer(HandleKind),
+    /// A car park's bay or island, by its middle.
+    Bay(DVec2),
     Blank,
 }
 
@@ -2096,10 +2976,385 @@ enum MenuOn {
 const DOUBLE_TAP: f64 = 0.5;
 const DOUBLE_TAP_PX: f32 = 8.0;
 
+/// A part of the handle (MU85): what the mouse takes hold of.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HandlePart {
+    /// The disc in the middle: move freely on the workplane.
+    Middle,
+    /// An arrow: move along its axis.
+    Arrow(creabim_core::Axis),
+    /// A square between two arrows: move in the plane square to this axis.
+    Plane(creabim_core::Axis),
+    /// An arc between two arrows: turn about this axis.
+    Arc(creabim_core::Axis),
+    /// A cube on a stem: scale along its axis.
+    Cube(creabim_core::Axis),
+}
+
+impl HandlePart {
+    /// What a drag of it does, for the label under the pointer.
+    pub fn says(self) -> String {
+        use creabim_core::Axis;
+        let pair = |n: Axis| -> String {
+            Axis::ALL
+                .iter()
+                .filter(|a| **a != n)
+                .map(|a| a.label())
+                .collect()
+        };
+        match self {
+            HandlePart::Middle => "Move freely".into(),
+            HandlePart::Arrow(a) => format!("Move along {}", a.label()),
+            HandlePart::Plane(n) => format!("Move in {}", pair(n)),
+            HandlePart::Arc(a) => format!("Turn about {}", a.label()),
+            HandlePart::Cube(a) => format!("Scale along {}", a.label()),
+        }
+    }
+}
+
+/// How an edit taken by the handle starts: the tool, the axis it keeps
+/// to, the plane it keeps in (by the axis square to it), and whether
+/// letting go of the button ends it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandleStart {
+    pub mode: crate::modal::Mode,
+    pub axis: Option<creabim_core::Axis>,
+    pub plane: Option<creabim_core::Axis>,
+    pub by_drag: bool,
+    /// Where the button went down on the part: the edit measures from
+    /// there, not from where the pointer had got to when it began (a drag
+    /// is known for one only some pixels on, and the picked points
+    /// trailed the pointer by that much, MU130).
+    pub press: Option<Pos2>,
+}
+
+impl HandleStart {
+    /// The edit `part` starts. `every_way` is Shift on a cube.
+    pub fn of(part: HandlePart, by_drag: bool, every_way: bool) -> Self {
+        use crate::modal::Mode;
+        use creabim_core::Axis;
+        let (mode, axis, plane) = match part {
+            HandlePart::Middle => (Mode::Move, None, None),
+            HandlePart::Arrow(a) => (Mode::Move, Some(a), None),
+            // level with the ground it is the free move, snaps and all
+            HandlePart::Plane(Axis::Z) => (Mode::Move, None, None),
+            HandlePart::Plane(n) => (Mode::Move, None, Some(n)),
+            HandlePart::Arc(a) => (Mode::Rotate, Some(a), None),
+            HandlePart::Cube(_) if every_way => (Mode::Scale, None, None),
+            HandlePart::Cube(a) => (Mode::Scale, Some(a), None),
+        };
+        HandleStart {
+            mode,
+            axis,
+            plane,
+            by_drag,
+            press: HANDLE_PRESS.with(|p| p.take()),
+        }
+    }
+}
+
+thread_local! {
+    /// Where the handle was last pressed, for [`HandleStart::press`].
+    static HANDLE_PRESS: std::cell::Cell<Option<Pos2>> = const { std::cell::Cell::new(None) };
+}
+
+thread_local! {
+    /// The edit about to start was taken by the handle, this way.
+    static HANDLE_START: std::cell::Cell<Option<HandleStart>> =
+        const { std::cell::Cell::new(None) };
+}
+
+thread_local! {
+    /// The faces an Inset about to start works on.
+    static INSET_START: std::cell::RefCell<Option<Vec<usize>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+thread_local! {
+    /// What Edit mode should have picked next on a shape: the points of
+    /// the faces a tool just made.
+    static PICK_NEXT: std::cell::RefCell<Option<(ElementId, Vec<u32>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// After this edit, these points of shape `id` are the ones picked.
+pub fn set_pick_next(id: ElementId, vs: Vec<u32>) {
+    PICK_NEXT.with(|k| *k.borrow_mut() = Some((id, vs)));
+}
+
+pub fn take_pick_next() -> Option<(ElementId, Vec<u32>)> {
+    PICK_NEXT.with(|k| k.borrow_mut().take())
+}
+
+/// The Inset about to start works on these faces of the selected shape.
+pub fn set_inset_start(faces: Vec<usize>) {
+    INSET_START.with(|k| *k.borrow_mut() = Some(faces));
+}
+
+pub fn take_inset_start() -> Option<Vec<usize>> {
+    INSET_START.with(|k| k.borrow_mut().take())
+}
+
+/// The faces of shape `id` picked whole in Edit mode: every corner of
+/// each is among the picked points.
+pub fn whole_faces(model: &Model, id: ElementId) -> Vec<usize> {
+    let (Some(ElementKind::FreeMesh(m)), Some(picked)) =
+        (model.get(id).map(|e| &e.kind), mesh_pick(id))
+    else {
+        return vec![];
+    };
+    (0..m.mesh.faces.len())
+        .filter(|f| m.mesh.faces[*f].iter().all(|v| picked.contains(v)))
+        .collect()
+}
+
+thread_local! {
+    /// The handle as last drawn, in the pane it was drawn in: a press on
+    /// it is the handle's, and the view must not start a selection box
+    /// there (MU86: its arrows stand out past the shape).
+    static HANDLE_SHOWN: std::cell::RefCell<Vec<(HandlePart, Vec<Pos2>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Is `p` on a part of the handle as it was last drawn?
+pub fn handle_covers(p: Pos2) -> bool {
+    HANDLE_SHOWN.with(|h| handle_hit(&h.borrow(), p).is_some())
+}
+
+/// No handle is shown any more.
+pub fn forget_handle() {
+    HANDLE_SHOWN.with(|h| h.borrow_mut().clear());
+}
+
+/// The wires of shape `id`, as Edit mode draws them, for a view to draw
+/// while a tool runs on it: the edges between faces in one plane have no
+/// line in the solid, and went missing during a move (MU86).
+pub fn draw_edit_wires(
+    model: &Model,
+    id: ElementId,
+    painter: &Painter,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+) {
+    let Some(ElementKind::FreeMesh(m)) = model.get(id).map(|e| &e.kind) else {
+        return;
+    };
+    let base = m.origin + DVec3::Z * elevation(model, m.level);
+    let ink = Stroke::new(edit_display().0, model_line(painter.ctx()));
+    for (a, b) in mesh_edges(&m.mesh) {
+        let p = |i: u32| project(base + m.to_model(m.mesh.vertices[i as usize]));
+        if let (Some(pa), Some(pb)) = (p(a), p(b)) {
+            painter.line_segment([pa, pb], ink);
+        }
+    }
+}
+
+/// The edit about to start was asked for by the handle.
+pub fn set_handle_start(start: HandleStart) {
+    HANDLE_START.with(|k| k.set(Some(start)));
+}
+
+pub fn take_handle_start() -> Option<HandleStart> {
+    HANDLE_START.with(|k| k.take())
+}
+
+/// The handle's parts on screen, at the middle `c` of what is picked,
+/// the same size at any zoom: the points of each as [`draw_handle`] and
+/// [`handle_hit`] read them. `full` adds the arcs and the cubes (an
+/// outline's corners only move). A part seen end on or edge on is left
+/// out: there is nothing of it to take hold of.
+pub fn handle_parts(
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+    c: DVec3,
+    full: bool,
+) -> Vec<(HandlePart, Vec<Pos2>)> {
+    use creabim_core::Axis;
+    let Some(c2) = project(c) else {
+        return vec![];
+    };
+    // how many pixels a metre along each axis is, at the middle
+    let px = |a: Axis| project(c + a.unit()).map_or(0.0, |q| q.distance(c2));
+    let most = Axis::ALL.iter().map(|a| px(*a)).fold(0.0f32, f32::max);
+    if most < 1e-3 {
+        return vec![];
+    }
+    let seen = |a: Axis| px(a) >= most * 0.2;
+    // a point `d` pixels out along `a`
+    let out = |a: Axis, d: f32| project(c + a.unit() * (d / px(a)) as f64);
+    // a point `i` pixels along `a` and `j` along `b`
+    let at = |a: Axis, i: f32, b: Axis, j: f32| {
+        project(c + a.unit() * (i / px(a)) as f64 + b.unit() * (j / px(b)) as f64)
+    };
+    let pair = |n: Axis| match n {
+        Axis::X => (Axis::Y, Axis::Z),
+        Axis::Y => (Axis::Z, Axis::X),
+        Axis::Z => (Axis::X, Axis::Y),
+    };
+    let mut parts = vec![];
+    for n in Axis::ALL {
+        // the plane square to `n`, if it is not seen edge on
+        let (a, b) = pair(n);
+        if !(seen(a) && seen(b)) {
+            continue;
+        }
+        let (Some(ta), Some(tb)) = (out(a, 40.0), out(b, 40.0)) else {
+            continue;
+        };
+        let (ua, ub) = ((ta - c2).normalized(), (tb - c2).normalized());
+        if (ua.x * ub.y - ua.y * ub.x).abs() < 0.3 {
+            continue;
+        }
+        if full {
+            let arc: Option<Vec<Pos2>> = (0..=16)
+                .map(|k| {
+                    let t = (12.0 + 66.0 * k as f32 / 16.0).to_radians();
+                    at(a, 58.0 * t.cos(), b, 58.0 * t.sin())
+                })
+                .collect();
+            if let Some(arc) = arc {
+                parts.push((HandlePart::Arc(n), arc));
+            }
+        }
+        let square: Option<Vec<Pos2>> = [(18.0, 18.0), (33.0, 18.0), (33.0, 33.0), (18.0, 33.0)]
+            .iter()
+            .map(|(i, j)| at(a, *i, b, *j))
+            .collect();
+        if let Some(square) = square {
+            parts.push((HandlePart::Plane(n), square));
+        }
+    }
+    for a in Axis::ALL {
+        if !seen(a) {
+            continue;
+        }
+        if let (Some(from), Some(neck), Some(tip)) = (out(a, 12.0), out(a, 66.0), out(a, 84.0)) {
+            parts.push((HandlePart::Arrow(a), vec![from, neck, tip]));
+        }
+        if full {
+            if let Some(at) = out(a, 40.0) {
+                parts.push((HandlePart::Cube(a), vec![at]));
+            }
+        }
+    }
+    parts.push((HandlePart::Middle, vec![c2]));
+    parts
+}
+
+/// The part of the handle under `p`, if one is. The middle is asked
+/// first, then the cubes, the squares, the arrows and the arcs: each is a
+/// target some 18 px across (MU85: 7 px each side of a thin line was all
+/// the mouse could take).
+pub fn handle_hit(parts: &[(HandlePart, Vec<Pos2>)], p: Pos2) -> Option<HandlePart> {
+    let to_segment = |a: Pos2, b: Pos2| {
+        let ab = b - a;
+        let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+        (a + ab * t).distance(p)
+    };
+    let inside = |q: &[Pos2]| {
+        let mut sign = 0.0f32;
+        for i in 0..q.len() {
+            let (a, b) = (q[i], q[(i + 1) % q.len()]);
+            let cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+            if cross != 0.0 {
+                if sign != 0.0 && cross.signum() != sign {
+                    return false;
+                }
+                sign = cross.signum();
+            }
+        }
+        true
+    };
+    let rank = |part: &HandlePart| match part {
+        HandlePart::Middle => 0,
+        HandlePart::Cube(_) => 1,
+        HandlePart::Plane(_) => 2,
+        HandlePart::Arrow(_) => 3,
+        HandlePart::Arc(_) => 4,
+    };
+    parts
+        .iter()
+        .filter(|(part, pts)| match part {
+            HandlePart::Middle => pts[0].distance(p) <= 10.0,
+            HandlePart::Cube(_) => pts[0].distance(p) <= 11.0,
+            HandlePart::Plane(_) => inside(pts),
+            HandlePart::Arrow(_) => to_segment(pts[0], pts[2]) <= 9.0,
+            HandlePart::Arc(_) => pts.windows(2).any(|w| to_segment(w[0], w[1]) <= 9.0),
+        })
+        .min_by_key(|(part, _)| rank(part))
+        .map(|(part, _)| *part)
+}
+
+/// Draw the handle: `hot` is the part under the pointer, which grows.
+fn draw_handle(painter: &Painter, parts: &[(HandlePart, Vec<Pos2>)], hot: Option<HandlePart>) {
+    let light = Color32::from_white_alpha(190);
+    for (part, pts) in parts {
+        let lit = hot == Some(*part);
+        let w = if lit { 4.5 } else { 3.0 };
+        match part {
+            HandlePart::Arc(a) => {
+                let colour = crate::modal::axis_colour(*a);
+                painter.add(egui::Shape::line(pts.clone(), Stroke::new(w + 2.5, light)));
+                painter.add(egui::Shape::line(pts.clone(), Stroke::new(w, colour)));
+            }
+            HandlePart::Plane(n) => {
+                let colour = crate::modal::axis_colour(*n);
+                let fill = colour.gamma_multiply(if lit { 0.85 } else { 0.4 });
+                painter.add(egui::Shape::convex_polygon(
+                    pts.clone(),
+                    fill,
+                    Stroke::new(1.4, colour),
+                ));
+            }
+            HandlePart::Arrow(a) => {
+                let colour = crate::modal::axis_colour(*a);
+                let (from, neck, tip) = (pts[0], pts[1], pts[2]);
+                painter.line_segment([from, neck], Stroke::new(w + 2.5, light));
+                painter.line_segment([from, neck], Stroke::new(w, colour));
+                let dir = (tip - neck).normalized();
+                let side = dir.rot90() * if lit { 8.5 } else { 7.0 };
+                painter.add(egui::Shape::convex_polygon(
+                    vec![tip, neck + side, neck - side],
+                    colour,
+                    Stroke::new(1.2, light),
+                ));
+            }
+            HandlePart::Cube(a) => {
+                let colour = crate::modal::axis_colour(*a);
+                let r = Rect::from_center_size(pts[0], Vec2::splat(if lit { 16.0 } else { 13.0 }));
+                painter.rect_filled(r.expand(1.6), 2.0, light);
+                painter.rect_filled(r, 1.5, colour);
+            }
+            HandlePart::Middle => {
+                let r = if lit { 8.5 } else { 7.0 };
+                painter.circle_filled(pts[0], r, Color32::WHITE);
+                painter.circle_stroke(pts[0], r, Stroke::new(1.6, Color32::from_gray(40)));
+            }
+        }
+    }
+}
+
 thread_local! {
     /// The mass vertices picked in Edit mode, for Move, Rotate and Scale.
     static MESH_PICK: std::cell::RefCell<Option<(ElementId, Vec<u32>)>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// An outline, and its corners picked in Edit mode.
+type CornerPick = (ElementId, Vec<(Ring, usize)>);
+
+thread_local! {
+    /// The outline corners picked in Edit mode, for Move.
+    static CORNER_PICK: std::cell::RefCell<Option<CornerPick>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The corners picked on outline `id` in Edit mode, if any.
+pub fn corner_pick(id: ElementId) -> Option<Vec<(Ring, usize)>> {
+    CORNER_PICK.with(|p| {
+        p.borrow()
+            .as_ref()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, c)| c.clone())
+    })
 }
 
 /// The vertices picked on mass `id` in Edit mode, if any.
@@ -2110,6 +3365,42 @@ pub fn mesh_pick(id: ElementId) -> Option<Vec<u32>> {
             .filter(|(i, v)| *i == id && !v.is_empty())
             .map(|(_, v)| v.clone())
     })
+}
+
+/// L in Edit mode: the picks on a mass grow to the whole pieces they are
+/// in. Returns what to say, or none if nothing is picked on a mass.
+pub fn pick_linked(doc: &Document, grips: &mut GripSel) -> Option<String> {
+    let id = grips.id?;
+    let ElementKind::FreeMesh(m) = &doc.model().get(id)?.kind else {
+        return None;
+    };
+    if grips.mesh.is_empty() {
+        return Some(
+            "Pick a point, an edge or a face first: L then takes the whole piece it belongs to."
+                .into(),
+        );
+    }
+    let piece = m.mesh.linked(&grips.mesh);
+    let pieces = m.mesh.pieces().len();
+    grips.pick_mesh(&[], false);
+    grips.pick_mesh(&piece, false);
+    Some(format!(
+        "{} points picked, of {pieces} {} in this shape: G or M moves them, R turns, S scales.",
+        piece.len(),
+        if pieces == 1 { "piece" } else { "pieces" }
+    ))
+}
+
+impl Drag {
+    /// The elements the drag changes.
+    pub fn ids(&self) -> Vec<ElementId> {
+        self.edit.originals().iter().map(|e| e.id).collect()
+    }
+
+    /// Has it changed anything yet?
+    pub fn applied(&self) -> bool {
+        self.edit.applied()
+    }
 }
 
 impl GripSel {
@@ -2140,6 +3431,7 @@ impl GripSel {
     /// Drop the picks, and any box or menu. The last click is kept, so a
     /// double-click still counts while this runs every frame.
     pub fn clear(&mut self) {
+        self.by_edge = false;
         self.corners.clear();
         self.holes.clear();
         self.mesh.clear();
@@ -2153,7 +3445,6 @@ impl GripSel {
         if self.id != id {
             self.clear();
             self.last_tap = None;
-            self.palette = None;
             self.id = id;
         }
     }
@@ -2165,6 +3456,7 @@ impl GripSel {
     /// Pick corner `i` of `ring`: only it, or with `add` (Shift) in or out
     /// of the picks.
     pub fn pick(&mut self, ring: Ring, i: usize, add: bool) {
+        self.by_edge = false;
         if add {
             if let Some(k) = self.corners.iter().position(|c| *c == (ring, i)) {
                 self.corners.remove(k);
@@ -2175,6 +3467,58 @@ impl GripSel {
             self.corners = vec![(ring, i)];
             self.holes.clear();
         }
+    }
+
+    /// Pick edge `i` of `ring`, an outline of `n` corners: its two ends.
+    /// Only them, or with `add` (Shift) in, or out if both were in.
+    pub fn pick_edge(&mut self, ring: Ring, i: usize, n: usize, add: bool) {
+        let ends = [(ring, i % n.max(1)), (ring, (i + 1) % n.max(1))];
+        self.by_edge = !add;
+        if !add {
+            self.corners = ends.to_vec();
+            self.holes.clear();
+        } else if ends.iter().all(|c| self.corners.contains(c)) {
+            self.corners.retain(|c| !ends.contains(c));
+        } else {
+            for c in ends {
+                if !self.corners.contains(&c) {
+                    self.corners.push(c);
+                }
+            }
+        }
+    }
+
+    /// Is edge `i` of `ring` picked: both its ends?
+    pub fn edge_picked(&self, ring: Ring, i: usize, n: usize) -> bool {
+        n >= 2 && self.picked(ring, i % n) && self.picked(ring, (i + 1) % n)
+    }
+
+    /// The one edge picked, if what is picked is just an edge: two
+    /// corners next to each other on `ring`, an outline of `n` corners.
+    pub fn one_edge(&self, n: impl Fn(Ring) -> usize) -> Option<(Ring, usize)> {
+        let [(ra, a), (rb, b)] = self.corners.as_slice() else {
+            return None;
+        };
+        let n = n(*ra);
+        if ra != rb || n < 2 {
+            return None;
+        }
+        if (a + 1) % n == *b {
+            Some((*ra, *a))
+        } else if (b + 1) % n == *a {
+            Some((*ra, *b))
+        } else {
+            None
+        }
+    }
+
+    /// Tell Move what is picked on the element being edited (`edit`), so
+    /// M moves those corners and not the whole outline (MU46).
+    pub fn publish(&self, edit: Option<ElementId>) {
+        let picked = edit
+            .filter(|id| self.id == Some(*id) && !self.corners.is_empty())
+            .map(|id| (id, self.corners.clone()));
+        CORNER_PICK.with(|p| *p.borrow_mut() = picked);
     }
 
     /// Pick hole `k`, as [`GripSel::pick`] does a corner.
@@ -2220,7 +3564,20 @@ pub fn delete_picked(
                 .into(),
         );
     }
-    let r = if sel.holes.is_empty() {
+    let edge = sel
+        .by_edge
+        .then(|| {
+            let model = doc.model();
+            let e = model.get(id)?;
+            sel.one_edge(|ring| {
+                crate::editmode::ring_of(model, e, ring).map_or(0, |r| r.corners.len())
+            })
+            .filter(|_| matches!(e.kind, ElementKind::Sketch(_)))
+        })
+        .flatten();
+    let r = if let (Some((Ring::Outline, i)), true) = (edge, sel.holes.is_empty()) {
+        crate::editmode::remove_edge(doc, id, i)
+    } else if sel.holes.is_empty() {
         crate::editmode::remove_corners(doc, id, &sel.corners)
     } else {
         crate::editmode::remove_holes(doc, id, &sel.holes)
@@ -2229,6 +3586,17 @@ pub fn delete_picked(
         sel.clear();
     }
     r
+}
+
+/// The model's own line in Edit mode: dark on a light view, light on a
+/// dark one, so what is not picked reads at any theme and the orange
+/// still means picked (MU46, MU74).
+fn model_line(ctx: &egui::Context) -> Color32 {
+    if ctx.global_style().visuals.dark_mode {
+        Color32::from_gray(225)
+    } else {
+        Color32::from_gray(20)
+    }
 }
 
 fn interaction_ink() -> Color32 {
@@ -2251,14 +3619,27 @@ fn note(painter: &Painter, at: Pos2, text: &str, color: Color32) {
         pos.y = at.y - galley.size().y - 18.0;
     }
     let rect = Rect::from_min_size(pos, galley.size()).expand2(Vec2::new(5.0, 3.0));
+    // the theme's raised surface, as the live pill (MU75: white with the
+    // accent on it, unreadable and glaring on a dark theme)
+    let pill = PillLook::of(&crate::theme::Palette::of(painter.ctx()));
+    let p = crate::theme::Palette::of(painter.ctx());
+    let ink = crate::theme::legible(
+        color,
+        pill.ground,
+        if p.dark {
+            Color32::WHITE
+        } else {
+            Color32::BLACK
+        },
+    );
     painter.rect(
         rect,
         3.0,
-        Color32::from_rgba_unmultiplied(255, 255, 255, 235),
-        Stroke::new(1.0, color.gamma_multiply(0.6)),
+        pill.ground,
+        Stroke::new(1.0, pill.line),
         egui::StrokeKind::Middle,
     );
-    painter.galley(pos, galley, color);
+    painter.galley_with_override_text_color(pos, galley, ink);
 }
 
 /// Under this many pixels across on screen, a wall shows its thickness
@@ -2317,9 +3698,16 @@ pub fn values(e: &Element) -> Vec<(&'static str, f64)> {
             out
         }
         ElementKind::Site(s) => match s.form {
-            creabim_core::SiteForm::Plant { canopy, height, .. } => {
-                vec![("Canopy", canopy), ("Height", height)]
-            }
+            creabim_core::SiteForm::Plant { canopy, height, .. } => match s.tree_shape() {
+                Some(t) => {
+                    let mut v = vec![("Height", height), ("Clear trunk", t.crown_base)];
+                    for (i, name) in REACH_NAMES.iter().enumerate() {
+                        v.push((*name, t.radius_towards(canopy, t.side(i))));
+                    }
+                    v
+                }
+                None => vec![("Canopy", canopy), ("Height", height)],
+            },
             _ => vec![],
         },
         _ => vec![],
@@ -2517,8 +3905,10 @@ pub fn grip_style() -> GripStyle {
     }
 }
 
-/// An object's turn grip: a round handle with a curved arrow, on a thin
-/// leader from `front` (its front edge on screen).
+/// The turn grip: a round dot the size of a square grip, white in a ring of
+/// the grip colour (in a halo while held), on a thin leader from `front` (an
+/// object's front edge on screen). Squares stretch, dots turn (owner, MU142:
+/// the ring with an arrow in it read as a ring with a square).
 fn draw_turn_grip(
     painter: &Painter,
     c: Pos2,
@@ -2531,52 +3921,28 @@ fn draw_turn_grip(
     } else {
         look.accent
     };
-    let r = match state {
-        GripState::Hover | GripState::Held => 9.5,
-        _ => 8.0,
-    };
+    let r = TURN_DOT
+        + match state {
+            GripState::Hover => 2.0,
+            GripState::Held => 1.0,
+            _ => 0.0,
+        };
+    if state == GripState::Held {
+        painter.circle_filled(c, 12.0, look.accent.gamma_multiply(0.18));
+    }
     if let Some(f) = front {
         if f.distance(c) > r + 2.0 {
             let tip = c + (f - c).normalized() * r;
             painter.line_segment([f, tip], Stroke::new(1.0, accent.gamma_multiply(0.7)));
         }
     }
-    let fill = if state == GripState::Held {
-        accent
-    } else {
-        Color32::WHITE
-    };
-    let ink = if state == GripState::Held {
-        Color32::WHITE
-    } else {
-        accent
-    };
-    painter.circle(c, r, fill, Stroke::new(1.5, accent));
-    // three quarters of a circle and an arrowhead at its end
-    let a = r * 0.5;
-    let steps = 14;
-    let (from, to) = (-0.5_f32, 4.2_f32);
-    let pts: Vec<Pos2> = (0..=steps)
-        .map(|k| {
-            let t = from + (to - from) * k as f32 / steps as f32;
-            c + Vec2::new(t.cos(), -t.sin()) * a
-        })
-        .collect();
-    painter.add(egui::Shape::line(pts.clone(), Stroke::new(1.5, ink)));
-    let end = *pts.last().unwrap();
-    let along = (end - pts[pts.len() - 2]).normalized();
-    let side = along.rot90();
-    let head = 3.0;
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            end + along * head,
-            end - along * 1.0 + side * head,
-            end - along * 1.0 - side * head,
-        ],
-        ink,
-        Stroke::NONE,
-    ));
+    // white while held too, in its halo, as a held square is (MU142: the
+    // dot filled solid while a square stays white)
+    painter.circle(c, r, Color32::WHITE, Stroke::new(2.0, accent));
 }
+
+/// The turn dot's radius at rest: as wide as a square grip (8 px).
+pub(crate) const TURN_DOT: f32 = 4.5;
 
 fn draw_grip(
     painter: &Painter,
@@ -2832,134 +4198,6 @@ fn edge_at(model: &Model, e: &Element, input: &PaneInput, p: Pos2) -> Option<(Ri
     best.map(|(_, r, i, at)| (r, i, at))
 }
 
-/// The edge palette (3.6) of selected element `e` in this pane: after the
-/// pointer rests on an edge of its outline, three choices by the pointer,
-/// which ask the app through `sel.request`. It stays while the pointer is
-/// on it. `corner`: a corner grip is under the pointer, which wins.
-/// Returns a status line when it shows.
-fn edge_palette(
-    model: &Model,
-    e: &Element,
-    ctx: &egui::Context,
-    response: &egui::Response,
-    input: &PaneInput,
-    sel: &mut GripSel,
-    corner: bool,
-) -> Option<String> {
-    let pane = response.id;
-    // the palette covers the pane, so the pane itself no longer hovers
-    let pointer = ctx.input(|i| i.pointer.hover_pos());
-    let now = ctx.input(|i| i.time);
-    let mine = sel.palette.filter(|p| p.pane == pane);
-    let on_palette = |p: &EdgePalette| {
-        p.rect
-            .zip(pointer)
-            .is_some_and(|(r, at)| r.expand(10.0).contains(at))
-    };
-    match mine {
-        Some(p) if on_palette(&p) => {}
-        _ => {
-            let edge = pointer
-                .filter(|p| response.rect.contains(*p) && !corner)
-                .and_then(|p| Some((p, edge_at(model, e, input, p)?)));
-            sel.palette = match (edge, mine) {
-                (Some((_, (ring, i, _))), Some(p)) if p.ring == ring && p.i == i => Some(p),
-                (Some((pos, (ring, i, at))), _) => Some(EdgePalette {
-                    pane,
-                    ring,
-                    i,
-                    at,
-                    pos,
-                    since: now,
-                    rect: None,
-                }),
-                // another pane's stays for that pane
-                (None, None) => sel.palette.filter(|p| p.pane != pane),
-                (None, Some(_)) => None,
-            };
-        }
-    }
-    let mut p = sel.palette.filter(|p| p.pane == pane)?;
-    if now - p.since < PALETTE_REST {
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(PALETTE_REST));
-        return None;
-    }
-    let info = crate::editmode::ring_of(model, e, p.ring);
-    let shown = handles_in(model, e.id, None, true);
-    let can_edge = shown.iter().any(|h| {
-        h.kind
-            == HandleKind::Edge {
-                ring: p.ring,
-                i: p.i,
-            }
-    });
-    let normal = info.as_ref().map_or(DVec3::Z, |r| r.normal);
-    let can_all = creabim_core::offset::offset(e, 0.1, normal).is_some();
-    let can_insert = info.as_ref().is_some_and(|r| r.reshapes);
-    let mut asked = None;
-    let area = egui::Area::new(egui::Id::new(("edge-palette", pane)))
-        .order(egui::Order::Foreground)
-        .fixed_pos(p.pos + Vec2::new(14.0, 14.0))
-        .show(ctx, |ui| {
-            egui::Frame::menu(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let mut item = |ui: &mut egui::Ui, on: bool, text: &str, tip: &str, r| {
-                        let b = ui
-                            .add_enabled(on, egui::Button::new(text).small())
-                            .on_hover_text(tip)
-                            .on_disabled_hover_text(tip);
-                        if b.clicked() {
-                            asked = Some(r);
-                        }
-                    };
-                    item(
-                        ui,
-                        can_edge,
-                        "Offset edge",
-                        "Push this edge out or pull it in, square to itself: move the pointer (it snaps) or type a distance",
-                        GripRequest::OffsetEdge(p.ring, p.i),
-                    );
-                    item(
-                        ui,
-                        can_all,
-                        "Offset all",
-                        "Grow or shrink the whole outline by one distance: the pointer's side, or a typed distance",
-                        GripRequest::OffsetAll,
-                    );
-                    item(
-                        ui,
-                        can_insert,
-                        "Insert point",
-                        "Add a corner here on the edge, then move it with the pointer or by a typed distance",
-                        GripRequest::InsertPoint(p.ring, p.i, p.at),
-                    );
-                });
-            });
-        });
-    p.rect = Some(area.response.rect);
-    sel.palette = Some(p);
-    if let Some(r) = asked {
-        sel.request = Some(r);
-        sel.palette = None;
-        // typed distances go to the edit that starts, not to the button
-        crate::modal::unfocus_soon(ctx);
-    }
-    // the edge it is for, traced
-    if let Some(r) = info {
-        let n = r.corners.len();
-        if n >= 2 {
-            let (a, b) = (r.corners[p.i % n], r.corners[(p.i + 1) % n]);
-            if let (Some(a), Some(b)) = ((input.project)(a), (input.project)(b)) {
-                response.ctx.layer_painter(response.layer_id).line_segment(
-                    [a, b],
-                    Stroke::new(3.0, interaction_ink().gamma_multiply(0.6)),
-                );
-            }
-        }
-    }
-    Some("Edge: Offset edge pushes it square to itself, Offset all grows the outline, Insert point adds a corner. Or drag its grip.".into())
-}
-
 /// In Edit mode, the outlines being edited, traced so a hole inside a
 /// slab or a shaft inside walls reads clearly; picked holes filled. A
 /// `broken` shape is drawn red over them.
@@ -2969,7 +4207,8 @@ fn draw_rings(
     painter: &Painter,
     input: &PaneInput,
     sel: &GripSel,
-    color: Color32,
+    (color, ink): (Color32, Color32),
+    hover: Option<(Ring, usize)>,
 ) {
     for (r, pts) in screen_rings(model, e, input) {
         if pts.len() < 2 {
@@ -2979,14 +4218,21 @@ fn draw_rings(
         let picked = matches!(r.ring, Ring::Hole(k) if sel.holes.contains(&k));
         if picked && n >= 3 {
             // a hole may be concave: a fan from its middle is only a tint
-            painter.add(egui::Shape::closed_line(
-                pts.clone(),
+            crate::planview::ring_edges(
+                painter,
+                &pts,
                 Stroke::new(4.0, color.gamma_multiply(0.35)),
-            ));
+            );
         }
         let edges = if r.closed { n } else { n - 1 };
-        let width = if picked { 2.6 } else { 1.6 };
         for i in 0..edges {
+            let on = sel.edge_picked(r.ring, i, n);
+            let (width, color) = match (on, hover == Some((r.ring, i))) {
+                (true, _) => (3.4, color),
+                (false, true) => (3.4, ink),
+                _ if picked => (2.6, color),
+                _ => (1.8, ink),
+            };
             // a slab's bent edge is traced along its arc
             let arc = match (&e.kind, r.ring) {
                 (ElementKind::Slab(s), Ring::Outline) if s.bulge(i) != 0.0 => {
@@ -2994,6 +4240,21 @@ fn draw_rings(
                     let z = r.corners[i].z;
                     (0..=16)
                         .map(|k| (input.project)(c.at(k as f64 / 16.0).extend(z)))
+                        .collect::<Option<Vec<Pos2>>>()
+                }
+                // and a stair's bent straight along its arc (MU103: a
+                // selected curved stair had a straight line from foot
+                // to head across it)
+                (ElementKind::Stair(st), Ring::Outline)
+                    if i + 1 < st.line.len() && st.bend(i) != 0.0 =>
+                {
+                    let (a, b) = (st.to_plan(st.line[i]), st.to_plan(st.line[i + 1]));
+                    let z = r.corners[i].z;
+                    let mut pts = vec![a];
+                    pts.extend(creabim_core::members::arc_between(a, b, st.bend(i)));
+                    pts.push(b);
+                    pts.into_iter()
+                        .map(|p| (input.project)(p.extend(z)))
                         .collect::<Option<Vec<Pos2>>>()
                 }
                 _ => None,
@@ -3039,7 +4300,9 @@ fn live_lengths(model: &Model, e: &Element, kind: HandleKind, grab: DVec3, now: 
             parts.join(" · ")
         }
         HandleKind::Edge { .. } => format!("offset {}", len((now - grab).length())),
-        HandleKind::Ring { .. } => format!("moved {}", len((now - grab).length())),
+        HandleKind::Ring { .. } | HandleKind::EdgeMove { .. } => {
+            format!("moved {}", len((now - grab).length()))
+        }
         _ => len((now - grab).length()),
     }
 }
@@ -3058,12 +4321,15 @@ fn grip_menu(
     let reshapes = |ring| crate::editmode::ring_of(model, &e, ring).is_some_and(|r| r.reshapes);
     let slab_bulge = |ring: Ring, i: usize| match (&e.kind, ring) {
         (ElementKind::Slab(s), Ring::Outline) => Some(s.bulge(i)),
+        (ElementKind::Stair(s), Ring::Outline) if s.line.len() >= 2 => Some(s.bend(i)),
         _ => None,
     };
     #[derive(Clone, Copy, PartialEq)]
     enum Act {
         RemoveCorners,
         AddCorner(Ring, usize, DVec3),
+        OffsetEdge(Ring, usize),
+        OffsetAll,
         Arc(usize, bool),
         RemoveHole(usize),
         MoveHole(usize),
@@ -3073,17 +4339,34 @@ fn grip_menu(
         ResetLayer(HandleKind),
         ResetLayers,
         DrawBy(u8),
+        /// A car park's bay at this place made a kind; none lets the
+        /// layout decide it again.
+        Bay(DVec2, Option<creabim_core::carpark::BayKind>),
+        BaysBack,
+        /// The strip along an edge of a car park's outline; none takes
+        /// it away.
+        Strip(usize, Option<creabim_core::carpark::StripUse>),
     }
+    let car_park = match &e.kind {
+        ElementKind::Site(s) => s.as_car_park().cloned(),
+        _ => None,
+    };
     let edited_layers = match &e.kind {
         ElementKind::Wall(w) => !w.layer_ends.is_empty(),
         ElementKind::Slab(s) => !s.layer_edges.is_empty(),
         ElementKind::Roof(r) => !r.layer_edges.is_empty(),
+        ElementKind::Stair(s) => !s.pieces.is_empty(),
         _ => false,
+    };
+    let all_text = if matches!(e.kind, ElementKind::Stair(_)) {
+        "Reset all pieces"
+    } else {
+        "Reset all layers"
     };
     let in_layers = layers() && has_layers(model, id);
     let mut act = None;
     let area = egui::Area::new(egui::Id::new(("grip-menu", m.pane)))
-        .order(egui::Order::Foreground)
+        .order(crate::app::overlay_order())
         .fixed_pos(m.at)
         .show(ui_ctx, |ui| {
             egui::Frame::menu(ui.style()).show(ui, |ui| {
@@ -3114,13 +4397,15 @@ fn grip_menu(
                             "Add corner here",
                             Act::AddCorner(ring, i, at),
                         );
+                        item(ui, reshapes(ring), "Offset edge", Act::OffsetEdge(ring, i));
+                        item(ui, reshapes(ring), "Offset all", Act::OffsetAll);
                         match slab_bulge(ring, i) {
                             Some(b) if b != 0.0 => item(ui, true, "Straighten", Act::Arc(i, false)),
                             Some(_) => item(ui, true, "Make arc", Act::Arc(i, true)),
                             None => {
                                 ui.add_enabled(
                                     false,
-                                    egui::Button::new("Make arc (slab outlines)").frame(false),
+                                    egui::Button::new("Make arc (slabs, stairs)").frame(false),
                                 );
                             }
                         }
@@ -3128,21 +4413,60 @@ fn grip_menu(
                             ui.separator();
                             item(ui, true, "Remove hole", Act::RemoveHole(k));
                         }
+                        // a car park's outline: a strip along this edge
+                        if let (Ring::Outline, Some(c)) = (ring, &car_park) {
+                            ui.separator();
+                            let now = c.strips.iter().find(|s| s.edge == i).map(|s| s.what);
+                            for u in creabim_core::carpark::StripUse::ALL {
+                                item(
+                                    ui,
+                                    now != Some(u),
+                                    &format!("Edge strip: {}", u.label()),
+                                    Act::Strip(i, Some(u)),
+                                );
+                            }
+                            item(ui, now.is_some(), "No edge strip", Act::Strip(i, None));
+                        }
                     }
                     MenuOn::Hole(k) => {
                         item(ui, true, "Remove hole", Act::RemoveHole(k));
                         item(ui, true, "Move hole", Act::MoveHole(k));
                     }
+                    MenuOn::Bay(at) => {
+                        use creabim_core::carpark::BayKind as B;
+                        for k in [B::Standard, B::Ev, B::Parent, B::Motorbike, B::Delivery] {
+                            item(
+                                ui,
+                                true,
+                                &format!("Make it: {}", k.label()),
+                                Act::Bay(at, Some(k)),
+                            );
+                        }
+                        ui.separator();
+                        item(ui, true, "Leave this bay out", Act::Bay(at, Some(B::Out)));
+                        item(ui, true, "Island here", Act::Bay(at, Some(B::Island)));
+                        ui.separator();
+                        let near = car_park.as_ref().is_some_and(|c| {
+                            c.changes
+                                .iter()
+                                .any(|x| x.at.distance(at) <= c.bay_width.max(c.bay_length) / 2.0)
+                        });
+                        item(ui, near, "Let the layout decide it", Act::Bay(at, None));
+                        ui.separator();
+                        item(ui, true, "Finish editing   Esc", Act::Finish);
+                    }
                     MenuOn::Layer(k) => {
                         let moved = edited_end(Some(&e), k);
                         let text = match k {
+                            HandleKind::StairFlight { .. } => "Reset flight",
+                            HandleKind::StairLanding { .. } => "Reset landing",
                             HandleKind::LayerEdge { .. } => "Reset layer edge",
                             HandleKind::LayerHeight { top: false, .. } => "Reset layer bottom",
                             HandleKind::LayerHeight { top: true, .. } => "Reset layer top",
                             _ => "Reset layer end",
                         };
                         item(ui, moved, text, Act::ResetLayer(k));
-                        item(ui, edited_layers, "Reset all layers", Act::ResetLayers);
+                        item(ui, edited_layers, all_text, Act::ResetLayers);
                         if let (HandleKind::LayerEnd { layer, .. }, ElementKind::Wall(w)) =
                             (k, &e.kind)
                         {
@@ -3160,11 +4484,20 @@ fn grip_menu(
                         item(ui, true, "Finish editing   Esc", Act::Finish);
                     }
                     MenuOn::Blank if in_layers => {
-                        item(ui, edited_layers, "Reset all layers", Act::ResetLayers);
+                        item(ui, edited_layers, all_text, Act::ResetLayers);
                         ui.separator();
                         item(ui, true, "Finish editing   Esc", Act::Finish);
                     }
                     MenuOn::Blank => {
+                        if let Some(c) = &car_park {
+                            let out = c
+                                .changes
+                                .iter()
+                                .filter(|x| x.kind == creabim_core::carpark::BayKind::Out)
+                                .count();
+                            item(ui, out > 0, "Put back the bays left out", Act::BaysBack);
+                            ui.separator();
+                        }
                         item(ui, true, "Select all corners", Act::AllCorners);
                         item(ui, !sel.is_empty(), "Deselect corners", Act::Deselect);
                         ui.separator();
@@ -3196,21 +4529,102 @@ fn grip_menu(
             r
         }
         Act::AddCorner(ring, i, at) => crate::editmode::add_corner(doc, id, ring, i, Some(at)),
+        Act::OffsetEdge(ring, i) => {
+            sel.request = Some(GripRequest::OffsetEdge(ring, i));
+            return None;
+        }
+        Act::OffsetAll => {
+            sel.request = Some(GripRequest::OffsetAll);
+            return None;
+        }
         Act::Arc(i, on) => crate::editmode::set_arc(doc, id, i, on),
+        Act::Bay(at, kind) => doc
+            .edit(id, "Change bay", |e| {
+                if let ElementKind::Site(s) = &mut e.kind {
+                    if let creabim_core::SiteForm::Area {
+                        parking: Some(cp), ..
+                    } = &mut s.form
+                    {
+                        cp.change(at, kind);
+                    }
+                }
+            })
+            .map(|_| match kind {
+                Some(k) => format!("Bay: {}.", k.label()),
+                None => "The layout decides that bay again.".into(),
+            })
+            .map_err(|e| e.to_string()),
+        Act::Strip(i, what) => doc
+            .edit(id, "Edge strip", |e| {
+                if let ElementKind::Site(s) = &mut e.kind {
+                    if let creabim_core::SiteForm::Area {
+                        parking: Some(cp), ..
+                    } = &mut s.form
+                    {
+                        use creabim_core::carpark::StripUse as U;
+                        // its width kept when only its use changes
+                        let was = cp.strip_width(i);
+                        let width = |u: U| {
+                            if was > 0.0 {
+                                was
+                            } else {
+                                match u {
+                                    U::Walkway => 2.0,
+                                    U::Planting => 1.5,
+                                    U::Clear => 0.5,
+                                }
+                            }
+                        };
+                        cp.set_strip(i, what.map(|u| (u, width(u))));
+                    }
+                }
+            })
+            .map(|_| match what {
+                Some(u) => format!(
+                    "Edge strip: {}. Drag its inner line to set its width.",
+                    u.label()
+                ),
+                None => "Edge strip taken away.".into(),
+            })
+            .map_err(|e| e.to_string()),
+        Act::BaysBack => doc
+            .edit(id, "Put back bays", |e| {
+                if let ElementKind::Site(s) = &mut e.kind {
+                    if let creabim_core::SiteForm::Area {
+                        parking: Some(cp), ..
+                    } = &mut s.form
+                    {
+                        cp.changes
+                            .retain(|x| x.kind != creabim_core::carpark::BayKind::Out);
+                    }
+                }
+            })
+            .map(|_| "The bays left out are back.".to_string())
+            .map_err(|e| e.to_string()),
         Act::MoveHole(k) => {
             sel.pick_hole(k, false);
             Ok("Drag inside the hole to move it. Esc cancels the drag.".into())
         }
         Act::AllCorners => {
             sel.holes.clear();
-            sel.corners = crate::editmode::rings(doc.model(), &e)
-                .iter()
-                .flat_map(|r| (0..r.corners.len()).map(move |i| (r.ring, i)))
-                .collect();
-            Ok(format!(
-                "{} corners selected: Delete removes them.",
-                sel.corners.len()
-            ))
+            // a shape has points, not corners (MU47: "0 corners selected")
+            if let ElementKind::FreeMesh(m) = &e.kind {
+                let all: Vec<u32> = (0..m.mesh.vertices.len() as u32).collect();
+                sel.pick_mesh(&all, false);
+                Ok(format!(
+                    "{} points picked: G or M moves them, R turns, S scales.",
+                    sel.mesh.len()
+                ))
+            } else {
+                sel.corners = crate::editmode::rings(doc.model(), &e)
+                    .iter()
+                    .flat_map(|r| (0..r.corners.len()).map(move |i| (r.ring, i)))
+                    .collect();
+                Ok(format!(
+                    "{} corners selected: Delete removes them.",
+                    sel.corners.len()
+                ))
+            }
         }
         Act::Deselect => {
             sel.clear();
@@ -3408,6 +4822,7 @@ pub fn interact(
         return false;
     };
     grips.reset(Some(id));
+    *TAP_PANE.lock().unwrap_or_else(|e| e.into_inner()) = Some(response.id);
     if toggle_live(painter.ctx()) {
         *status = Some(if live_on(painter.ctx()) {
             "Live dimensions on: a drag shows the value it changes. D hides them.".into()
@@ -3440,6 +4855,25 @@ pub fn interact(
         .filter(|h| h.constraint.usable(input.look))
         // grips sit on the element: a wall slides by its body
         .filter(|h| h.kind != HandleKind::WallSlide)
+        // an object turns about the upright only, which a section or an
+        // elevation sees end on: its turn grip turned it there by a dial
+        // drawn upright on the view's plane (MU142, owner: "so in 3d it
+        // shows this way?"), where Rotate itself refuses
+        .filter(|h| {
+            !(h.kind == HandleKind::Rotate
+                && turns_upright_only(doc.model(), id)
+                && seen_side_on(input))
+        })
+        .collect();
+    // every face's grip, before the view is cleared of crowded ones: a
+    // face is taken anywhere on it, however close its middle lies to
+    // another's on screen (MU130: seen from above or from far off, the top's
+    // and the bottom's middles meet, one was left out, and a click on that
+    // face picked nothing)
+    let face_grips: Vec<Handle> = shown
+        .iter()
+        .filter(|h| matches!(h.kind, HandleKind::Face(_)))
+        .copied()
         .collect();
     let shown = declutter(shown, input);
     let screen = |h: &Handle| screen_at(h, input);
@@ -3464,6 +4898,54 @@ pub fn interact(
         let t = ((p - pa).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.08, 0.92);
         Some((pa + ab * t).distance(p))
     };
+    // a face of a shape in Edit mode is taken anywhere on it, the one in
+    // front: its dot at rest is gone (MU47, decision 2)
+    let face_of_mesh = |p: Pos2| -> Option<Handle> {
+        let (base, m) = mesh_ends.as_ref()?;
+        let ray = (input.ray)(p)?;
+        let mut best: Option<(f64, usize)> = None;
+        for (f, ring) in m.mesh.faces.iter().enumerate() {
+            let pts: Vec<DVec3> = ring
+                .iter()
+                .map(|v| *base + m.to_model(m.mesh.vertices[*v as usize]))
+                .collect();
+            if pts.len() < 3 {
+                continue;
+            }
+            let mut n = DVec3::ZERO;
+            for i in 0..pts.len() {
+                n += pts[i].cross(pts[(i + 1) % pts.len()]);
+            }
+            let den = ray.d.dot(n);
+            if n.length() < 1e-12 || den.abs() < 1e-12 {
+                continue;
+            }
+            let t = (pts[0] - ray.o).dot(n) / den;
+            let hit = ray.o + ray.d * t;
+            // flattened along the axis the face looks most along
+            let drop = |q: DVec3| {
+                let a = n.abs();
+                if a.x >= a.y && a.x >= a.z {
+                    DVec2::new(q.y, q.z)
+                } else if a.y >= a.z {
+                    DVec2::new(q.z, q.x)
+                } else {
+                    DVec2::new(q.x, q.y)
+                }
+            };
+            let flat: Vec<DVec2> = pts.iter().map(|q| drop(*q)).collect();
+            if creabim_core::polygon::contains(&flat, drop(hit))
+                && best.is_none_or(|(bt, _)| t < bt)
+            {
+                best = Some((t, f));
+            }
+        }
+        let f = best?.1;
+        face_grips
+            .iter()
+            .find(|h| h.kind == HandleKind::Face(f))
+            .copied()
+    };
     let nearest = |p: Pos2| {
         shown
             .iter()
@@ -3480,10 +4962,78 @@ pub fn interact(
                 (a.1 + rank(a.0)).total_cmp(&(b.1 + rank(b.0)))
             })
             .map(|(h, _)| *h)
+            .or_else(|| face_of_mesh(p))
     };
     let element = doc.model().get(id).cloned();
+    // an edge of an outline being edited is taken anywhere along it, to
+    // pick or to drag, when corners are not all that is picked (MU46)
+    let edge_under = |p: Pos2| -> Option<(Ring, usize, DVec3)> {
+        let e = element
+            .as_ref()
+            .filter(|_| edit && matches!(pick(), 0 | 2))?;
+        if nearest(p).is_some() {
+            return None;
+        }
+        let (ring, i, at) = edge_at(doc.model(), e, input, p)?;
+        crate::editmode::ring_of(doc.model(), e, ring)
+            .is_some_and(|r| r.reshapes)
+            .then_some((ring, i, at))
+    };
+    // with Faces on, the inside of a closed outline is its face
+    let face_under = |p: Pos2| -> Option<DVec3> {
+        let e = element.as_ref().filter(|_| edit && pick() == 3)?;
+        if hole_at(doc.model(), e, input, p).is_some() {
+            return None;
+        }
+        let r = crate::editmode::ring_of(doc.model(), e, Ring::Outline)?;
+        let pts: Option<Vec<Pos2>> = r.corners.iter().map(|c| (input.project)(*c)).collect();
+        if !(r.closed && r.reshapes && in_screen_polygon(&pts?, p)) {
+            return None;
+        }
+        (input.ray)(p).and_then(|ray| {
+            Constraint::Plane {
+                point: r.corners[0],
+                normal: r.normal,
+            }
+            .hit(ray)
+        })
+    };
+    let edge_hot = response
+        .hover_pos()
+        .filter(|_| drag.is_none() && !grips.busy())
+        .and_then(edge_under);
+    // selected, not in Edit mode: its outline traced bold in the selection's
+    // colour, as the plans and the section marks show it (MU74: a
+    // one-pixel line in 3D)
+    // kept while a grip is dragged: the model follows the drag (MU75:
+    // thin until the release)
+    if let (false, Some(e)) = (edit, &element) {
+        let a = crate::planview::accent_selected();
+        draw_rings(
+            doc.model(),
+            e,
+            painter,
+            input,
+            &GripSel::default(),
+            (a, a),
+            None,
+        );
+    }
     if let (true, Some(e)) = (edit, &element) {
-        draw_rings(doc.model(), e, painter, input, grips, interaction_ink());
+        draw_rings(
+            doc.model(),
+            e,
+            painter,
+            input,
+            grips,
+            // what is not picked is drawn in the model's own dark line,
+            // so the orange means picked and nothing else (MU46: the
+            // edge under the pointer and the others looked alike)
+            // the model's line in the view's own contrast (MU74: a fixed
+            // near-black, from MU46, vanished on dark themes)
+            (crate::theme::interaction(), model_line(&ctx)),
+            edge_hot.map(|(r, i, _)| (r, i)),
+        );
     }
     if let Some(ElementKind::View(v)) = element.as_ref().map(|e| &e.kind) {
         if let ViewKind::Section {
@@ -3494,10 +5044,75 @@ pub fn interact(
         }
     }
     let pointer = response.hover_pos();
+    // the handle, at the middle of what is picked (MU47, MU85): every
+    // part at once; an outline's corners only move
+    let handle_at: Option<(DVec3, bool)> = (edit && drag.is_none() && !grips.busy())
+        .then(|| match (mesh_ends.as_ref(), element.as_ref()) {
+            (Some((base, m)), _) if !grips.mesh.is_empty() => {
+                let sum: DVec3 = grips
+                    .mesh
+                    .iter()
+                    .filter_map(|v| m.mesh.vertices.get(*v as usize))
+                    .map(|v| *base + m.to_model(*v))
+                    .sum();
+                // one point has nothing to turn or to scale: it moves only
+                Some((sum / grips.mesh.len() as f64, grips.mesh.len() > 1))
+            }
+            (None, Some(e)) if !grips.corners.is_empty() => {
+                let pts: Vec<DVec3> = grips
+                    .corners
+                    .iter()
+                    .filter_map(|(ring, i)| {
+                        crate::editmode::ring_of(doc.model(), e, *ring)?
+                            .corners
+                            .get(*i)
+                            .copied()
+                    })
+                    .collect();
+                (!pts.is_empty()).then(|| (pts.iter().sum::<DVec3>() / pts.len() as f64, false))
+            }
+            _ => None,
+        })
+        .flatten();
+    let handle = handle_at.map(|(c, full)| handle_parts(input.project, c, full));
+    if input.view.is_none() {
+        HANDLE_SHOWN.with(|h| *h.borrow_mut() = handle.clone().unwrap_or_default());
+    }
+    let handle_hot = match (&handle, pointer) {
+        (Some(parts), Some(p)) => handle_hit(parts, p),
+        _ => None,
+    };
+    // the protractor's ring, once resting on the turn dot has lit it: on
+    // the ring the pointer has the turn grip as on the dot (MU142,
+    // decision 10)
+    let turn_dot = shown.iter().find(|h| h.kind == HandleKind::Rotate).copied();
+    let ring = element
+        .as_ref()
+        .filter(|e| ring_lit(response.id) == Some(e.id) && turn_dot.is_some())
+        .and_then(|e| turn_ring(doc.model(), e, input));
+    let on_ring = |p: Pos2| ring.is_some_and(|(c, r)| (p.distance(c) - r).abs() < 9.0);
     let hot = pointer
-        .filter(|_| drag.is_none() && !grips.busy())
-        .and_then(nearest)
+        .filter(|_| drag.is_none() && !grips.busy() && handle_hot.is_none())
+        .and_then(|p| nearest(p).or_else(|| turn_dot.filter(|_| on_ring(p))))
         .map(|h| h.kind);
+    // lit by the dot, kept while the pointer is within the ring
+    if hot == Some(HandleKind::Rotate) {
+        set_ring_lit(Some((id, response.id)));
+    } else if drag.is_none() && ring_lit(response.id) == Some(id) {
+        let inside = match (ring, pointer) {
+            (Some((c, r)), Some(p)) => p.distance(c) < r + 12.0,
+            _ => false,
+        };
+        if !inside {
+            set_ring_lit(None);
+        }
+    }
+    if let (true, Some(e)) = (
+        drag.is_none() && ring_lit(response.id) == Some(id),
+        &element,
+    ) {
+        draw_turn_ring(painter, input, doc.model(), e);
+    }
     let held = drag.as_ref().and_then(|d| d.kind);
     // in Edit mode the "+" shows only on the edge under the pointer
     let hovered_edge = match (edit, pointer, &element) {
@@ -3519,7 +5134,7 @@ pub fn interact(
     if mesh_edit {
         if let Some(ElementKind::FreeMesh(m)) = element.as_ref().map(|e| &e.kind) {
             let base = m.origin + DVec3::Z * elevation(doc.model(), m.level);
-            let ink = Color32::from_gray(20);
+            let ink = model_line(&ctx);
             for (a, b) in mesh_edges(&m.mesh) {
                 let p = |i: u32| (input.project)(base + m.to_model(m.mesh.vertices[i as usize]));
                 if let (Some(pa), Some(pb)) = (p(a), p(b)) {
@@ -3576,11 +5191,23 @@ pub fn interact(
             let accent = crate::theme::interaction();
             match h.kind {
                 HandleKind::MeshVertex(_) => {
+                    // at rest a point is the corner itself; with Points on
+                    // a small dark square marks it. Under the pointer it
+                    // lights (MU47: the dots were "a visual eye sore")
                     let lit = state == GripState::Hover;
-                    let ink = if lit { accent } else { Color32::from_gray(15) };
-                    painter.circle_filled(c, dot / 2.0 + if lit { 1.0 } else { 0.0 }, ink);
                     if lit {
+                        let r = Rect::from_center_size(c, Vec2::splat(dot + 3.0));
+                        painter.rect_filled(r, 1.5, accent);
+                        painter.rect_stroke(
+                            r,
+                            1.5,
+                            Stroke::new(1.0, Color32::WHITE),
+                            egui::StrokeKind::Outside,
+                        );
                         ctx.set_cursor_icon(egui::CursorIcon::Move);
+                    } else if pick() == 1 {
+                        let r = Rect::from_center_size(c, Vec2::splat((dot - 1.0).max(3.0)));
+                        painter.rect_filled(r, 0.5, Color32::from_gray(25));
                     }
                     continue;
                 }
@@ -3614,17 +5241,28 @@ pub fn interact(
                     continue;
                 }
                 HandleKind::MeshEdge(..) => continue,
-                // Faces picked (3): a small square at each face's middle,
-                // as Blender's face dots
-                HandleKind::Face(_) if state == GripState::Rest && pick() == 3 => {
-                    let r = egui::Rect::from_center_size(c, egui::vec2(dot + 2.0, dot + 2.0));
-                    painter.rect(
-                        r,
-                        1.0,
-                        accent.gamma_multiply(0.35),
-                        Stroke::new(1.0, accent),
-                        egui::StrokeKind::Middle,
-                    );
+                // a face has no dot: under the pointer the face itself is
+                // tinted and outlined, and a click or a drag takes it
+                HandleKind::Face(f) if state == GripState::Hover && held.is_none() => {
+                    if let Some(ElementKind::FreeMesh(m)) = element.as_ref().map(|e| &e.kind) {
+                        let base = m.origin + DVec3::Z * elevation(doc.model(), m.level);
+                        let pts: Option<Vec<Pos2>> = m.mesh.faces.get(f).and_then(|ring| {
+                            ring.iter()
+                                .map(|v| {
+                                    (input.project)(base + m.to_model(m.mesh.vertices[*v as usize]))
+                                })
+                                .collect()
+                        });
+                        if let Some(pts) = pts {
+                            painter.add(egui::Shape::Path(egui::epaint::PathShape {
+                                points: pts,
+                                closed: true,
+                                fill: accent.gamma_multiply(0.16),
+                                stroke: Stroke::new(wire_w + 1.0, accent).into(),
+                            }));
+                        }
+                    }
+                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                     continue;
                 }
                 HandleKind::Face(_) if state == GripState::Rest => continue,
@@ -3669,6 +5307,35 @@ pub fn interact(
         let filled = edit
             && (matches!(h.kind, HandleKind::Vertex { .. })
                 || edited_end(element.as_ref(), h.kind));
+        if let HandleKind::ScaleCorner(i) = h.kind {
+            // shown only under the pointer, or while held: at rest the
+            // selection looks as it does (MU142, Grip Palette REV01)
+            if matches!(state, GripState::Rest | GripState::Faded) {
+                continue;
+            }
+            let z = element
+                .as_ref()
+                .and_then(|e| creabim_core::objects::base_z(doc.model(), e))
+                .unwrap_or(h.at.z);
+            let scr: Option<Vec<Pos2>> = element
+                .as_ref()
+                .and_then(|e| object_corners(doc.model(), e))
+                .and_then(|cs| cs.iter().map(|q| (input.project)(q.extend(z))).collect());
+            if let Some(scr) = scr {
+                let k = i as usize % 4;
+                draw_bracket(
+                    painter,
+                    scr[k],
+                    scr[(k + 3) % 4],
+                    scr[(k + 1) % 4],
+                    look.accent,
+                );
+                if state == GripState::Hover {
+                    ctx.set_cursor_icon(resize_cursor(scr[k] - scr[(k + 2) % 4]));
+                }
+            }
+            continue;
+        }
         if h.kind == HandleKind::Rotate {
             // an object's turn grip: a curved arrow on a short leader from
             // its front edge, so it reads as part of the object (A7-7)
@@ -3735,7 +5402,7 @@ pub fn interact(
             .and_then(screen)
             .unwrap_or(p);
         // the grip says what it is; in Edit mode, what more it does
-        let name = layer_name(doc.model(), id, k);
+        let name = layer_name(doc.model(), id, k).or_else(|| stair_piece_name(doc.model(), id, k));
         pill(
             painter,
             at + Vec2::new(0.0, -34.0),
@@ -3758,16 +5425,42 @@ pub fn interact(
         }
     }
 
-    // the palette on the outline edge under the pointer
-    if drag.is_none() && !grips.busy() && !elsewhere {
-        if let Some(e) = &element {
-            let corner = matches!(hot, Some(HandleKind::Vertex { .. }));
-            if let Some(s) = edge_palette(doc.model(), e, &ctx, response, input, grips, corner) {
-                *status = Some(s);
-            }
+    // the edge under the pointer names itself with its length: what a
+    // click picks and a drag moves; not among a stair's pieces, whose
+    // line stays as it is
+    let pieces = layers()
+        && element
+            .as_ref()
+            .is_some_and(|e| matches!(e.kind, ElementKind::Stair(_)));
+    if let (Some((ring, i, _)), Some(p), Some(e), false) = (edge_hot, pointer, &element, pieces) {
+        if let Some(r) = crate::editmode::ring_of(doc.model(), e, ring) {
+            let n = r.corners.len();
+            let len = r.corners[i % n].distance(r.corners[(i + 1) % n]);
+            pill(
+                painter,
+                p + Vec2::new(0.0, -34.0),
+                &format!("Edge · {}", crate::units::len(len)),
+                &look,
+                1.0,
+            );
+            note(
+                painter,
+                p + Vec2::new(0.0, 22.0),
+                "Drag: move the edge · Click: select (Shift adds) · Right-click: more",
+                Color32::from_gray(40),
+            );
+            ctx.set_cursor_icon(egui::CursorIcon::Move);
         }
     }
 
+    // a corner's palette, opened by a click on its bracket (MU142)
+    // while it is open the grips wait, as for the right-click menu
+    if let Some(p) = palette().filter(|p| p.id == id && p.pane == response.id) {
+        if let Some(s) = corner_palette(doc, &ctx, p, response.rect) {
+            *status = Some(s);
+        }
+        return true;
+    }
     // the right-click menu, open in this pane
     if grips.menu.is_some_and(|m| m.pane == response.id) {
         if let Some(s) = grip_menu(doc, id, &ctx, grips) {
@@ -3781,7 +5474,9 @@ pub fn interact(
                 Some(
                     k @ (HandleKind::LayerEnd { .. }
                     | HandleKind::LayerEdge { .. }
-                    | HandleKind::LayerHeight { .. }),
+                    | HandleKind::LayerHeight { .. }
+                    | HandleKind::StairFlight { .. }
+                    | HandleKind::StairLanding { .. }),
                 ) => MenuOn::Layer(k),
                 Some(HandleKind::Vertex { ring, i }) => {
                     if !grips.picked(ring, i) {
@@ -3803,6 +5498,9 @@ pub fn interact(
                 }
                 _ => match edge_at(doc.model(), e, input, p) {
                     Some((ring, i, at)) => MenuOn::Edge(ring, i, at),
+                    None if bay_at(doc.model(), e, input, p).is_some() => {
+                        MenuOn::Bay(bay_at(doc.model(), e, input, p).unwrap_or_default())
+                    }
                     None => match hole_at(doc.model(), e, input, p) {
                         Some(k) => {
                             grips.pick_hole(k, false);
@@ -3866,7 +5564,12 @@ pub fn interact(
                     return true;
                 }
                 grips.boxsel = None;
+                let shape = matches!(
+                    element.as_ref().map(|e| &e.kind),
+                    Some(ElementKind::FreeMesh(_))
+                );
                 *status = Some(match grips.corners.len() {
+                    0 if shape => "No points in the box.".into(),
                     0 => "No corners in the box.".into(),
                     n => {
                         format!("{n} corners selected: Delete removes them, right-click for more.")
@@ -3903,6 +5606,49 @@ pub fn interact(
     // flips are Space (facing) and Shift+Space (hand), and the action
     // bar: no circles on the plan (see flip_arrows)
 
+    if let Some(parts) = &handle {
+        draw_handle(painter, parts, handle_hot);
+        if let (Some(part), Some(p)) = (handle_hot, pointer) {
+            // it names itself by the pointer, and the status bar says the rest
+            ctx.set_cursor_icon(egui::CursorIcon::Grab);
+            let says = part.says();
+            let text = ctx.global_style().visuals.text_color();
+            let galley =
+                painter.layout_no_wrap(says.clone(), egui::FontId::proportional(12.0), text);
+            let pill = Rect::from_min_size(
+                p + Vec2::new(16.0, -28.0),
+                galley.size() + Vec2::new(12.0, 6.0),
+            );
+            painter.rect_filled(pill, 9.0, ctx.global_style().visuals.window_fill);
+            painter.rect_stroke(
+                pill,
+                9.0,
+                Stroke::new(1.0, interaction_ink()),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(pill.min + Vec2::new(6.0, 3.0), galley, text);
+            *status = Some(format!(
+                "{says}: drag to do it now, or click to pick it up and type a value."
+            ));
+        }
+        // a part of the handle taken: by a drag it ends on letting go, by
+        // a click at the next click. The handle is asked before anything
+        // under it
+        let by_drag = response.drag_started_by(egui::PointerButton::Primary);
+        if by_drag || response.clicked() {
+            let at = if by_drag {
+                ctx.input(|i| i.pointer.press_origin())
+            } else {
+                response.interact_pointer_pos()
+            };
+            if let Some(part) = at.and_then(|p| handle_hit(parts, p)) {
+                HANDLE_PRESS.with(|p| p.set(at));
+                let shift = ctx.input(|i| i.modifiers.shift);
+                grips.request = Some(GripRequest::Handle(part, by_drag, shift));
+                return true;
+            }
+        }
+    }
     // a click on a grip keeps the selection rather than picking what lies
     // under it; in Edit mode it picks the corner (Shift adds), and a
     // second click on the same corner takes it away
@@ -3933,9 +5679,31 @@ pub fn interact(
                     ));
                     return true;
                 }
-                if !shift && !grips.is_empty() {
+                if let (Some((ring, i, _)), Some(e)) = (edge_under(p), &element) {
+                    let n = crate::editmode::ring_of(doc.model(), e, ring)
+                        .map_or(0, |r| r.corners.len());
+                    grips.pick_edge(ring, i, n, shift);
+                    *status = Some(picked_note(grips));
+                    return true;
+                }
+                if let (Some(_), Some(e)) = (face_under(p), &element) {
+                    let n = crate::editmode::ring_of(doc.model(), e, Ring::Outline)
+                        .map_or(0, |r| r.corners.len());
+                    grips.holes.clear();
+                    grips.corners = (0..n).map(|i| (Ring::Outline, i)).collect();
+                    *status = Some(
+                        "The face picked: a drag moves the whole outline, M moves it by a base point."
+                            .into(),
+                    );
+                    return true;
+                }
+                // a click on nothing lets go of what is picked and stays
+                // in Edit mode (it used to leave it, with "0 selected")
+                if !shift {
                     grips.clear();
                 }
+                *status = Some("Nothing picked. Still editing: Esc or Tab finishes.".into());
+                return true;
             }
         }
     }
@@ -3947,7 +5715,7 @@ pub fn interact(
         else {
             return false;
         };
-        let near = nearest(press);
+        let near = nearest(press).or_else(|| turn_dot.filter(|_| on_ring(press)));
         // in Edit mode a drag from inside a hole moves the hole
         let hole = (near.is_none() && edit)
             .then(|| {
@@ -3984,7 +5752,37 @@ pub fn interact(
                 );
                 h.constraint.usable(input.look).then_some(h)
             });
-        let start = match near.or(hole) {
+        let taken = |kind: HandleKind, at: DVec3, normal: DVec3| {
+            let h = in_section(
+                Handle {
+                    kind,
+                    at,
+                    constraint: Constraint::Plane { point: at, normal },
+                    nudge: 0.0,
+                },
+                input.look,
+            );
+            h.constraint.usable(input.look).then_some(h)
+        };
+        let normal_of = |ring: Ring| {
+            element
+                .as_ref()
+                .and_then(|e| crate::editmode::ring_of(doc.model(), e, ring))
+                .map(|r| r.normal)
+        };
+        let edge = edge_under(press).and_then(|(ring, i, at)| {
+            taken(HandleKind::EdgeMove { ring, i }, at, normal_of(ring)?)
+        });
+        let whole = face_under(press).and_then(|at| {
+            taken(
+                HandleKind::Ring {
+                    ring: Ring::Outline,
+                },
+                at,
+                normal_of(Ring::Outline)?,
+            )
+        });
+        let start = match near.or(edge).or(hole).or(whole) {
             Some(h) => {
                 let grab = (input.ray)(press)
                     .and_then(|r| h.constraint.hit(r))
@@ -3992,8 +5790,8 @@ pub fn interact(
                 Some((Some(h.kind), h.constraint, grab))
             }
             // in Edit mode a drag off the grips draws a box round some, in
-            // drawings; in 3D it orbits as ever (MU18)
-            None if edit && input.view.is_some() => {
+            // the 3D view too (there it selected whole elements, MU45)
+            None if edit => {
                 grips.boxsel = Some((response.id, press));
                 grips.menu = None;
                 return true;
@@ -4177,6 +5975,15 @@ pub fn interact(
             // the corner dragged stays picked
             Some(HandleKind::Vertex { ring, i }) if edit => grips.pick(ring, i, false),
             Some(HandleKind::AddVertex { ring, i }) if edit => grips.pick(ring, i + 1, false),
+            // the edge dragged stays picked
+            Some(HandleKind::EdgeMove { ring, i }) if edit => {
+                let n = doc
+                    .model()
+                    .get(id)
+                    .and_then(|e| crate::editmode::ring_of(doc.model(), e, ring))
+                    .map_or(0, |r| r.corners.len());
+                grips.pick_edge(ring, i, n, false);
+            }
             Some(HandleKind::Ring {
                 ring: Ring::Hole(k),
             }) if edit => grips.pick_hole(k, false),
@@ -4265,6 +6072,14 @@ pub fn interact(
     } else {
         now
     };
+    // a line's end holds the line's own axis, with a guide along it,
+    // unless a real snap caught it or it is pulled well off (MU76: a
+    // section or elevation stretched skewed; MU74 for grids)
+    let now = match (&snapped, line_axis(doc.model(), d)) {
+        (Some((_, sn)), _) if sn.kind != SnapKind::Grid => now,
+        (_, Some((far, dir))) => hold_on_axis(painter, input, far, dir, now),
+        _ => now,
+    };
     crate::actlog::line(format!(
         "drag frame: pane {} | pointer ({:.1}, {:.1}) px | free {} | snap {} | used {} | step {} mm | frame {:.1} ms",
         pane_name(input),
@@ -4284,6 +6099,59 @@ pub fn interact(
     follow(doc, painter, d, input, now, grid, Some(pos), status);
     painter.ctx().request_repaint();
     true
+}
+
+/// The line whose end is being dragged: its other end (fixed) and its
+/// direction, for a wall's location line, a straight grid line and a
+/// section or elevation line, as they were when the drag began.
+fn line_axis(model: &creabim_core::Model, d: &Drag) -> Option<(DVec3, DVec2)> {
+    let e = d.edit.originals().first()?;
+    let (a, b, end) = match (d.kind?, &e.kind) {
+        (HandleKind::WallEnd { end }, ElementKind::Wall(w)) => {
+            let (a, b) = walls::location_line(model, w);
+            (a, b, end)
+        }
+        (HandleKind::GridEnd { end }, ElementKind::Grid(g)) if g.bulge.abs() < 1e-9 => {
+            (g.start, g.end, end)
+        }
+        (HandleKind::ViewEnd { end }, ElementKind::View(v)) => match &v.kind {
+            ViewKind::Section { start, end: e2, .. } => (*start, *e2, end),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let (here, far) = if end { (b, a) } else { (a, b) };
+    let dir = (here - far).try_normalize()?;
+    Some((far.extend(d.grab.z), dir))
+}
+
+/// Within 14 px of the line's own axis on screen, the point is put on it
+/// and a dashed guide is drawn along the line through its fixed end;
+/// further off it moves freely.
+fn hold_on_axis(painter: &Painter, input: &PaneInput, far: DVec3, dir: DVec2, now: DVec3) -> DVec3 {
+    let f2 = far.truncate();
+    let t = (now.truncate() - f2).dot(dir);
+    let on = (f2 + dir * t).extend(now.z);
+    let (Some(at), Some(here)) = ((input.project)(on), (input.project)(now)) else {
+        return now;
+    };
+    if at.distance(here) > 14.0 || t <= 0.0 {
+        return now;
+    }
+    // the guide runs from behind the fixed end to well past the grip
+    let reach = t.abs().max(1.0);
+    let a = (f2 - dir * reach * 0.25).extend(now.z);
+    let b = (f2 + dir * (t + reach * 0.6)).extend(now.z);
+    if let (Some(pa), Some(pb)) = ((input.project)(a), (input.project)(b)) {
+        painter.extend(egui::Shape::dashed_line(
+            &[pa, pb],
+            Stroke::new(1.2, crate::snaps::GUIDE),
+            6.0,
+            4.0,
+        ));
+    }
+    painter.circle_filled(at, 3.0, crate::snaps::GUIDE);
+    on
 }
 
 /// Distance marks (the Grid snap menu): faint marks every `every` metres
@@ -4345,6 +6213,16 @@ fn mark_held(len: f64, every: f64, px: f64) -> Option<f64> {
 }
 
 /// Which kind of pane a drag is in, for the activity log.
+/// A section or elevation pane: one that looks sideways at the model.
+fn seen_side_on(input: &PaneInput) -> bool {
+    input.view.is_some() && input.look.z.abs() < 0.5
+}
+
+/// Does `id` turn only about the upright (an object)?
+fn turns_upright_only(model: &creabim_core::Model, id: ElementId) -> bool {
+    matches!(model.get(id).map(|e| &e.kind), Some(ElementKind::Object(_)))
+}
+
 fn pane_name(input: &PaneInput) -> &'static str {
     match input.view {
         None => "3D",
@@ -4368,6 +6246,17 @@ fn tap_grip(
     at: Pos2,
     grips: &mut GripSel,
 ) -> Option<String> {
+    // a click on a corner's bracket, not a drag: its palette (MU142)
+    if let HandleKind::ScaleCorner(corner) = kind {
+        set_palette(Some(Palette {
+            id,
+            corner,
+            at,
+            pane: tap_pane(),
+            opened: time,
+        }));
+        return Some("Corner: turn it, mirror it or scale it by a factor. Esc closes.".into());
+    }
     let double = grips.tap(kind, time, at);
     // a mass in Edit mode: a click picks the vertex, the edge or the face,
     // and it stays picked to act on, as in Blender (MU39)
@@ -4380,6 +6269,18 @@ fn tap_grip(
                 _ => None,
             };
             if let Some(vs) = vs {
+                // a double-click takes the whole piece it belongs to
+                if double {
+                    let piece = m.mesh.linked(&vs);
+                    let all = piece.len() == m.mesh.vertices.len();
+                    grips.pick_mesh(&[], false);
+                    grips.pick_mesh(&piece, false);
+                    return Some(format!(
+                        "{} picked ({} points): G or M moves it, R turns, S scales. L does the same from what is picked.",
+                        if all { "The whole shape" } else { "A piece" },
+                        piece.len()
+                    ));
+                }
                 grips.pick_mesh(&vs, shift);
                 let what = match (crate::handles::pick(), kind) {
                     (_, HandleKind::MeshEdge(..)) | (2, _) => "edge",
@@ -4420,7 +6321,26 @@ fn tap_grip(
             "Drag the ◇ to pull out a new corner, or right-click the edge › Add corner here."
                 .into(),
         ),
+        // a press on an edge that never moved is a click on it
+        HandleKind::EdgeMove { ring, i } if edit => {
+            let n = doc
+                .model()
+                .get(id)
+                .and_then(|e| crate::editmode::ring_of(doc.model(), e, ring))
+                .map_or(0, |r| r.corners.len());
+            grips.pick_edge(ring, i, n, shift);
+            Some(picked_note(grips))
+        }
         _ => None,
+    }
+}
+
+/// What is picked on an outline in Edit mode, for the status bar.
+fn picked_note(grips: &GripSel) -> String {
+    match grips.corners.len() {
+        0 => "Nothing picked.".into(),
+        2 => "Edge picked: a drag moves it, M moves it by a base point, Delete opens the outline there, right-click or the strip for Offset edge and Insert point. Shift+click picks more.".into(),
+        n => format!("{n} corners picked: M moves them by a base point, Delete removes them."),
     }
 }
 
@@ -4438,6 +6358,10 @@ fn follow(
     status: &mut Option<String>,
 ) {
     let model = doc.model().clone();
+    GRIP_FREE.store(
+        painter.ctx().input(|i| i.modifiers.alt),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let result = match d.kind {
         Some(k) => apply(
             &model,
@@ -4469,12 +6393,16 @@ fn follow(
                 .collect()
         }
     };
+    if d.kind == Some(HandleKind::Rotate) {
+        draw_grip_protractor(painter, input, &model, d, now);
+    }
     let outline = matches!(
         d.kind,
         Some(
             HandleKind::Vertex { .. }
                 | HandleKind::AddVertex { .. }
                 | HandleKind::Edge { .. }
+                | HandleKind::EdgeMove { .. }
                 | HandleKind::Ring { .. }
         )
     );
@@ -4561,7 +6489,8 @@ fn follow(
                         painter,
                         input,
                         &GripSel::default(),
-                        INVALID,
+                        (INVALID, INVALID),
+                        None,
                     );
                 }
                 if let Some(p) = pointer {
@@ -4741,6 +6670,262 @@ mod reference_grip_tests {
         }
         let locked = Model::from_elements([e2]).unwrap();
         assert!(handles(&locked, id, None).is_empty());
+    }
+}
+
+/// An L wrapping corner `c` from outside, along its sides towards `prev`
+/// and `next`: the corner's scale mark (Tool Rows and Scale REV01, A).
+fn draw_bracket(painter: &Painter, c: Pos2, prev: Pos2, next: Pos2, colour: Color32) {
+    let (a, b) = ((prev - c).normalized(), (next - c).normalized());
+    let out = -(a + b).normalized();
+    if !(a.is_finite() && b.is_finite() && out.is_finite()) {
+        return;
+    }
+    let k = c + out * 4.0;
+    painter.add(egui::Shape::line(
+        vec![k + a * 10.0, k, k + b * 10.0],
+        Stroke::new(2.6, colour),
+    ));
+}
+
+/// A corner's palette, open (MU142, Grip Palette REV01): which object and
+/// corner, where it was clicked, in which pane, and when.
+#[derive(Clone, Copy, Debug)]
+pub struct Palette {
+    pub id: ElementId,
+    #[allow(dead_code)]
+    pub corner: u8,
+    pub at: Pos2,
+    pub pane: egui::Id,
+    pub opened: f64,
+}
+
+static PALETTE: std::sync::Mutex<Option<Palette>> = std::sync::Mutex::new(None);
+static PALETTE_COMMAND: std::sync::Mutex<Option<crate::commands::Command>> =
+    std::sync::Mutex::new(None);
+/// The pane whose grips are being handled this frame.
+static TAP_PANE: std::sync::Mutex<Option<egui::Id>> = std::sync::Mutex::new(None);
+
+fn tap_pane() -> egui::Id {
+    TAP_PANE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or(egui::Id::NULL)
+}
+
+pub fn palette() -> Option<Palette> {
+    *PALETTE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn set_palette(p: Option<Palette>) {
+    *PALETTE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+}
+
+/// What the palette asked the view to start (Mirror, Scale), once.
+pub fn take_palette_command() -> Option<crate::commands::Command> {
+    PALETTE_COMMAND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
+/// What a click in a corner's palette does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Pick {
+    Turn(f64),
+    Mirror,
+    Scale,
+}
+
+/// Do what was picked in a corner's palette: a turn is made at once,
+/// Mirror and Scale are handed to the view to start.
+fn palette_pick(doc: &mut Document, id: ElementId, what: Pick) -> Option<String> {
+    match what {
+        Pick::Turn(by) => {
+            let before = doc.model().get(id)?.clone();
+            let mut after = before.clone();
+            turn_object(doc.model(), &mut after, by);
+            let label = format!("Turn {}", before.name);
+            doc.commit(creabim_core::Transaction::new(label).replace(before, after))
+                .ok()?;
+            Some(format!("Turned {by}\u{b0}. Ctrl+Z to undo."))
+        }
+        Pick::Mirror | Pick::Scale => {
+            let c = if what == Pick::Mirror {
+                crate::commands::Command::Mirror
+            } else {
+                crate::commands::Command::Scale
+            };
+            *PALETTE_COMMAND.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+            None
+        }
+    }
+}
+
+/// Where a corner's palette opens: just below and right of the corner,
+/// or turned to its other sides where it would run past the pane's edge
+/// (MU142, seen in the app: by a pane's right edge it ran over the
+/// Properties panel). `size`: the palette's, once it has been shown.
+fn palette_at(at: Pos2, pane: egui::Rect, size: Option<egui::Vec2>) -> Pos2 {
+    let size = size.unwrap_or(egui::vec2(320.0, 36.0));
+    let gap = 12.0;
+    let mut x = at.x + gap;
+    if x + size.x > pane.right() - 4.0 {
+        x = at.x - gap - size.x;
+    }
+    let mut y = at.y + gap;
+    if y + size.y > pane.bottom() - 4.0 {
+        y = at.y - gap - size.y;
+    }
+    Pos2::new(x.max(pane.left() + 4.0), y.max(pane.top() + 4.0))
+}
+
+/// The actions a corner offers, in a row by it: one click does one, and
+/// Esc or a click elsewhere closes it.
+fn corner_palette(
+    doc: &mut Document,
+    ctx: &egui::Context,
+    p: Palette,
+    pane: egui::Rect,
+) -> Option<String> {
+    let mut pick = None;
+    let shown = egui::Area::new(egui::Id::new("corner.palette"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(palette_at(
+            p.at,
+            pane,
+            ctx.memory(|m| {
+                m.area_rect(egui::Id::new("corner.palette"))
+                    .map(|r| r.size())
+            }),
+        ))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (label, tip, what) in [
+                        (
+                            "\u{21ba} 90\u{b0}",
+                            "Turn 90\u{b0} anticlockwise about its middle",
+                            Pick::Turn(90.0),
+                        ),
+                        (
+                            "\u{21bb} 90\u{b0}",
+                            "Turn 90\u{b0} clockwise about its middle",
+                            Pick::Turn(-90.0),
+                        ),
+                        ("180\u{b0}", "Turn it round", Pick::Turn(180.0)),
+                        (
+                            "Mirror",
+                            "Mirror it: across its own centre line, or a line picked",
+                            Pick::Mirror,
+                        ),
+                        (
+                            "Scale",
+                            "Scale it by a factor typed, or by a reference",
+                            Pick::Scale,
+                        ),
+                    ] {
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            pick = Some(what);
+                        }
+                    }
+                });
+            });
+        });
+    let now = ctx.input(|i| i.time);
+    let away = ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || (now > p.opened + 0.05
+            && ctx.input(|i| i.pointer.any_click())
+            && !shown.response.hovered()
+            && pick.is_none());
+    if away {
+        set_palette(None);
+        return None;
+    }
+    let what = pick?;
+    set_palette(None);
+    palette_pick(doc, p.id, what)
+}
+
+#[cfg(test)]
+mod turn_dot_tests {
+    use super::*;
+
+    /// The turn grip is the round dot: one ring the size of a square grip,
+    /// white inside, nothing drawn in it (owner, MU142: the ring with an
+    /// arrow in it read as a ring with a square; squares stretch, dots
+    /// turn).
+    #[test]
+    fn the_turn_grip_is_a_round_dot_the_size_of_a_square_grip() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            let look = GripLook::of(ui.ctx());
+            draw_turn_grip(
+                &painter,
+                Pos2::new(50.0, 50.0),
+                None,
+                GripState::Rest,
+                &look,
+            );
+        });
+        out.textures_delta.clear();
+        assert_eq!(out.shapes.len(), 1, "one shape, no arrow in it");
+        match &out.shapes[0].shape {
+            egui::Shape::Circle(c) => {
+                assert!(c.radius <= 5.0, "a dot, not a ring: {}", c.radius);
+                assert_eq!(c.fill, Color32::WHITE);
+            }
+            s => panic!("not a dot: {s:?}"),
+        }
+    }
+
+    /// A turn-dot drag steps and locks to 0/90/180 with Grid snap Off (the
+    /// length step 0); only Alt frees it (MU142: the log read "step 0.0
+    /// mm" and the drag never locked).
+    #[test]
+    fn a_dot_drag_locks_with_grid_snap_off_and_alt_frees_it() {
+        GRIP_FREE.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(grip_turn(88.2, 0.0), (90.0, Some(90.0)));
+        assert_eq!(grip_turn(37.4, 0.0).0, 37.0);
+        GRIP_FREE.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(grip_turn(88.2, 0.0), (88.2, None));
+        GRIP_FREE.store(false, std::sync::atomic::Ordering::Relaxed);
+        // and Mirror has an icon of its own (MU142)
+        assert!(crate::svgicon::has("mirror"));
+    }
+
+    /// Held, the dot stays white in its halo, as a held square does (MU142:
+    /// the dot filled solid while a square stayed white).
+    #[test]
+    fn a_held_turn_dot_is_white_in_a_halo_as_a_held_square_is() {
+        let ctx = egui::Context::default();
+        let cores = |dot: bool| {
+            let mut out = ctx.run_ui(Default::default(), |ui| {
+                let painter = ui.ctx().layer_painter(egui::LayerId::background());
+                let look = GripLook::of(ui.ctx());
+                let c = Pos2::new(50.0, 50.0);
+                if dot {
+                    draw_turn_grip(&painter, c, None, GripState::Held, &look);
+                } else {
+                    draw_grip(&painter, c, None, GripState::Held, false, false, &look);
+                }
+            });
+            out.textures_delta.clear();
+            out.shapes.into_iter().map(|s| s.shape).collect::<Vec<_>>()
+        };
+        let dot = cores(true);
+        // a halo first, then the dot, white
+        assert!(dot.len() >= 2, "{dot:?}");
+        match dot.last() {
+            Some(egui::Shape::Circle(c)) => assert_eq!(c.fill, Color32::WHITE, "held dot"),
+            s => panic!("not a dot: {s:?}"),
+        }
+        let square = cores(false);
+        assert!(
+            matches!(&square[0], egui::Shape::Circle(c) if c.radius > 10.0),
+            "the square's halo"
+        );
     }
 }
 
@@ -5087,6 +7272,74 @@ mod tests {
             }) if (canopy - 5.0).abs() < 1e-9
         ));
         assert!(hs.iter().any(|h| h.kind == HandleKind::PlantHeight));
+    }
+
+    #[test]
+    fn a_grown_trees_side_pulls_in_off_a_wall_and_its_trunk_stays() {
+        let mut doc = Document::from_model(creabim_core::sample::sample_house());
+        let lid = doc
+            .model()
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .id;
+        let shape = creabim_core::TreeShape {
+            depth: 6.0,
+            ..creabim_core::TreeShape::default()
+        };
+        let site = creabim_core::Site::tree(lid, DVec2::new(20.0, 20.0), shape, 6.0, 8.0);
+        let tree = Element::new("Tree", ElementKind::Site(site));
+        let tid = tree.id;
+        doc.commit(creabim_core::Transaction::new("tree").insert(tree))
+            .unwrap();
+        let m = doc.model().clone();
+        let hs = handles(&m, tid, None);
+        assert_eq!(hs.len(), 10, "eight sides, the top and the clear trunk");
+        let east = *hs
+            .iter()
+            .find(|h| h.kind == HandleKind::PlantReach(0))
+            .unwrap();
+        assert!((east.at.x - 23.0).abs() < 1e-9);
+        // pulled 1.8 m in: the crown's east edge is 1.2 m from the trunk
+        let (orig, _) = originals(&m, tid, east.kind);
+        let out = apply(
+            &m,
+            &orig,
+            &[],
+            east.kind,
+            east.at,
+            east.at - DVec3::X * 1.8,
+            0.0,
+        )
+        .unwrap();
+        let ElementKind::Site(s) = &out[0].kind else {
+            panic!()
+        };
+        let t = s.tree_shape().unwrap();
+        assert!((t.reach[0] - 0.4).abs() < 1e-9);
+        assert!((t.reach[4] - 1.0).abs() < 1e-9, "the west side stays");
+        assert!(
+            matches!(s.form, creabim_core::SiteForm::Plant { position, .. } if position == DVec2::new(20.0, 20.0))
+        );
+        // and the clear trunk can't pass the top
+        let base = *hs
+            .iter()
+            .find(|h| h.kind == HandleKind::PlantCrownBase)
+            .unwrap();
+        let out = apply(
+            &m,
+            &orig,
+            &[],
+            base.kind,
+            base.at,
+            base.at + DVec3::Z * 20.0,
+            0.0,
+        )
+        .unwrap();
+        let ElementKind::Site(s) = &out[0].kind else {
+            panic!()
+        };
+        assert!(s.validate().is_ok());
     }
 
     #[test]
@@ -5566,6 +7819,286 @@ mod tests {
         apply(m, &orig, &joined, kind, h.at, to(&h), 0.05).unwrap()[0].clone()
     }
 
+    /// MU144 (owner, the Ridgeline's ground floor: "so we don't have the
+    /// ability to move the stair tag into a better place?", then "just the
+    /// stair tag bubble, we don't want to touch the stair arrow"): a stair's
+    /// UP label has a grip of its own. Dragged, the label moves and the
+    /// arrow stays; dragged back by its place, it goes home.
+    #[test]
+    fn a_stairs_up_label_moves_by_its_grip_and_its_arrow_stays() {
+        use creabim_geom::plan::{Pen, PlanItem, PlanView};
+        let m = creabim_core::ridgeline::ridgeline_house();
+        let view = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let plan = |m: &Model| creabim_geom::section::view_drawing(m, view).unwrap();
+        let first = plan(&m);
+        let stair = first
+            .items
+            .iter()
+            .find_map(|i| match i {
+                PlanItem::Label { id, text, .. } if text == "UP" => Some(*id),
+                _ => None,
+            })
+            .expect("a stair going up from the ground floor");
+        let up = |d: &PlanView| {
+            d.items.iter().find_map(|i| match i {
+                PlanItem::Label { id, at, text } if *id == stair && text == "UP" => Some(*at),
+                _ => None,
+            })
+        };
+        let arrow = |d: &PlanView| {
+            let mut v: Vec<[i64; 4]> = d
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Line {
+                        id,
+                        pen: Pen::Symbol,
+                        a,
+                        b,
+                    } if *id == stair => {
+                        Some([a.x, a.y, b.x, b.y].map(|c| (c * 1e6).round() as i64))
+                    }
+                    _ => None,
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        let home = up(&first).unwrap();
+        let grip = handles_in(&m, stair, None, false)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::StairUp)
+            .expect("a grip on the UP label");
+        assert!(
+            grip.at.truncate().distance(home) < 1e-9,
+            "the grip is on the label"
+        );
+        // off what it covered
+        let by = DVec2::new(0.6, -0.4);
+        let moved = drag_to(&m, stair, HandleKind::StairUp, |h| h.at + by.extend(0.0));
+        let mut doc = creabim_core::Document::from_model(m.clone());
+        doc.edit(stair, "drag", |e| *e = moved.clone()).unwrap();
+        let after = plan(doc.model());
+        assert!(
+            up(&after).unwrap().distance(home + by) < 1e-6,
+            "the label moved"
+        );
+        assert!(!arrow(&first).is_empty());
+        assert_eq!(arrow(&after), arrow(&first), "the arrow stays");
+        // back by its place: home, no offset kept
+        let back = drag_to(doc.model(), stair, HandleKind::StairUp, |_| {
+            (home + DVec2::new(0.02, 0.01)).extend(grip.at.z)
+        });
+        let ElementKind::Stair(s) = &back.kind else {
+            unreachable!()
+        };
+        assert_eq!(s.up_offset, None);
+        assert_eq!(HandleKind::StairUp.verb(), "Move the UP label of");
+    }
+
+    /// MU142 (Grip Palette REV01; Tool Rows and Scale REV01, A and 6): an
+    /// object has a corner grip at each corner of its outline, shown only
+    /// under the pointer; dragged, it scales the object from the opposite
+    /// corner, which stays put, into a size of its own, its type as it was.
+    #[test]
+    fn an_objects_corner_scales_it_from_the_opposite_corner() {
+        let m = creabim_core::starter::starter_house();
+        let e = m
+            .iter()
+            .find(|e| object_corners(&m, e).is_some())
+            .cloned()
+            .expect("the starter house has furniture");
+        let corners = object_corners(&m, &e).unwrap();
+        let hs = handles_in(&m, e.id, None, false);
+        for (i, c) in corners.iter().enumerate() {
+            let h = hs
+                .iter()
+                .find(|h| h.kind == HandleKind::ScaleCorner(i as u8))
+                .expect("a grip at each corner");
+            assert!(h.at.truncate().distance(*c) < 1e-9);
+        }
+        // corner 2 taken half as far again along the diagonal
+        let (c, opp) = (corners[2], corners[0]);
+        let to = opp + (c - opp) * 1.5;
+        let out = drag_to(&m, e.id, HandleKind::ScaleCorner(2), |h| to.extend(h.at.z));
+        let now = object_corners(&m, &out).unwrap();
+        assert!(
+            now[0].distance(opp) < 1e-6,
+            "the opposite corner stays: {} {}",
+            now[0],
+            opp
+        );
+        assert!(now[2].distance(to) < 1e-6, "{} {}", now[2], to);
+        let ElementKind::Object(o) = &out.kind else {
+            unreachable!()
+        };
+        assert!(
+            (o.scale - 1.5).abs() < 1e-9,
+            "a size of its own: {}",
+            o.scale
+        );
+        assert_eq!(
+            creabim_core::objects::type_of(&m, &out).map(|t| t.bounds()),
+            creabim_core::objects::type_of(&m, &e).map(|t| t.bounds()),
+            "its type as it was"
+        );
+    }
+
+    /// MU142 (decision 10): resting on the turn dot shows the protractor
+    /// round the object's middle, a step outside the dot, and a turn taken
+    /// anywhere on that ring turns it by the angle swept, as from the dot.
+    #[test]
+    fn the_turn_ring_is_round_its_middle_and_turns_from_where_it_is_taken() {
+        let m = creabim_core::starter::starter_house();
+        let e = m
+            .iter()
+            .find(|e| object_corners(&m, e).is_some())
+            .cloned()
+            .unwrap();
+        let k = 50.0;
+        let project = move |p: DVec3| {
+            Some(Pos2::new(
+                (500.0 + k * p.x) as f32,
+                (400.0 - k * p.y) as f32,
+            ))
+        };
+        let ray = move |s: Pos2| {
+            let o = DVec3::new((s.x as f64 - 500.0) / k, (400.0 - s.y as f64) / k, 100.0);
+            Some(Ray { o, d: -DVec3::Z })
+        };
+        let snap = |_: Pos2, _: Option<DVec3>| None;
+        let none = |_: Pos2, _: ElementId| None;
+        let no_face = |_: Pos2| None;
+        let input = PaneInput {
+            ray: &ray,
+            project: &project,
+            look: -DVec3::Z,
+            snap: &snap,
+            grab_body: &none,
+            grab_snap: &none,
+            body_normal: DVec3::Z,
+            view: None,
+            face: &no_face,
+        };
+        let (c, r) = turn_ring(&m, &e, &input).unwrap();
+        let mid = pivot_of(&m, &e).unwrap();
+        assert!(
+            c.distance(project(mid.extend(0.0)).unwrap()) < 0.01,
+            "round its middle"
+        );
+        let dot = handles_in(&m, e.id, None, false)
+            .into_iter()
+            .find(|h| h.kind == HandleKind::Rotate)
+            .unwrap();
+        let d = c.distance(project(dot.at).unwrap());
+        assert!(
+            r >= d + RING_CLEAR - 0.01 && r >= 56.0,
+            "a step outside the dot: {r} {d}"
+        );
+        // taken on the ring across from the dot, carried a quarter turn round
+        let ElementKind::Object(o0) = &e.kind else {
+            unreachable!()
+        };
+        let rr = r as f64 / k;
+        let a = (dot.at.truncate() - mid).to_angle() + std::f64::consts::PI;
+        let grab = (mid + DVec2::from_angle(a) * rr).extend(dot.at.z);
+        let now = (mid + DVec2::from_angle(a + std::f64::consts::FRAC_PI_2) * rr).extend(dot.at.z);
+        let (orig, joined) = originals(&m, e.id, HandleKind::Rotate);
+        let out =
+            apply(&m, &orig, &joined, HandleKind::Rotate, grab, now, 0.05).unwrap()[0].clone();
+        let ElementKind::Object(o1) = &out.kind else {
+            unreachable!()
+        };
+        let by = (o1.rotation - o0.rotation).rem_euclid(360.0);
+        assert!((by - 90.0).abs() < 1e-6, "turned {by}");
+    }
+
+    /// MU142, seen in the app: a press on the protractor's ring in a plan
+    /// moved the object, as the 3D pane, the pointer away from it, put the
+    /// ring out on every frame. The ring belongs to the pane that lit it.
+    #[test]
+    fn a_lit_turn_ring_belongs_to_its_pane() {
+        let (id, plan, other) = (ElementId::new(), egui::Id::new("plan"), egui::Id::new("3d"));
+        set_ring_lit(Some((id, plan)));
+        assert_eq!(ring_lit(plan), Some(id));
+        assert_eq!(
+            ring_lit(other),
+            None,
+            "another pane neither sees it nor puts it out"
+        );
+        set_ring_lit(None);
+    }
+
+    /// MU142, seen in the app: a corner's palette by a pane's right edge ran
+    /// over the Properties panel. It opens on whichever side keeps it in.
+    #[test]
+    fn a_corners_palette_stays_inside_its_pane() {
+        let pane = egui::Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(600.0, 500.0));
+        let size = egui::vec2(300.0, 36.0);
+        let inside = |at: Pos2| {
+            let r = egui::Rect::from_min_size(palette_at(at, pane, Some(size)), size);
+            pane.contains_rect(r)
+        };
+        for at in [
+            Pos2::new(150.0, 150.0),
+            Pos2::new(580.0, 150.0),
+            Pos2::new(580.0, 490.0),
+            Pos2::new(150.0, 490.0),
+        ] {
+            assert!(inside(at), "{at:?}");
+        }
+        // by the corner when there is room
+        assert_eq!(
+            palette_at(Pos2::new(150.0, 150.0), pane, Some(size)),
+            Pos2::new(162.0, 162.0)
+        );
+        // and the edit it starts says what it does
+        assert_eq!(HandleKind::ScaleCorner(0).verb(), "Scale");
+    }
+
+    /// MU142 (Grip Palette REV01): a corner's palette turns the object about
+    /// its middle at once, and hands Mirror and Scale to the view to start.
+    #[test]
+    fn a_corners_palette_turns_it_and_hands_over_mirror_and_scale() {
+        let mut doc = Document::from_model(creabim_core::starter::starter_house());
+        let e = doc
+            .model()
+            .iter()
+            .find(|e| object_corners(doc.model(), e).is_some())
+            .cloned()
+            .unwrap();
+        let ElementKind::Object(o0) = &e.kind else {
+            unreachable!()
+        };
+        let (r0, mid) = (o0.rotation, pivot_of(doc.model(), &e).unwrap());
+        assert!(palette_pick(&mut doc, e.id, Pick::Turn(90.0)).is_some());
+        let after = doc.model().get(e.id).unwrap().clone();
+        let ElementKind::Object(o1) = &after.kind else {
+            unreachable!()
+        };
+        assert!(
+            (o1.rotation - (r0 + 90.0).rem_euclid(360.0)).abs() < 1e-9,
+            "{} {}",
+            o1.rotation,
+            r0
+        );
+        assert!(
+            pivot_of(doc.model(), &after).unwrap().distance(mid) < 1e-9,
+            "about its middle"
+        );
+        let _ = take_palette_command();
+        assert!(palette_pick(&mut doc, e.id, Pick::Scale).is_none());
+        assert!(matches!(
+            take_palette_command(),
+            Some(crate::commands::Command::Scale)
+        ));
+        palette_pick(&mut doc, e.id, Pick::Mirror);
+        assert!(matches!(
+            take_palette_command(),
+            Some(crate::commands::Command::Mirror)
+        ));
+    }
+
     #[test]
     fn side_bars_sit_at_the_middle_of_their_side_not_on_a_corner() {
         // A4-8: a bar that pushes a side across sits between the element's
@@ -5609,6 +8142,254 @@ mod tests {
             }
         }
         assert!(checked > 0);
+    }
+
+    /// MU130: a click anywhere on a face of a shape in Edit mode picks it,
+    /// even where another face's middle falls near it on screen. Seen
+    /// slanting from far off, the top's and the bottom's middles of a
+    /// shape lie 14 px apart; one of their grips was left out to keep the
+    /// view clear, and a click on that face picked nothing ("Nothing
+    /// picked"). Which one was left out hung on the order of the grips,
+    /// so it came and went (it seemed to follow a Pull).
+    #[test]
+    fn a_click_on_any_face_picks_it_however_crowded_the_view() {
+        let mut doc = creabim_core::Document::new();
+        let mass = creabim_core::FreeMesh::new(
+            None,
+            DVec3::ZERO,
+            creabim_core::editmesh::EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0)),
+        );
+        let e = Element::new("Mass", ElementKind::FreeMesh(mass));
+        let id = e.id;
+        doc.commit(creabim_core::Transaction::new("Mass").insert(e))
+            .unwrap();
+        // a parallel view looking north and down at 45 degrees, 20 px a metre
+        let k = 20.0f64;
+        let (cx, cy) = (500.0f64, 400.0f64);
+        let look = DVec3::new(0.0, 1.0, -1.0).normalize();
+        let right = DVec3::X;
+        let up = right.cross(look).normalize() * -1.0;
+        let up = if up.z < 0.0 { -up } else { up };
+        let project = move |p: DVec3| {
+            Some(Pos2::new(
+                (cx + k * p.dot(right)) as f32,
+                (cy - k * p.dot(up)) as f32,
+            ))
+        };
+        let ray = move |s: Pos2| {
+            let o = right * ((s.x as f64 - cx) / k) + up * ((cy - s.y as f64) / k) - look * 100.0;
+            Some(Ray { o, d: look })
+        };
+        let snap = |_: Pos2, _: Option<DVec3>| None;
+        let none = |_: Pos2, _: ElementId| None;
+        let no_face = |_: Pos2| None;
+        let input = PaneInput {
+            ray: &ray,
+            project: &project,
+            look,
+            snap: &snap,
+            grab_body: &none,
+            grab_snap: &none,
+            body_normal: DVec3::Z,
+            view: None,
+            face: &no_face,
+        };
+        let m = match &doc.model().get(id).unwrap().kind {
+            ElementKind::FreeMesh(m) => m.clone(),
+            _ => unreachable!(),
+        };
+        let ctx = egui::Context::default();
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 800.0));
+        let mut t = 0.0;
+        let mut grips = GripSel::default();
+        let mut drag = None;
+        // the two faces this view sees: the top and the south one (east
+        // and west are seen edge on)
+        for want in [DVec3::Z, -DVec3::Y] {
+            let f = (0..m.mesh.faces.len())
+                .find(|f| m.mesh.face_normal(*f).dot(want) > 0.9)
+                .unwrap();
+            let mut verts = m.mesh.faces[f].clone();
+            verts.sort_unstable();
+            // halfway from the face's middle to a corner: clear of the
+            // shape's own up-and-down grip over the top's middle, and of the
+            // corners' and edges' grips
+            let mid = m.mesh.face_center(f);
+            let corner = m.mesh.vertices[m.mesh.faces[f][0] as usize];
+            let c = m.origin + m.to_model(mid + (corner - mid) * 0.5);
+            let at = project(c).unwrap();
+            grips.clear();
+            let mut status = None;
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerMoved(at)],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                }],
+                vec![egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                }],
+            ] {
+                t += 1.0 / 60.0;
+                let raw = egui::RawInput {
+                    screen_rect: Some(area),
+                    events,
+                    time: Some(t),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| {
+                    let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
+                    let painter = ui.painter_at(area);
+                    interact(
+                        &mut doc,
+                        &painter,
+                        &response,
+                        Some(id),
+                        None,
+                        true,
+                        &mut drag,
+                        &mut grips,
+                        &input,
+                        &mut status,
+                    );
+                });
+                out.textures_delta.clear();
+            }
+            let mut got = grips.mesh.clone();
+            got.sort_unstable();
+            assert_eq!(
+                got, verts,
+                "a click on the face looking {want} picked {got:?}: {status:?}"
+            );
+        }
+    }
+
+    /// An object's turn grip turns it in a plan, but a section or an
+    /// elevation has none: the object turns about the upright only, which
+    /// they see end on (MU142: the dial stood upright on the section's
+    /// plane, and in 3D).
+    #[test]
+    fn an_objects_turn_grip_is_in_plans_not_in_sections() {
+        let m = creabim_core::ridgeline::ridgeline_house();
+        let chair = m
+            .iter()
+            .find(|e| e.name == "Dining chair" && matches!(e.kind, ElementKind::Object(_)))
+            .unwrap()
+            .id;
+        let section = m
+            .iter()
+            .find(|e| matches!(&e.kind, ElementKind::View(v) if matches!(v.kind, creabim_core::ViewKind::Section { .. })))
+            .unwrap()
+            .id;
+        let plan = m.iter().find(|e| e.name == "Ground Floor plan").unwrap().id;
+        let turn = |sideways: bool| -> f64 {
+            let mut doc = Document::from_model(m.clone());
+            let before = match &doc.model().get(chair).unwrap().kind {
+                ElementKind::Object(o) => o.rotation,
+                _ => unreachable!(),
+            };
+            let k = 40.0f64;
+            let rot = doc.model().get(chair).map(|e| match &e.kind {
+                ElementKind::Object(o) => o.position,
+                _ => unreachable!(),
+            });
+            let o = rot.unwrap();
+            // the pane, centred on the chair: from the south, or from above
+            let (look, right, up) = if sideways {
+                (DVec3::Y, DVec3::X, DVec3::Z)
+            } else {
+                (-DVec3::Z, DVec3::X, DVec3::Y)
+            };
+            let (cx, cy) = (500.0f64, 400.0f64);
+            let origin = o.extend(0.0);
+            let project = move |p: DVec3| {
+                let d = p - origin;
+                Some(Pos2::new(
+                    (cx + k * d.dot(right)) as f32,
+                    (cy - k * d.dot(up)) as f32,
+                ))
+            };
+            let ray = move |s: Pos2| {
+                let p = origin + right * ((s.x as f64 - cx) / k) + up * ((cy - s.y as f64) / k)
+                    - look * 100.0;
+                Some(Ray { o: p, d: look })
+            };
+            let snap = |_: Pos2, _: Option<DVec3>| None;
+            let none = |_: Pos2, _: ElementId| None;
+            let no_face = |_: Pos2| None;
+            let input = PaneInput {
+                ray: &ray,
+                project: &project,
+                look,
+                snap: &snap,
+                grab_body: &none,
+                grab_snap: &none,
+                body_normal: if sideways { DVec3::Y } else { DVec3::Z },
+                view: Some(if sideways { section } else { plan }),
+                face: &no_face,
+            };
+            let grip = handles_in(doc.model(), chair, None, false)
+                .into_iter()
+                .find(|h| h.kind == HandleKind::Rotate)
+                .expect("an object has a turn grip");
+            let at = project(grip.at).unwrap();
+            let to = at + Vec2::new(60.0, 60.0);
+            let ctx = egui::Context::default();
+            let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 800.0));
+            let (mut grips, mut drag, mut status, mut t) = (GripSel::default(), None, None, 0.0);
+            let press = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![press(at, true)],
+                vec![egui::Event::PointerMoved(at + Vec2::new(20.0, 20.0))],
+                vec![egui::Event::PointerMoved(to)],
+                vec![egui::Event::PointerMoved(to)],
+                vec![press(to, false)],
+            ] {
+                t += 1.0 / 60.0;
+                let raw = egui::RawInput {
+                    screen_rect: Some(area),
+                    events,
+                    time: Some(t),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(raw, |ui| {
+                    let response = ui.allocate_rect(area, egui::Sense::click_and_drag());
+                    let painter = ui.painter_at(area);
+                    interact(
+                        &mut doc,
+                        &painter,
+                        &response,
+                        Some(chair),
+                        None,
+                        false,
+                        &mut drag,
+                        &mut grips,
+                        &input,
+                        &mut status,
+                    );
+                });
+                out.textures_delta.clear();
+            }
+            let after = match &doc.model().get(chair).unwrap().kind {
+                ElementKind::Object(o) => o.rotation,
+                _ => unreachable!(),
+            };
+            after - before
+        };
+        assert!(turn(false).abs() > 1.0, "in plan the grip turns the chair");
+        assert!(turn(true).abs() < 1e-9, "in a section it has no turn grip");
     }
 
     #[test]

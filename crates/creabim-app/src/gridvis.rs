@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::ui_model::Item;
-use creabim_core::grids::{self, GridGroup, LabelStyle};
+use creabim_core::grids::{self, Bubbles, GridColour, GridGroup, LabelStyle, Shape};
 use creabim_core::{Category, Grid, ViewHidden};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -41,7 +41,9 @@ impl VisTarget {
 
 /// The quick switches of a Visibility menu: groups of categories, by key.
 pub(super) const QUICK: [(&str, &str, &str, &[Category]); 4] = [
-    ("grids", "Grids", "grid-3x3", &[Category::Grids]),
+    // the building's grid lines: not the 3D view's Ground grid, so
+    // another name and another icon (MU118)
+    ("grids", "Grid lines", "hash", &[Category::Grids]),
     (
         "annotation",
         "Annotation",
@@ -130,6 +132,9 @@ impl CreaBimApp {
                 f(&mut self.vis3d);
                 self.hidden_rev += 1;
                 self.snaps_3d = None;
+                // the Grids category is the 3D view's Grid lines switch too
+                self.shell.settings.grids_3d = !self.vis3d.hides_category(Category::Grids);
+                self.geometry_key = None;
                 self.status = format!("{label} in the 3D view.");
                 // the categories are kept for next time; single elements
                 // are for the session
@@ -267,6 +272,25 @@ impl CreaBimApp {
         } else {
             "What is inside walls and slabs is hidden again in 3D.".into()
         };
+    }
+
+    /// Show the ground in the 3D view after its works, before them, or
+    /// both (the ground as it was see-through over the works).
+    pub(super) fn set_ground_3d(&mut self, g: creabim_core::GroundState) {
+        let s = &mut self.shell.settings;
+        s.ground_3d = g;
+        s.store();
+        self.geometry_key = None;
+        self.status = match g {
+            creabim_core::GroundState::After => "The 3D view shows the ground with its works.",
+            creabim_core::GroundState::Before => {
+                "The 3D view shows the ground as surveyed, before its works, with no roads."
+            }
+            creabim_core::GroundState::Both => {
+                "The 3D view shows the ground as it was see-through over its works."
+            }
+        }
+        .into();
     }
 
     /// Hide the selection in `t`: the elements themselves, their
@@ -410,7 +434,7 @@ impl CreaBimApp {
                 Item::new("xray", "X-ray")
                     .key("Alt+Z")
                     .checked(s.xray)
-                    .icon("xray")
+                    .icon("xray-ball")
                     .keep_open()
                     .hint(
                         "Walls, slabs, roofs and masses see-through, so what is inside them shows",
@@ -421,6 +445,21 @@ impl CreaBimApp {
                     .keep_open()
                     .hint("What is inside walls, slabs and roofs shows through them in its own colours"),
             ]);
+            let has_ground = self.doc.model().iter().any(|e| {
+                matches!(&e.kind, ElementKind::Site(st)
+                    if matches!(st.form, creabim_core::SiteForm::Terrain { .. }))
+            });
+            if has_ground {
+                items.push(Item::Separator);
+                for (k, g) in creabim_core::GroundState::ALL.iter().enumerate() {
+                    items.push(
+                        Item::new(format!("ground3d:{k}"), format!("Ground: {}", g.label()))
+                            .checked(s.ground_3d == *g)
+                            .icon("terrain")
+                            .keep_open(),
+                    );
+                }
+            }
         } else if let VisTarget::View(id) = t {
             items.extend([
                 Item::Separator,
@@ -443,7 +482,7 @@ impl CreaBimApp {
                 Item::new(format!("vis.xray:{}", id.0), "X-ray while working")
                     .key("Alt+Z")
                     .checked(self.plan.xray.contains(&id))
-                    .icon("xray")
+                    .icon("xray-ball")
                     .keep_open()
                     .hint("Walls, slabs and roofs see-through here, what is inside them solid and clicked first. Sheets don't change"),
             ]);
@@ -613,6 +652,12 @@ impl CreaBimApp {
     }
 
     pub(super) fn new_grid_group(&mut self) {
+        self.new_grid_group_here(true);
+    }
+
+    /// A new grid system, active for the Grid tool; selected too when
+    /// `select` (from a menu), else the tool's tab shows it (REV01).
+    pub(super) fn new_grid_group_here(&mut self, select: bool) {
         let e = grids::new_group(self.doc.model());
         let (id, name) = (e.id, e.name.clone());
         let r = self
@@ -621,8 +666,10 @@ impl CreaBimApp {
         if r.is_ok() {
             self.plan.grid_group = Some(id);
             self.plan.tool = Tool::Grid;
-            self.selection.only(id);
-            self.face = None;
+            if select {
+                self.selection.only(id);
+                self.face = None;
+            }
         }
         self.report(
             r,
@@ -707,7 +754,7 @@ impl CreaBimApp {
                         let hide = group.iter().all(|c| !h.hides_category(*c));
                         let name = match QUICK.iter().find(|q| q.0 == arg) {
                             Some(q) => q.1.to_lowercase(),
-                            None if arg == "cutters" => "void cutters".into(),
+                            None if arg == "cutters" => "cutting shapes".into(),
                             None => "2D objects".into(),
                         };
                         let label = format!("{} {name}", if hide { "Hide" } else { "Show" });
@@ -825,14 +872,21 @@ impl CreaBimApp {
     pub(super) fn grid_vis_options(&self) -> Vec<Value> {
         let mut out = vec![];
         if self.plan.tool == Tool::Grid {
+            // a straight line, or an arc by its ends and a point on it (MU66)
+            let arc = self.plan.grid_arc;
+            out.push(json!({"kind": "seg", "key": "gridshape", "items": [
+                {"id": "grid.shape:0", "label": "Line", "on": !arc, "hint": "Two clicks: its ends"},
+                {"id": "grid.shape:1", "label": "Arc", "on": arc, "hint": "Three clicks: its two ends, then a point it passes through"},
+            ]}));
             let name = self
                 .active_grid_group()
                 .and_then(|g| self.doc.model().get(g))
                 .map_or("None".to_string(), |e| e.name.clone());
+            // read only: the system is picked and set up in Properties
+            // (REV01, decision 2)
             out.push(json!({
-                "kind": "menu", "key": "gridgroups", "label": "Grid system", "value": name,
-                "icon": "grid-3x3",
-                "hint": "Which grid system new grid lines go in, and its labels",
+                "kind": "label", "key": "gridgroups",
+                "label": if name == "None" { "No grid system".to_string() } else { format!("In {name}") },
             }));
             out.push(json!({"kind": "sep"}));
         }
@@ -895,19 +949,15 @@ impl CreaBimApp {
             .resizable(false)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Any spacing, in the project's units or another (1250, 1.25 m, 4'-0\").",
-                    )
-                    .weak(),
+                crate::props::info(
+                    ui,
+                    "Any spacing, in the project's units or another (1250, 1.25 m, 4'-0\").",
+                    "",
                 );
                 crate::props::flow(ui, |ui| {
                     ui.label("Every");
-                    let r = ui.add(
-                        egui::TextEdit::singleline(&mut text)
-                            .vertical_align(egui::Align::Center)
-                            .desired_width(110.0),
-                    );
+                    let r =
+                        crate::props::text_field(ui, egui::TextEdit::singleline(&mut text), 110.0);
                     if !r.has_focus() && !r.lost_focus() && ui.memory(|m| m.focused().is_none()) {
                         r.request_focus();
                     }
@@ -956,6 +1006,10 @@ impl CreaBimApp {
         let mut change: Option<(String, HiddenEdit)> = None;
         // switches that are not the view's own: run as menu actions
         let mut extra: Option<&str> = None;
+        let mut ground_3d: Option<creabim_core::GroundState> = None;
+        let mut ground_3d_was: Option<f32> = None;
+        let mut envelope_3d: Option<bool> = None;
+        let mut lot_lines_3d: Option<bool> = None;
         let mut reveal = None;
         let mut colour_of = None;
         let mut xray_of = None;
@@ -971,7 +1025,8 @@ impl CreaBimApp {
             VisTarget::Window3d => ("visibility.3d", "navigate"),
         };
         // folded or open as it was left, between sessions too
-        if self.prop_header(ui, key, &title, t != VisTarget::Window3d, Some(help)) {
+        let open = self.prop_header(ui, key, &title, t != VisTarget::Window3d, Some(help));
+        crate::props::fold(ui, open, |ui| {
             // flush in its box, as Blender's (MU22)
             ui.vertical(|ui| {
                 // as Blender's (MU22): check boxes in the value column, each
@@ -1014,6 +1069,66 @@ impl CreaBimApp {
                         {
                             extra = Some("xray");
                         }
+                        let has_ground = self.doc.model().iter().any(|e| {
+                            matches!(&e.kind, ElementKind::Site(s)
+                                if matches!(s.form, creabim_core::SiteForm::Terrain { .. }))
+                        });
+                        if has_ground {
+                            let now = self.shell.settings.ground_3d;
+                            let mut g = now;
+                            crate::props::row(ui, "Ground", |ui| {
+                                egui::ComboBox::from_id_salt("vis3d.ground")
+                                    .icon(crate::props::combo_icon)
+                                    .selected_text(g.label())
+                                    .show_ui(ui, |ui| {
+                                        for o in creabim_core::GroundState::ALL {
+                                            ui.selectable_value(&mut g, o, o.label());
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text("Before shows the ground as surveyed, with no roads. Both shows the ground as it was see-through over the works where they changed it")
+                            });
+                            if g != now {
+                                ground_3d = Some(g);
+                            }
+                            // between the two grounds: how much of the
+                            // ground as it was shows over the works
+                            if g == creabim_core::GroundState::Both {
+                                let mut was = self.shell.settings.ground_3d_was * 100.0;
+                                let moved = crate::props::row(ui, "As it was", |ui| {
+                                    crate::props::fill(
+                                        ui,
+                                        egui::Slider::new(&mut was, 5.0..=95.0)
+                                            .fixed_decimals(0)
+                                            .suffix(" %"),
+                                    )
+                                    .on_hover_text("How solid the ground as surveyed is over the works: slide down to see the works, up to see the ground they replaced")
+                                    .changed()
+                                });
+                                if moved {
+                                    ground_3d_was = Some(was / 100.0);
+                                }
+                            }
+                        }
+                        let has_lot = self.doc.model().iter().any(|e| {
+                            matches!(&e.kind, ElementKind::Site(s) if s.is_property())
+                        });
+                        if has_lot {
+                            let mut lines = !self.shell.settings.lot_lines_3d_off;
+                            if crate::props::check(ui, "Property", &mut lines, "Lines on the ground")
+                                .on_hover_text("The property's boundary and its setback lying on the ground, in the plan's colours. Never printed or exported")
+                                .changed()
+                            {
+                                lot_lines_3d = Some(lines);
+                            }
+                            let mut on = !self.shell.settings.envelope_3d_off;
+                            if crate::props::check(ui, "Envelope", &mut on, "Of the property")
+                                .on_hover_text("The space the planning rules leave to build in, outlined: the buildable area up to the height limit, under the angle planes. Never printed or exported")
+                                .changed()
+                            {
+                                envelope_3d = Some(on);
+                            }
+                        }
                         let mut colour = self.shell.settings.hidden_colour_3d;
                         if crate::props::switch(ui, &mut colour, "Hidden elements in colour")
                             .on_hover_text("What is inside walls, slabs and roofs shows through them in its own colours")
@@ -1052,81 +1167,112 @@ impl CreaBimApp {
                 {
                     extra = Some("guides.toggle");
                 }
-                let cats_open = crate::props::subsection(ui, "vis.categories", "Categories", true);
-                // two compact columns, as Blender's lists of toggles
-                let cols = if ui.available_width() >= 180.0 { 2 } else { 1 };
-                let cw = (ui.available_width() / cols as f32 - 4.0).max(60.0);
-                if cats_open { egui::Grid::new(("vis-cats", format!("{t:?}")))
-                    .num_columns(cols)
-                    .spacing(egui::vec2(4.0, 1.0))
-                    .show(ui, |ui| {
-                        for (i, c) in Category::ALL.iter().enumerate() {
-                            let mut shown = !h.hides_category(*c);
-                            if crate::props::tick(ui, &mut shown, c.label(), cw).changed() {
-                                let c = *c;
-                                let label = format!(
-                                    "{} {}",
-                                    if shown { "Show" } else { "Hide" },
-                                    c.label()
-                                );
-                                change =
-                                    Some((label, Box::new(move |h| h.set_category(c, !shown))));
+            });
+        });
+        // the categories a section of their own, after the view's: inside
+        // it the view's section ran too long (owner MU107)
+        let cat_key = match t {
+            VisTarget::View(_) => "visibility.categories",
+            VisTarget::Window3d => "visibility.categories3d",
+        };
+        let open = self.prop_header(
+            ui,
+            cat_key,
+            "Categories",
+            t != VisTarget::Window3d,
+            Some(help),
+        );
+        crate::props::fold(ui, open, |ui| {
+            ui.vertical(|ui| {
+                {
+                    // two compact columns, as Blender's lists of toggles
+                    let cols = if ui.available_width() >= 180.0 { 2 } else { 1 };
+                    let cw = (ui.available_width() / cols as f32 - 4.0).max(60.0);
+                    egui::Grid::new(("vis-cats", format!("{t:?}")))
+                        .num_columns(cols)
+                        .spacing(egui::vec2(4.0, 1.0))
+                        .show(ui, |ui| {
+                            for (i, c) in Category::ALL.iter().enumerate() {
+                                let mut shown = !h.hides_category(*c);
+                                if crate::props::tick(ui, &mut shown, c.label(), cw).changed() {
+                                    let c = *c;
+                                    let label = format!(
+                                        "{} {}",
+                                        if shown { "Show" } else { "Hide" },
+                                        c.label()
+                                    );
+                                    change =
+                                        Some((label, Box::new(move |h| h.set_category(c, !shown))));
+                                }
+                                if i % cols == cols - 1 {
+                                    ui.end_row();
+                                }
                             }
-                            if i % cols == cols - 1 {
-                                ui.end_row();
-                            }
-                        }
-                    }); }
+                        });
+                }
                 let groups: Vec<(ElementId, String, [f32; 3])> = grids::groups(self.doc.model())
                     .into_iter()
                     .map(|(e, g)| (e.id, e.name.clone(), g.color))
                     .collect();
                 if !groups.is_empty() {
-                    if crate::props::subsection(ui, "vis.grids", "Grid systems", true) { ui.add_enabled_ui(!h.hides_category(Category::Grids), |ui| {
-                        for (id, name, color) in groups {
-                            crate::props::flow(ui, |ui| {
-                                swatch(ui, color);
-                                let mut shown = !h.grid_groups.contains(&id);
-                                let w = ui.available_width();
-                                if crate::props::tick(ui, &mut shown, &name, w).changed() {
-                                    let label = if shown {
-                                        "Show grid system"
-                                    } else {
-                                        "Hide grid system"
-                                    };
-                                    change = Some((
-                                        label.into(),
-                                        Box::new(move |h| h.set_grid_group(id, !shown)),
-                                    ));
-                                }
-                            });
-                        }
-                    });
-                }
-                let hidden: Vec<(ElementId, String)> = h
-                    .elements
-                    .iter()
-                    .filter_map(|id| self.doc.model().get(*id))
-                    .map(|e| (e.id, e.name.clone()))
-                    .collect();
-                if !hidden.is_empty() {
-                    crate::props::subsection(ui, "vis.hidden", "Hidden elements", true);
-                    for (id, name) in hidden {
-                        crate::props::flow(ui, |ui| {
-                            ui.label(name);
-                            if ui.small_button("Unhide").clicked() {
-                                change = Some((
-                                    "Show hidden element".into(),
-                                    Box::new(move |h| h.set_element(id, false)),
-                                ));
+                    crate::props::sub_box(ui, "vis.grids", "Grid systems", None, true, |ui| {
+                        ui.add_enabled_ui(!h.hides_category(Category::Grids), |ui| {
+                            for (id, name, color) in groups {
+                                crate::props::flow(ui, |ui| {
+                                    swatch(ui, color);
+                                    let mut shown = !h.grid_groups.contains(&id);
+                                    let w = ui.available_width();
+                                    if crate::props::tick(ui, &mut shown, &name, w).changed() {
+                                        let label = if shown {
+                                            "Show grid system"
+                                        } else {
+                                            "Hide grid system"
+                                        };
+                                        change = Some((
+                                            label.into(),
+                                            Box::new(move |h| h.set_grid_group(id, !shown)),
+                                        ));
+                                    }
+                                });
                             }
-                        }); }
+                        });
+                    });
+                    let hidden: Vec<(ElementId, String)> = h
+                        .elements
+                        .iter()
+                        .filter_map(|id| self.doc.model().get(*id))
+                        .map(|e| (e.id, e.name.clone()))
+                        .collect();
+                    if !hidden.is_empty() {
+                        let n = hidden.len();
+                        crate::props::sub_box(
+                            ui,
+                            "vis.hidden",
+                            "Hidden elements",
+                            Some(n),
+                            true,
+                            |ui| {
+                                for (id, name) in hidden {
+                                    crate::props::flow(ui, |ui| {
+                                        ui.label(name);
+                                        if ui.small_button("Unhide").clicked() {
+                                            change = Some((
+                                                "Show hidden element".into(),
+                                                Box::new(move |h| h.set_element(id, false)),
+                                            ));
+                                        }
+                                    });
+                                }
+                            },
+                        );
                     }
                 }
                 ui.add_space(3.0);
                 if crate::props::row(ui, "", |ui| {
                     ui.add_enabled(!h.is_empty(), egui::Button::new("Show everything"))
-                        .on_hover_text("Right-click an element in a view to hide it or its category there.")
+                        .on_hover_text(
+                            "Right-click an element in a view to hide it or its category there.",
+                        )
                         .clicked()
                 }) {
                     change = Some((
@@ -1135,7 +1281,7 @@ impl CreaBimApp {
                     ));
                 }
             });
-        }
+        });
         if let Some((label, f)) = change {
             self.set_view_hidden(t, &label, f);
         }
@@ -1147,6 +1293,27 @@ impl CreaBimApp {
         }
         if let Some(id) = xray_of {
             self.toggle_view_xray(id);
+        }
+        if let Some(g) = ground_3d {
+            self.set_ground_3d(g);
+        }
+        if let Some(on) = envelope_3d {
+            let s = &mut self.shell.settings;
+            s.envelope_3d_off = !on;
+            s.store();
+            self.geometry_key = None;
+        }
+        if let Some(on) = lot_lines_3d {
+            let s = &mut self.shell.settings;
+            s.lot_lines_3d_off = !on;
+            s.store();
+            self.geometry_key = None;
+        }
+        if let Some(v) = ground_3d_was {
+            let s = &mut self.shell.settings;
+            s.ground_3d_was = v;
+            s.store();
+            self.geometry_key = None;
         }
         match extra {
             Some("guides.toggle") => self.set_guides_hidden(!self.shell.settings.guides_hidden),
@@ -1164,148 +1331,340 @@ impl CreaBimApp {
         }
     }
 
-    /// Every grid system, with the one new lines go in, and a button for a
-    /// new one.
-    pub(super) fn grid_systems_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Grid systems").strong());
-        let model = self.doc.model();
-        let active = self.active_grid_group();
-        let rows: Vec<(Option<ElementId>, String, [f32; 3], usize)> =
-            std::iter::once((None, "No grid system".to_string(), grids::UNGROUPED_COLOR))
-                .chain(
-                    grids::groups(model)
-                        .into_iter()
-                        .map(|(e, g)| (Some(e.id), e.name.clone(), g.color)),
-                )
-                .map(|(id, name, c)| (id, name, c, grid_count(model, id)))
-                .collect();
-        let mut pick = None;
-        let mut edit = None;
-        for (id, name, color, n) in rows {
-            crate::props::flow(ui, |ui| {
-                if ui
-                    .radio(active == id, "")
-                    .on_hover_text("New grid lines go here")
-                    .clicked()
-                {
-                    pick = Some(id);
-                }
-                swatch(ui, color);
-                ui.label(format!("{name} ({n})"));
-                if let Some(g) = id {
-                    if ui.small_button("Edit").clicked() {
-                        edit = Some(g);
-                    }
-                }
-            });
-        }
-        if ui.button("New grid system").clicked() {
-            self.new_grid_group();
-        }
-        if let Some(g) = pick {
-            self.plan.grid_group = g;
-        }
-        if let Some(g) = edit {
-            self.selection.only(g);
-            self.face = None;
-        }
-    }
-
-    /// Properties of a grid group. Returns the undo label when it changed.
+    /// A grid system's settings when it is selected: under Settings, its
+    /// groups boxed (the Grid tool's tab shows them as sections, MU68).
     pub(super) fn grid_group_properties(
         &mut self,
         ui: &mut egui::Ui,
         id: ElementId,
         g: &mut GridGroup,
+        in_tool: bool,
+    ) -> &'static str {
+        crate::props::info(
+            ui,
+            "A grid system: its lines are labelled on their own, with the prefix in front.",
+            "",
+        );
+        let a = grid_group_head(ui, g);
+        let b = self.grid_group_rest(ui, id, g, in_tool);
+        if b.is_empty() {
+            a
+        } else {
+            b
+        }
+    }
+
+    /// A group of a grid system's settings: a full section in the Grid
+    /// tool's tab, where it is top level; a box under Settings.
+    fn grid_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        in_tool: bool,
+        key: &str,
+        title: &str,
+        open: bool,
+        add: impl FnOnce(&mut egui::Ui),
+    ) {
+        if in_tool {
+            let open = self.prop_header(ui, key, title, open, Some("grids"));
+            crate::props::fold(ui, open, add);
+        } else {
+            crate::props::sub_box(ui, key, title, None, open, add);
+        }
+    }
+
+    /// Numbering, new lines, laying out, and its lines.
+    fn grid_group_rest(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: ElementId,
+        g: &mut GridGroup,
+        in_tool: bool,
     ) -> &'static str {
         let mut label = "";
-        ui.label(
-            egui::RichText::new(
-                "A grid system: its lines are labelled on their own, with the prefix in front.",
-            )
-            .weak(),
-        );
-        crate::props::flow(ui, |ui| {
-            ui.label("Prefix");
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut g.prefix)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(60.0),
-                )
-                .changed()
-            {
-                label = "Grid prefix";
+        let curved = g.shape == Shape::Curved;
+        // set once: folded at first (REV01)
+        self.grid_section(ui, in_tool, "gridnumbering", "Numbering", false, |ui| {
+            let style = |ui: &mut egui::Ui, text: &str, s: &mut LabelStyle| {
+                let mut changed = false;
+                crate::app::helpui::combo(ui, text)
+                    .selected_text(s.label())
+                    .show_ui(ui, |ui| {
+                        for o in LabelStyle::ALL {
+                            changed |= ui.selectable_value(s, o, o.label()).changed();
+                        }
+                    });
+                changed
+            };
+            let (a, b) = if curved {
+                ("Spokes", "Rings")
+            } else {
+                ("Across", "Along")
+            };
+            if style(ui, a, &mut g.vertical) | style(ui, b, &mut g.horizontal) {
+                label = "Grid label style";
             }
-        });
-        let style = |ui: &mut egui::Ui, text: &str, salt: &str, s: &mut LabelStyle| {
-            let mut changed = false;
-            egui::ComboBox::new(("gg-style", salt, id), text)
-                .selected_text(s.label())
-                .show_ui(ui, |ui| {
-                    for o in LabelStyle::ALL {
-                        changed |= ui.selectable_value(s, o, o.label()).changed();
+            // a third set, for lines that run neither way (decision 3)
+            if !curved {
+                if style(ui, "Diagonal", &mut g.diagonal) {
+                    label = "Grid label style";
+                }
+                crate::props::row(ui, "Mark", |ui| {
+                    if crate::props::text_field(
+                        ui,
+                        egui::TextEdit::singleline(&mut g.diagonal_mark),
+                        f32::INFINITY,
+                    )
+                    .on_hover_text("After a diagonal's label: A', B'…")
+                    .changed()
+                    {
+                        label = "Grid label style";
                     }
                 });
-            changed
-        };
-        if style(ui, "North–south lines", "v", &mut g.vertical)
-            | style(ui, "East–west lines", "h", &mut g.horizontal)
-        {
-            label = "Grid label style";
-        }
-        crate::props::flow(ui, |ui| {
-            ui.label("Colour");
-            // the picker works in 8-bit sRGB, as the colour is stored
-            let mut c = g.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-            if ui.color_edit_button_srgb(&mut c).changed() {
-                g.color = c.map(|v| v as f32 / 255.0);
-                label = "Grid colour";
             }
         });
-        let n = grid_count(self.doc.model(), Some(id));
-        ui.label(format!(
-            "{n} lines, e.g. {}{} and {}{}.",
-            g.prefix,
-            g.vertical.format(1),
-            g.prefix,
-            g.horizontal.format(1)
-        ));
-        crate::props::flow(ui, |ui| {
-            let active = self.active_grid_group() == Some(id);
-            if ui
-                .add_enabled(!active, egui::Button::new("Draw lines in it"))
+        // what a new line gets (decision 2)
+        self.grid_section(ui, in_tool, "gridnewlines", "New lines", false, |ui| {
+            // four choices don't fit a segmented row: a list (MU66 look)
+            let text = |b: Bubbles| match b {
+                Bubbles::Start => "At the start",
+                Bubbles::End => "At the end",
+                Bubbles::Both => "At both ends",
+                Bubbles::None => "None",
+            };
+            let mut pick = None;
+            crate::app::helpui::combo(ui, "Bubbles")
+                .selected_text(text(g.bubbles))
+                .show_ui(ui, |ui| {
+                    for b in Bubbles::ALL {
+                        if ui.selectable_label(g.bubbles == b, text(b)).clicked() {
+                            pick = Some(b);
+                        }
+                    }
+                });
+            if let Some(b) = pick.filter(|b| *b != g.bubbles) {
+                g.bubbles = b;
+                label = "Grid bubbles for new lines";
+            }
+        });
+        // a whole grid from the engineer's spacing (decision 5)
+        let mut add = false;
+        self.grid_section(ui, in_tool, "gridlayout", "Lay out lines", false, |ui| {
+            let (a, b) = if curved {
+                ("Spokes", "Rings")
+            } else {
+                ("Across", "Along")
+            };
+            if spacing_row(ui, id, a, &mut g.spacing_across, curved) {
+                label = "Grid spacing";
+            }
+            if spacing_row(ui, id, b, &mut g.spacing_along, false) {
+                label = "Grid spacing";
+            }
+            crate::props::row(ui, "Run past", |ui| {
+                if crate::props::fill(ui, crate::units::drag(&mut g.overhang).range(0.0..=50.0))
+                    .on_hover_text("How far the lines run past the last line crossing them")
+                    .changed()
+                {
+                    label = "Grid spacing";
+                }
+            });
+            let some = !g.spacing_across.is_empty() || !g.spacing_along.is_empty();
+            // on the rows' own edges (REV01, decision 4)
+            if full_button(ui, some, "Add lines")
+                .on_hover_text(
+                    "Lines at the spacing above, from the origin; lines already there are kept",
+                )
                 .clicked()
             {
-                self.plan.grid_group = Some(id);
-                self.plan.tool = Tool::Grid;
-                self.plan.cancel();
-                self.status = Tool::Grid.hint().into();
-            }
-            if ui.button("Select its lines").clicked() {
-                let ids = grid_ids(self.doc.model(), Some(id));
-                self.selection.clear();
-                self.selection.extend(ids, false);
-            }
-            if ui.button("Renumber in order").clicked() {
-                let tx = grids::renumber(self.doc.model(), Some(id));
-                if !tx.ops.is_empty() {
-                    let r = self.doc.commit(tx);
-                    self.report(r, "Relabelled the lines west to east and south to north.");
-                }
+                add = true;
             }
         });
-        ui.label(
-            egui::RichText::new(
-                "Deleting the system keeps its lines, ungrouped and with their labels.",
-            )
-            .weak(),
-        );
+        if add {
+            let tx = grids::lay_out(self.doc.model(), id, g);
+            let n = tx.ops.len();
+            if n == 0 {
+                self.status = "Those lines are all there already.".into();
+            } else {
+                let r = self.doc.commit(tx);
+                self.report(r, format!("Added {n} grid lines, one undo step."));
+            }
+        }
+        let its_lines = |this: &mut Self, ui: &mut egui::Ui| {
+            let n = grid_count(this.doc.model(), Some(id));
+            crate::props::worked_out(
+                ui,
+                "grid-system",
+                &[
+                    crate::props::Worked::new("Lines", n.to_string()),
+                    crate::props::Worked::new(
+                        "Labels",
+                        format!(
+                            "{}{}, {}{}…",
+                            g.prefix,
+                            g.vertical.format(1),
+                            g.prefix,
+                            g.horizontal.format(1)
+                        ),
+                    ),
+                ],
+            );
+            // selected, it offers to draw in it; in the tool, that is now
+            if !in_tool {
+                let active = this.active_grid_group() == Some(id) && this.plan.tool == Tool::Grid;
+                if full_button(ui, !active, "Draw lines in it").clicked() {
+                    this.plan.grid_group = Some(id);
+                    this.plan.tool = Tool::Grid;
+                    this.plan.cancel();
+                    this.status = Tool::Grid.hint().into();
+                }
+            }
+            let (sel, renum) = button_pair(ui, "Select lines", "Renumber");
+            if sel {
+                let ids = grid_ids(this.doc.model(), Some(id));
+                this.selection.clear();
+                this.selection.extend(ids, false);
+            }
+            if renum {
+                let tx = grids::renumber(this.doc.model(), Some(id));
+                if tx.ops.is_empty() {
+                    this.status = "The lines are numbered in order already.".into();
+                } else {
+                    let r = this.doc.commit(tx);
+                    this.report(
+                        r,
+                        "Relabelled each direction in order, in the system's own axes.",
+                    );
+                }
+            }
+            if !in_tool {
+                crate::props::info(
+                    ui,
+                    "Deleting the system keeps its lines, ungrouped and with their labels.",
+                    "",
+                );
+            }
+        };
+        if in_tool {
+            let open = self.prop_header(ui, "gridlines", "Its lines", true, Some("grids"));
+            if open {
+                its_lines(self, ui);
+            }
+        } else {
+            its_lines(self, ui);
+        }
         label
     }
 
-    /// The grid system part of a grid line's properties.
-    pub(super) fn grid_properties(&mut self, ui: &mut egui::Ui, g: &mut Grid) -> &'static str {
+    /// The Grid tool's own tab (REV01, decision 1): the grid system new
+    /// lines go in, picked or made here, and its settings, so nothing has
+    /// to be found or selected first.
+    pub(super) fn grid_tool_panel(&mut self, ui: &mut egui::Ui) {
+        let model = self.doc.model();
+        let groups: Vec<(ElementId, String)> = grids::groups(model)
+            .into_iter()
+            .map(|(e, _)| (e.id, e.name.clone()))
+            .collect();
+        let active = self.active_grid_group();
+        let current = active
+            .and_then(|g| model.get(g))
+            .map_or("No grid system".to_string(), |e| e.name.clone());
+        let before: Option<GridGroup> = active.and_then(|id| match &model.get(id)?.kind {
+            ElementKind::GridGroup(g) => Some(g.clone()),
+            _ => None,
+        });
+        let mut g = before.clone();
+        let mut pick: Option<Option<ElementId>> = None;
+        let mut new = false;
+        let mut head = "";
+        // the system and its own settings, a section as Graphics or View
+        // range are (MU68), then its groups as sections of their own
+        let open = self.prop_header(ui, "gridtool", "Grid system", true, Some("grids"));
+        crate::props::fold(ui, open, |ui| {
+            crate::props::row(ui, "System", |ui| {
+                let h = ui.spacing().interact_size.y;
+                // the + on the fields' right edge, the list filling the rest up
+                // to it (MU68: the + sat off the edge, then short of it)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized([h, h], egui::Button::new("+"))
+                        .on_hover_text("A new grid system: new lines go in it")
+                        .clicked()
+                    {
+                        new = true;
+                    }
+                    let w = ui.available_width().floor().max(40.0);
+                    let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().icon_width;
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_max_width(w);
+                        egui::ComboBox::from_id_salt("gridtool.system")
+                            .icon(crate::props::combo_icon)
+                            .width((w - pad).max(20.0))
+                            .truncate()
+                            .selected_text(current.as_str())
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(active.is_none(), "No grid system")
+                                    .clicked()
+                                {
+                                    pick = Some(None);
+                                }
+                                for (gid, name) in &groups {
+                                    if ui.selectable_label(active == Some(*gid), name).clicked() {
+                                        pick = Some(Some(*gid));
+                                    }
+                                }
+                            })
+                            // its whole name when cut short (MU69)
+                            .response
+                            .on_hover_text(current.as_str());
+                    });
+                });
+            });
+            match g.as_mut() {
+                Some(g) => head = grid_group_head(ui, g),
+                None => crate::props::plain_note(
+                    ui,
+                    "Lines drawn now are numbered on their own. + makes a grid system: its own prefix, numbering, turn and spacing.",
+                ),
+            }
+        });
+        let mut rest = "";
+        if let (Some(id), Some(g)) = (active, g.as_mut()) {
+            rest = self.grid_group_rest(ui, id, g, true);
+        }
+        if let (Some(id), Some(g), Some(before)) = (active, &g, &before) {
+            let label = if rest.is_empty() { head } else { rest };
+            if !label.is_empty() && g != before {
+                let g = g.clone();
+                let r = self.doc.edit_merged(id, label, |e| {
+                    e.kind = ElementKind::GridGroup(g.clone());
+                });
+                if let Err(e) = r {
+                    self.status = format!("Couldn't do that: {e}");
+                }
+            }
+        }
+        if let Some(to) = pick {
+            self.plan.grid_group = to;
+            let name = to
+                .and_then(|g| self.doc.model().get(g))
+                .map_or("no grid system".to_string(), |e| e.name.clone());
+            self.status = format!("New grid lines go in {name}.");
+        }
+        if new {
+            self.new_grid_group_here(false);
+        }
+    }
+
+    /// The grid system part of a grid line's properties, then its own
+    /// settings: bubbles, elbows, shape, levels, and its ends in this plan.
+    pub(super) fn grid_properties(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: ElementId,
+        g: &mut Grid,
+    ) -> &'static str {
         let mut label = "";
         let model = self.doc.model();
         let groups: Vec<(ElementId, String)> = grids::groups(model)
@@ -1314,25 +1673,205 @@ impl CreaBimApp {
             .collect();
         let current = grids::group_of(model, g).map(|(e, _)| e.name.clone());
         let mut pick = None;
-        crate::app::helpui::combo(ui, "Grid system")
+        crate::app::helpui::combo(ui, "System")
             .selected_text(current.unwrap_or_else(|| "None".into()))
             .show_ui(ui, |ui| {
                 if ui.selectable_label(g.group.is_none(), "None").clicked() {
                     pick = Some(None);
                 }
-                for (id, name) in &groups {
-                    if ui.selectable_label(g.group == Some(*id), name).clicked() {
-                        pick = Some(Some(*id));
+                for (gid, name) in &groups {
+                    if ui.selectable_label(g.group == Some(*gid), name).clicked() {
+                        pick = Some(Some(*gid));
                     }
                 }
             });
         if let Some(to) = pick.filter(|to| *to != g.group) {
             // it takes the next label of its new group
-            g.label = grids::next_label(model, to, g.start, g.end);
             g.group = to;
+            g.label = grids::next_label_for(model, g);
             label = "Move grid line to another system";
         }
-        ui.label(format!("Shows as {}", grids::display_label(model, g)));
+        let scheme = grids::group_of(model, g)
+            .map(|(_, s)| s.clone())
+            .unwrap_or_default();
+        let dir = scheme.direction(g);
+        crate::props::read_rows(
+            ui,
+            &[
+                crate::props::ReadRow::new(
+                    "Shows as",
+                    crate::props::Read::Text(grids::display_label(model, g)),
+                    "Its system's prefix, then its label",
+                ),
+                crate::props::ReadRow::new(
+                    "Runs",
+                    crate::props::Read::Text(format!(
+                        "{} · {}",
+                        dir.label(),
+                        scheme.style(dir).0.label()
+                    )),
+                    "Which way it runs in its system, which sets how it is counted. A line more than 20° off both directions is a diagonal, counted on its own",
+                ),
+            ],
+        );
+        // which ends have a bubble, and how far each is moved aside
+        let (mut s, mut e) = (g.bubbles.at_start(), g.bubbles.at_end());
+        if crate::props::check(ui, "Bubbles", &mut s, "At its start").changed() {
+            g.bubbles = g.bubbles.with(false, s);
+            label = "Grid bubbles";
+        }
+        if crate::props::check(ui, "", &mut e, "At its end").changed() {
+            g.bubbles = g.bubbles.with(true, e);
+            label = "Grid bubbles";
+        }
+        // a box with one full-width row per bubble, as In this plan (MU66:
+        // two fields in one row grew while typed in and pushed the panel)
+        let ends: Vec<(usize, &str)> = [(0, s, "Start"), (1, e, "End")]
+            .into_iter()
+            .filter(|(_, on, _)| *on)
+            .map(|(k, _, t)| (k, t))
+            .collect();
+        if !ends.is_empty() {
+            crate::props::sub_box(ui, "grid.elbows", "Elbows", None, true, |ui| {
+                for (k, name) in &ends {
+                    crate::props::row(ui, name, |ui| {
+                        if crate::props::fill(
+                            ui,
+                            crate::units::drag(&mut g.elbows[*k]).range(-20.0..=20.0),
+                        )
+                        .on_hover_text(
+                            "How far the bubble steps aside on a jog, to the left as the line runs out; 0 keeps it on the line. Or drag the bubble's square grip sideways",
+                        )
+                        .changed()
+                        {
+                            label = "Grid bubble elbow";
+                        }
+                    });
+                }
+            });
+        }
+        // a straight line or an arc
+        let mut arc = g.bulge != 0.0;
+        if crate::props::choice(
+            ui,
+            "Shape",
+            &mut arc,
+            &[
+                (false, "Line", "A straight line"),
+                (true, "Arc", "An arc through its two ends"),
+            ],
+        ) {
+            g.bulge = if arc { 0.2 } else { 0.0 };
+            label = "Grid line shape";
+        }
+        if arc {
+            // how far its middle stands off the straight line
+            let half = g.start.distance(g.end) / 2.0;
+            let mut rise = g.bulge * half;
+            crate::props::row(ui, "Rise", |ui| {
+                if crate::props::fill(ui, crate::units::drag(&mut rise).range(-half..=half))
+                    .on_hover_text("How far its middle stands off the straight line between its ends; negative bows the other way")
+                    .changed()
+                    && half > 1e-6
+                {
+                    g.bulge = (rise / half).clamp(-1.0, 1.0);
+                    if g.bulge == 0.0 {
+                        g.bulge = 1e-3;
+                    }
+                    label = "Grid line shape";
+                }
+            });
+        }
+        // the levels it shows on (decision 6)
+        let levels: Vec<(ElementId, String)> = model
+            .levels()
+            .map(|(e, _)| (e.id, e.name.clone()))
+            .collect();
+        let mut some = !g.levels.is_empty();
+        if crate::props::choice(
+            ui,
+            "Levels",
+            &mut some,
+            &[
+                (false, "All", "It shows on every level"),
+                (true, "Some", "It shows on the levels ticked"),
+            ],
+        ) {
+            g.levels = if some {
+                // start from the level being worked on
+                self.work_level()
+                    .map(|(l, _)| vec![l])
+                    .or_else(|| levels.first().map(|(l, _)| vec![*l]))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            label = "Grid line levels";
+        }
+        if some {
+            for (i, (lid, name)) in levels.iter().enumerate() {
+                let mut on = g.levels.contains(lid);
+                if crate::props::check(ui, if i == 0 { "On" } else { "" }, &mut on, name.as_str())
+                    .changed()
+                {
+                    if on {
+                        g.levels.push(*lid);
+                    } else {
+                        g.levels.retain(|l| l != lid);
+                    }
+                    label = "Grid line levels";
+                }
+            }
+        }
+        // shorter in the plan in front only
+        let plan = self
+            .active_view
+            .filter(|v| matches!(self.view(*v).map(|v| &v.kind), Some(ViewKind::Plan { .. })));
+        if let Some(v) = plan {
+            let mut t = self
+                .view(v)
+                .and_then(|view| view.grid_ends.get(&id).copied())
+                .unwrap_or([0.0, 0.0]);
+            let before = t;
+            let mut reset = false;
+            crate::props::sub_box(ui, "grid.inplan", "In this plan", None, true, |ui| {
+                for (name, k) in [("Start in", 0), ("End in", 1)] {
+                    crate::props::row(ui, name, |ui| {
+                        crate::props::fill(ui, crate::units::drag(&mut t[k]).range(0.0..=1e4))
+                            .on_hover_text(
+                                "How much shorter it is drawn at this end, in this plan only",
+                            );
+                    });
+                }
+                if t != [0.0, 0.0]
+                    && ui
+                        .add(
+                            egui::Button::new("Draw it whole here")
+                                .min_size(egui::vec2(ui.available_width() - 6.0, 24.0)),
+                        )
+                        .clicked()
+                {
+                    reset = true;
+                }
+            });
+            if reset {
+                t = [0.0, 0.0];
+            }
+            if t != before {
+                let r = self.doc.edit_merged(v, "Grid ends in this plan", |e| {
+                    if let ElementKind::View(view) = &mut e.kind {
+                        if t == [0.0, 0.0] {
+                            view.grid_ends.remove(&id);
+                        } else {
+                            view.grid_ends.insert(id, t);
+                        }
+                    }
+                });
+                if let Err(e) = r {
+                    self.status = format!("Couldn't do that: {e}");
+                }
+            }
+        }
         label
     }
 
@@ -1340,16 +1879,39 @@ impl CreaBimApp {
 
     /// Grid lines the 3D view shows, with their colour.
     fn grids_3d(&self) -> Vec<(ElementId, Grid, [f32; 3])> {
-        let model = self.doc.model();
         if self.vis3d.hides_category(Category::Grids) {
             return vec![];
         }
+        self.grids_3d_all()
+    }
+
+    /// Every grid line the 3D view could draw, the Grids switch aside.
+    fn grids_3d_all(&self) -> Vec<(ElementId, Grid, [f32; 3])> {
+        let model = self.doc.model();
         let hidden = self.hidden_in_3d();
         model
             .iter()
             .filter(|e| !hidden.contains(&e.id) && !self.hidden.contains(&e.id))
             .filter_map(|e| match &e.kind {
-                ElementKind::Grid(g) => Some((e.id, g.clone(), grids::color_of(model, g))),
+                ElementKind::Grid(g) => {
+                    // the plans' colour (MU67): Auto is the grid ink
+                    // (Auto reads on the view's background: lighter on a
+                    // dark one, MU70)
+                    let auto = if self.paper_is_dark {
+                        Color32::from_rgb(142, 166, 200)
+                    } else {
+                        crate::planview::GRID_INK
+                    };
+                    let c = crate::planview::grid_colour(model, g)
+                        .unwrap_or(auto)
+                        .to_array();
+                    let rgb = [
+                        c[0] as f32 / 255.0,
+                        c[1] as f32 / 255.0,
+                        c[2] as f32 / 255.0,
+                    ];
+                    Some((e.id, g.clone(), rgb))
+                }
                 _ => None,
             })
             .collect()
@@ -1380,45 +1942,201 @@ impl CreaBimApp {
         zs
     }
 
-    /// Depth-tested lines for the grid lines in 3D: along the line at each
-    /// level, up both ends, and out to the bubbles at the top.
+    /// Grid lines on or off in the 3D view (MU42).
+    pub(super) fn toggle_grids_3d(&mut self) {
+        // one switch with the 3D view's Grids category (MU69: two switches
+        // had to agree, so ticking Grids alone showed nothing)
+        let on = self.vis3d.hides_category(Category::Grids);
+        self.vis3d.set_category(Category::Grids, !on);
+        self.hidden_rev += 1;
+        self.snaps_3d = None;
+        let s = &mut self.shell.settings;
+        s.grids_3d = on;
+        s.hidden_3d = self.vis3d.categories.clone();
+        s.store();
+        self.geometry_key = None;
+        self.status = if on {
+            "Grid lines in 3D: flat on the working level. Alt+G hides them."
+        } else {
+            "Grid lines hidden in 3D; a selected one still shows. Alt+G shows them all."
+        }
+        .into();
+    }
+
+    /// The grid lines the 3D view draws now: all of them when they are
+    /// on, else only the selected ones (MU42).
+    fn shown_grids_3d(&self) -> Vec<(ElementId, Grid, [f32; 3])> {
+        let on = !self.vis3d.hides_category(Category::Grids);
+        // only those shown on the working level (decision 6)
+        let level = self.work_level().map(|(l, _)| l);
+        self.grids_3d_all()
+            .into_iter()
+            .filter(|(id, ..)| on || self.selection.contains(*id))
+            .filter(|(_, g, _)| level.is_none_or(|l| grids::on_level(g, l)))
+            .collect()
+    }
+
+    /// Where grid lines lie in 3D: flat on the working level (MU42: they
+    /// stood up the whole height before, through roofs and floors).
+    fn grid_z_3d(&self) -> f64 {
+        self.work_level()
+            .map_or_else(|| self.grid_heights_3d()[0], |(_, z)| z)
+    }
+
+    /// Depth-tested lines for the grid lines in 3D: each along its line on
+    /// the working level, faint, out to its bubbles; a selected one in the
+    /// selection colour. The model draws over them where it is in front.
     pub(super) fn grid_lines_3d(&self) -> Vec<Vertex> {
-        let zs = self.grid_heights_3d();
-        let (lo, hi) = (zs[0], zs[zs.len() - 1]);
+        self.grid_lines_3d_where(false)
+    }
+
+    /// The selected grid lines, for the selection's pass drawn through
+    /// everything (MU72: depth-tested, the ground hid most of it).
+    pub(super) fn selected_grid_lines_3d(&self) -> Vec<Vertex> {
+        // drawn bold over the view by draw_grid_bubbles instead (MU74: a
+        // one-pixel line in 3D against the plans' bold one)
+        vec![]
+    }
+
+    /// What the 3D grid lines are built from: the grids, their colours,
+    /// the working level and the background, as one number.
+    pub(super) fn grid_lines_3d_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for (id, g, c) in self.shown_grids_3d() {
+            id.hash(&mut h);
+            format!("{g:?}{c:?}").hash(&mut h);
+        }
+        self.grid_z_3d().to_bits().hash(&mut h);
+        self.paper_is_dark.hash(&mut h);
+        h.finish()
+    }
+
+    /// A grid line drawn over the 3D view as the plans draw a lit one:
+    /// bold and dashed, out to each bubble's ring.
+    fn paint_grid_3d(
+        &self,
+        painter: &egui::Painter,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        g: &Grid,
+        colour: Color32,
+    ) {
+        let z = self.grid_z_3d() + 0.03;
+        let stroke = egui::Stroke::new(2.0, colour);
+        let line: Vec<egui::Pos2> = grids::points(g)
+            .iter()
+            .filter_map(|q| project(q.extend(z)))
+            .collect();
+        if line.len() > 1 {
+            painter.extend(egui::Shape::dashed_line(&line, stroke, 12.0, 4.0));
+        }
+        let r = BUBBLE_R_3D
+            * creabim_geom::plan::bubble_scale(&grids::display_label(self.doc.model(), g)) as f32;
+        for (end, on) in [(false, g.bubbles.at_start()), (true, g.bubbles.at_end())] {
+            if !on {
+                continue;
+            }
+            let (at, leader) = grids::bubble(g, end, BUBBLE_OUT_3D);
+            let mut pts: Vec<egui::Pos2> = leader
+                .iter()
+                .chain(std::iter::once(&at))
+                .filter_map(|q| project(q.extend(z)))
+                .collect();
+            // up to the ring, not into the label
+            if let [.., a, b] = pts.as_slice() {
+                let (a, b) = (*a, *b);
+                let d = b - a;
+                if d.length() > r {
+                    let n = pts.len();
+                    pts[n - 1] = b - d.normalized() * r;
+                } else {
+                    pts.pop();
+                }
+            }
+            if pts.len() > 1 {
+                painter.extend(egui::Shape::dashed_line(&pts, stroke, 12.0, 4.0));
+            }
+        }
+    }
+
+    fn grid_lines_3d_where(&self, selected: bool) -> Vec<Vertex> {
+        // clear of the working level: at 5 mm they fought the ground and
+        // the ground grid for depth and broke up (MU72)
+        let z = self.grid_z_3d() + 0.03;
         let mut out = Vec::new();
-        for (id, g, color) in self.grids_3d() {
+        for (id, g, color) in self.shown_grids_3d() {
+            if self.selection.contains(id) != selected {
+                continue;
+            }
+            // their own colour (MU70: half way to the background they
+            // vanished on a dark one)
+            // selected: the selection's colour, as in the drawings (MU72:
+            // a fixed orange ignored the theme's)
             let c = if self.selection.contains(id) {
-                [0.95, 0.55, 0.20]
+                let a = crate::planview::accent_selected();
+                [
+                    a.r() as f32 / 255.0,
+                    a.g() as f32 / 255.0,
+                    a.b() as f32 / 255.0,
+                ]
             } else {
                 color
             };
-            let mut seg = |a: DVec3, b: DVec3| {
-                out.push(line_vertex(a.as_vec3().to_array(), c));
-                out.push(line_vertex(b.as_vec3().to_array(), c));
-            };
-            for z in &zs {
-                seg(g.start.extend(*z), g.end.extend(*z));
+            // the line (an arc in pieces), and out to each bubble it has
+            let mut runs = vec![grids::points(&g)];
+            for (end, on) in [(false, g.bubbles.at_start()), (true, g.bubbles.at_end())] {
+                if on {
+                    let (at, mut leader) = grids::bubble(&g, end, BUBBLE_OUT_3D);
+                    leader.push(at);
+                    runs.push(leader);
+                }
             }
-            let dir = (g.end - g.start).normalize_or_zero();
-            for (p, out_dir) in [(g.start, -dir), (g.end, dir)] {
-                seg(p.extend(lo), p.extend(hi));
-                seg(p.extend(hi), (p + out_dir * BUBBLE_OUT_3D).extend(hi));
+            // dashed as the plans draw it (MU74: a long dash and a dot
+            // here, a plain dash there), three of dash to one of gap, the
+            // pattern running on along the whole line
+            const PATTERN: [(f64, bool); 2] = [(0.75, true), (0.25, false)];
+            for run in runs {
+                let mut k = 0usize;
+                let mut left = PATTERN[0].0;
+                for w in run.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let len = a.distance(b);
+                    let dir = (b - a) / len.max(1e-9);
+                    let mut at = 0.0;
+                    while at < len - 1e-9 {
+                        let step = left.min(len - at);
+                        if PATTERN[k].1 {
+                            let p0 = a + dir * at;
+                            let p1 = a + dir * (at + step);
+                            out.push(line_vertex(p0.extend(z).as_vec3().to_array(), c));
+                            out.push(line_vertex(p1.extend(z).as_vec3().to_array(), c));
+                        }
+                        at += step;
+                        left -= step;
+                        if left <= 1e-9 {
+                            k = (k + 1) % PATTERN.len();
+                            left = PATTERN[k].0;
+                        }
+                    }
+                }
             }
         }
         out
     }
 
-    /// Where a grid line's bubbles are in 3D.
+    /// Where a grid line's bubbles are in 3D: at its ends, on the
+    /// working level.
     fn bubbles_3d(&self) -> Vec<(ElementId, String, [f32; 3], DVec3)> {
-        let zs = self.grid_heights_3d();
-        let hi = zs[zs.len() - 1];
+        let z = self.grid_z_3d();
         let model = self.doc.model();
         let mut out = vec![];
-        for (id, g, color) in self.grids_3d() {
-            let dir = (g.end - g.start).normalize_or_zero();
+        for (id, g, color) in self.shown_grids_3d() {
             let text = grids::display_label(model, &g);
-            for (p, d) in [(g.start, -dir), (g.end, dir)] {
-                out.push((id, text.clone(), color, (p + d * BUBBLE_OUT_3D).extend(hi)));
+            for (end, on) in [(false, g.bubbles.at_start()), (true, g.bubbles.at_end())] {
+                if on {
+                    let (at, _) = grids::bubble(&g, end, BUBBLE_OUT_3D);
+                    out.push((id, text.clone(), color, at.extend(z)));
+                }
             }
         }
         out
@@ -1431,23 +2149,66 @@ impl CreaBimApp {
         painter: &egui::Painter,
         project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
     ) {
+        // the grid line under the pointer, lit along its length (MU72: a
+        // 3D highlight tints solids only, so a line showed nothing)
+        let lit = painter.ctx().pointer_hover_pos().and_then(|p| {
+            self.plan
+                .hover
+                .as_ref()
+                .and_then(|h| h.at(crate::hoverpick::Pane::Window3d, p))
+        });
+        if let Some((_, g, _)) = lit
+            .filter(|id| !self.selection.contains(*id))
+            .and_then(|id| {
+                self.shown_grids_3d()
+                    .into_iter()
+                    .find(|(gid, ..)| *gid == id)
+            })
+        {
+            // the pointing colour, as the drawings' (blue), not the
+            // selection's
+            self.paint_grid_3d(painter, project, &g, crate::hoverpick::HOVER);
+        }
+        // selected: bold in the selection's colour, as the plans and the
+        // section marks show it (MU74)
+        for (id, g, _) in self.shown_grids_3d() {
+            if self.selection.contains(id) {
+                self.paint_grid_3d(painter, project, &g, crate::planview::accent_selected());
+            }
+        }
         for (id, text, color, at) in self.bubbles_3d() {
             let Some(c) = project(at) else { continue };
             if !painter.clip_rect().expand(20.0).contains(c) {
                 continue;
             }
             let selected = self.selection.contains(id);
+            let pointed = lit == Some(id) && !selected;
             let ring = if selected {
-                Color32::from_rgb(242, 140, 51)
+                crate::planview::accent_selected()
+            } else if pointed {
+                crate::hoverpick::HOVER
             } else {
                 color32(color)
             };
             let r = BUBBLE_R_3D * creabim_geom::plan::bubble_scale(&text) as f32;
+            // filled with the view's own background, so it follows the
+            // theme (MU70: always white)
+            let bg = if self.paper_is_dark {
+                BACKGROUND_3D_DARK
+            } else {
+                BACKGROUND_3D
+            };
+            let fill = Color32::from_rgba_unmultiplied(
+                (bg[0] * 255.0) as u8,
+                (bg[1] * 255.0) as u8,
+                (bg[2] * 255.0) as u8,
+                235,
+            );
             painter.circle(
                 c,
                 r,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 235),
-                egui::Stroke::new(if selected { 2.5 } else { 1.5 }, ring),
+                fill,
+                egui::Stroke::new(if selected || pointed { 2.5 } else { 1.5 }, ring),
             );
             painter.text(
                 c,
@@ -1462,6 +2223,47 @@ impl CreaBimApp {
     /// The grid line under `p` in the 3D view (a bubble, or its line at a
     /// level), with the point on it under the pointer, for picking and
     /// dragging it.
+    /// The grid line within a few pixels of `p` when it lies in front of
+    /// what the ray hits (`hit_t`), or nothing is hit: the ground or a floor
+    /// under it no longer takes the click (MU71).
+    pub(super) fn grid_line_in_front(
+        &self,
+        p: egui::Pos2,
+        project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
+        o: DVec3,
+        d: DVec3,
+        hit_t: Option<f32>,
+    ) -> Option<ElementId> {
+        let z = self.grid_z_3d();
+        let mut best: Option<(f32, ElementId)> = None;
+        for (id, g, _) in self.shown_grids_3d() {
+            for w in grids::points(&g).windows(2) {
+                let (a, b) = (w[0].extend(z), w[1].extend(z));
+                let (Some(sa), Some(sb)) = (project(a), project(b)) else {
+                    continue;
+                };
+                let ab = sb - sa;
+                let t = ((p - sa).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                let px = (sa + ab * t).distance(p);
+                if px >= 6.0 {
+                    continue;
+                }
+                // the point seen under the pointer (MU137: not as far along
+                // the line as on the screen, which parts in perspective)
+                let at = crate::snaps::point_seen_at(a, b, sa + ab * t, project);
+                // in the ray's own measure, as the hit's
+                let len2 = d.length_squared().max(1e-12);
+                let along = ((at - o).dot(d) / len2) as f32;
+                let tol = (0.05 / len2.sqrt()) as f32;
+                let in_front = hit_t.is_none_or(|h| along <= h + tol);
+                if in_front && best.is_none_or(|(bp, _)| px < bp) {
+                    best = Some((px, id));
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
     pub(super) fn grid_line_near(
         &self,
         p: egui::Pos2,
@@ -1519,16 +2321,21 @@ impl CreaBimApp {
             if only.is_some_and(|o| o != id) {
                 continue;
             }
+            // each piece of it: an arc is many
+            let pts = grids::points(&g);
             for z in &zs {
-                let (a, b) = (g.start.extend(*z), g.end.extend(*z));
-                let (Some(sa), Some(sb)) = (project(a), project(b)) else {
-                    continue;
-                };
-                let ab = sb - sa;
-                let t = ((p - sa).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
-                let d = (sa + ab * t).distance(p);
-                if d < 6.0 && best.is_none_or(|(bd, _, _)| d < bd) {
-                    best = Some((d, id, a + (b - a) * t as f64));
+                for w in pts.windows(2) {
+                    let (a, b) = (w[0].extend(*z), w[1].extend(*z));
+                    let (Some(sa), Some(sb)) = (project(a), project(b)) else {
+                        continue;
+                    };
+                    let ab = sb - sa;
+                    let t = ((p - sa).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+                    let d = (sa + ab * t).distance(p);
+                    if d < 6.0 && best.is_none_or(|(bd, _, _)| d < bd) {
+                        let at = crate::snaps::point_seen_at(a, b, sa + ab * t, project);
+                        best = Some((d, id, at));
+                    }
                 }
             }
         }
@@ -1598,6 +2405,220 @@ pub(super) fn shows_in_3d(kind: &ElementKind) -> bool {
             | ElementKind::Project(_)
             | ElementKind::ElementType(_)
     )
+}
+
+/// A spacing list as shown: each step in the project's lengths (degrees
+/// for a curved system's spokes), runs of the same step as "3 × 4000".
+fn spacing_text(v: &[f64], degrees: bool) -> String {
+    let one = |x: f64| {
+        if degrees {
+            format!("{}°", (x * 100.0).round() / 100.0)
+        } else {
+            crate::units::len(x)
+        }
+    };
+    let mut parts: Vec<String> = vec![];
+    let mut i = 0;
+    while i < v.len() {
+        let mut n = 1;
+        while i + n < v.len() && (v[i + n] - v[i]).abs() < 1e-9 {
+            n += 1;
+        }
+        parts.push(if n > 1 {
+            format!("{n} × {}", one(v[i]))
+        } else {
+            one(v[i])
+        });
+        i += n;
+    }
+    parts.join(", ")
+}
+
+/// A spacing row of a grid system's Lay out lines: what is typed is kept
+/// while it is edited and read on every change; true when the list
+/// changed.
+fn spacing_row(
+    ui: &mut egui::Ui,
+    group: ElementId,
+    name: &str,
+    v: &mut Vec<f64>,
+    degrees: bool,
+) -> bool {
+    let key = egui::Id::new(("grid.spacing", group, name));
+    let shown = spacing_text(v, degrees);
+    let mut text = ui
+        .data(|d| d.get_temp::<String>(key))
+        .unwrap_or_else(|| shown.clone());
+    let mut changed = false;
+    crate::props::row(ui, name, |ui| {
+        let hint = if degrees {
+            "30°, 30°, 30°"
+        } else {
+            "4000, 3400, 5000"
+        };
+        let r = crate::props::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut text).hint_text(hint),
+            f32::INFINITY,
+        )
+        .on_hover_text(if degrees {
+            "The angle from each spoke to the next, anticlockwise from east: 30, 30, 30 or 3 x 30"
+        } else {
+            "The distance from each line to the next: 4000, 3400, 5000 or 3 x 4000"
+        });
+        if r.changed() {
+            let read = |s: &str| -> Option<f64> {
+                if degrees {
+                    s.trim().trim_end_matches('°').trim().parse().ok()
+                } else {
+                    crate::units::parse(s)
+                }
+            };
+            if let Some(p) = grids::parse_spacing(&text, read) {
+                *v = p;
+                changed = true;
+            }
+        }
+        if !r.has_focus() {
+            text = spacing_text(v, degrees);
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(key, text));
+    changed
+}
+
+/// A button on the rows' own edges, at the house height (REV01, decision 4).
+pub(crate) fn full_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+    let w = ui.available_width().floor();
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(text).min_size(egui::vec2(w, 24.0)),
+    )
+}
+
+/// Two buttons sharing the rows' edges evenly; which was clicked.
+pub(crate) fn button_pair(ui: &mut egui::Ui, a: &str, b: &str) -> (bool, bool) {
+    let gap = ui.spacing().item_spacing.x;
+    let w = ((ui.available_width() - gap) / 2.0).floor();
+    ui.horizontal(|ui| {
+        let x = ui.add_sized([w, 24.0], egui::Button::new(a)).clicked();
+        let y = ui.add_sized([w, 24.0], egui::Button::new(b)).clicked();
+        (x, y)
+    })
+    .inner
+}
+
+/// A grid system's own settings, first: prefix, shape, turn, origin,
+/// colour (no app state needed, so the Grid tool's section can hold them).
+fn grid_group_head(ui: &mut egui::Ui, g: &mut GridGroup) -> &'static str {
+    let mut label = "";
+    crate::props::row(ui, "Prefix", |ui| {
+        if crate::props::text_field(ui, egui::TextEdit::singleline(&mut g.prefix), f32::INFINITY)
+            .changed()
+        {
+            label = "Grid prefix";
+        }
+    });
+    // straight in two directions, or rings and spokes (decision 4)
+    if crate::props::choice(
+        ui,
+        "Shape",
+        &mut g.shape,
+        &[
+            (
+                Shape::Straight,
+                "Lines",
+                "Straight lines across and along, and diagonals",
+            ),
+            (
+                Shape::Curved,
+                "Rings",
+                "Rings round its origin, and spokes from it",
+            ),
+        ],
+    ) {
+        label = "Grid system shape";
+    }
+    crate::props::row(ui, "Turn", |ui| {
+        if crate::props::fill(
+            ui,
+            egui::DragValue::new(&mut g.turn)
+                .speed(0.5)
+                .range(-180.0..=180.0)
+                .suffix("°"),
+        )
+        .on_hover_text(
+            "Its own north, anticlockwise: a turned building counts in its own directions",
+        )
+        .changed()
+        {
+            label = "Grid system turn";
+        }
+    });
+    let origin_tip = if g.shape == Shape::Curved {
+        "Its centre: rings go round it, spokes come out of it"
+    } else {
+        "Where Add lines lays out its first lines"
+    };
+    for (name, v) in [("Origin X", &mut g.origin.x), ("Origin Y", &mut g.origin.y)] {
+        crate::props::row(ui, name, |ui| {
+            if crate::props::fill(ui, crate::units::drag(v).range(-1e5..=1e5))
+                .on_hover_text(origin_tip)
+                .changed()
+            {
+                label = "Grid system origin";
+            }
+        });
+    }
+    // where its colour comes from (MU67), used in plans and 3D
+    // a list: three segments were cut to "…" at the narrow panel
+    let name = |c: GridColour| match c {
+        GridColour::Auto => "Auto",
+        GridColour::Annotation => "Annotation",
+        GridColour::Custom => "Own colour",
+    };
+    let mut pick = None;
+    crate::app::helpui::combo(ui, "Colour")
+        .selected_text(name(g.colour_mode))
+        .show_ui(ui, |ui| {
+            for (c, tip) in [
+                (
+                    GridColour::Auto,
+                    "A grid colour that reads on the theme and on dark or light paper",
+                ),
+                (
+                    GridColour::Annotation,
+                    "The annotation colour, so grids sit with dimensions and tags",
+                ),
+                (
+                    GridColour::Custom,
+                    "Its own colour, to tell one building's grid from another's",
+                ),
+            ] {
+                if ui
+                    .selectable_label(g.colour_mode == c, name(c))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    pick = Some(c);
+                }
+            }
+        });
+    if let Some(c) = pick.filter(|c| *c != g.colour_mode) {
+        g.colour_mode = c;
+        label = "Grid colour";
+    }
+    if g.colour_mode == GridColour::Custom {
+        crate::props::row(ui, "", |ui| {
+            // the picker works in 8-bit sRGB, as the colour is stored
+            let mut c = g.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            if crate::props::colour_button_srgb(ui, &mut c).changed() {
+                g.color = c.map(|v| v as f32 / 255.0);
+                label = "Grid colour";
+            }
+        });
+    }
+    label
 }
 
 #[cfg(test)]
@@ -1800,15 +2821,17 @@ mod tests {
                 );
             }
         }
-        // the Create menu's schedules too
-        let create = app.menu_items("menu:Create");
-        let schedule = create
-            .iter()
-            .find_map(|i| match i {
-                Item::Sub { label, items, .. } if label == "Schedule" => Some(items.clone()),
+        // the Create menu's schedules too (under Views and levels since
+        // the tool families, REV04)
+        fn find_sub(items: &[Item], name: &str) -> Option<Vec<Item>> {
+            items.iter().find_map(|i| match i {
+                Item::Sub { label, items, .. } if label == name => Some(items.clone()),
+                Item::Sub { items, .. } => find_sub(items, name),
                 _ => None,
             })
-            .unwrap();
+        }
+        let create = app.menu_items("menu:Create");
+        let schedule = find_sub(&create, "Schedule").unwrap();
         assert!(schedule
             .iter()
             .all(|i| matches!(i, Item::Action { icon, .. } if !icon.is_empty())));

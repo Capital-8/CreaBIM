@@ -16,5 +16,7 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+creabim-exchange.workspace = true
+creabim-geom.workspace = true
 glam.workspace = true
 tempfile = "3"

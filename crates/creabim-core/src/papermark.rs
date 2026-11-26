@@ -14,10 +14,29 @@ pub enum PaperMarkKind {
     NorthArrow {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rotation: Option<f64>,
+        /// Its look from the symbol bank (a style id); none follows the
+        /// project's pick, "creabim" is CreaBIM's own drawing
+        /// (Mockup_Sheet_Symbols_REV00).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
     },
     /// A bar `length` metres long at 1:`scale`, in `parts` alternating
     /// black and white parts, numbered in metres.
-    ScaleBar { scale: f64, length: f64, parts: u8 },
+    ScaleBar {
+        scale: f64,
+        length: f64,
+        parts: u8,
+        /// Counted in feet: its length a round number of feet, its
+        /// numbers in feet (an imperial project's bars; owner, after MU92).
+        /// `length` stays in metres.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        feet: bool,
+        /// Its look from the symbol bank (a style id); none follows the
+        /// project's pick, "creabim" is CreaBIM's own drawing
+        /// (Mockup_Sheet_Symbols_REV00).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
+    },
     /// A revision cloud round a change, `w` by `h` mm about `at`, with its
     /// revision's letter, date and what changed (Annotate board step 4).
     Cloud {
@@ -77,6 +96,16 @@ pub struct PaperMark {
     /// Its own colour (sRGB, 0..1); black without one (MU25).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+    /// The mark it was copied from with Placed on; none on the first. The
+    /// copies are ordinary marks: moved and styled one by one, listed
+    /// together (Mockup_Copy_To_Sheets_REV00).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_of: Option<ElementId>,
+    /// The drawing (a viewport on its sheet) it belongs to: a scale bar
+    /// reads that drawing's scale, so a 1:5 detail beside a 1:50 section
+    /// gets its own bar (owner, after MU91).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measures: Option<ElementId>,
 }
 
 fn arc_default() -> f64 {
@@ -89,8 +118,13 @@ impl PaperMark {
             sheet,
             at,
             size: 18.0,
-            kind: PaperMarkKind::NorthArrow { rotation: None },
+            kind: PaperMarkKind::NorthArrow {
+                rotation: None,
+                style: None,
+            },
             color: None,
+            copy_of: None,
+            measures: None,
         }
     }
 
@@ -106,8 +140,12 @@ impl PaperMark {
                 scale,
                 length: round_length(0.06 * scale),
                 parts: 5,
+                feet: false,
+                style: None,
             },
             color: None,
+            copy_of: None,
+            measures: None,
         }
     }
 
@@ -127,6 +165,8 @@ impl PaperMark {
                 arc: 6.0,
             },
             color: None,
+            copy_of: None,
+            measures: None,
         }
     }
 
@@ -138,7 +178,50 @@ impl PaperMark {
             size: 2.5,
             kind: PaperMarkKind::RevisionTable,
             color: None,
+            copy_of: None,
+            measures: None,
         }
+    }
+
+    /// The first of its copies (itself when it is the first).
+    pub fn first(&self, me: ElementId) -> ElementId {
+        self.copy_of.unwrap_or(me)
+    }
+
+    /// A scale bar at 1:`scale`: its paper length kept, its length in
+    /// metres a round number again. Other marks unchanged.
+    pub fn at_scale(&self, scale: f64) -> Self {
+        let mut m = self.clone();
+        if let PaperMarkKind::ScaleBar {
+            scale: s,
+            length,
+            feet,
+            ..
+        } = &mut m.kind
+        {
+            if scale > 0.0 && (scale - *s).abs() > 1e-9 {
+                let paper = *length / s.max(1.0);
+                *length = round_length_in(paper * scale * 1.0001, *feet);
+                *s = scale;
+            }
+        }
+        m
+    }
+
+    /// A scale bar counted in feet (or metres again), its length rounded
+    /// to whole feet (or metres) about the same paper length.
+    pub fn in_feet(&self, feet: bool) -> Self {
+        let mut m = self.clone();
+        if let PaperMarkKind::ScaleBar {
+            length, feet: f, ..
+        } = &mut m.kind
+        {
+            if *f != feet {
+                *f = feet;
+                *length = round_length_in(*length * 1.0001, feet);
+            }
+        }
+        m
     }
 
     /// Its extent on the sheet, millimetres (lower left, upper right).
@@ -202,9 +285,18 @@ impl PaperMark {
     /// The angle a north arrow points, degrees anticlockwise from up.
     pub fn north_angle(&self, true_north: f64) -> f64 {
         match self.kind {
-            PaperMarkKind::NorthArrow { rotation } => rotation.unwrap_or(true_north),
+            PaperMarkKind::NorthArrow { rotation, .. } => rotation.unwrap_or(true_north),
             _ => 0.0,
         }
+    }
+}
+
+/// [`round_length`] in feet when `feet` (metres in and out).
+pub fn round_length_in(m: f64, feet: bool) -> f64 {
+    if feet {
+        round_length(m / 0.3048) * 0.3048
+    } else {
+        round_length(m)
     }
 }
 
@@ -258,6 +350,16 @@ mod tests {
             panic!()
         };
         assert_eq!(length, 5.0);
+        // read at 1:5 it keeps about its paper length, in round metres
+        let PaperMarkKind::ScaleBar { scale, length, .. } = m.at_scale(5.0).kind else {
+            panic!()
+        };
+        assert_eq!((scale, length), (5.0, 0.2));
+        // in feet: 5 m (16.4 ft) becomes 10 ft
+        let PaperMarkKind::ScaleBar { length, feet, .. } = m.in_feet(true).kind else {
+            panic!()
+        };
+        assert!(feet && (length - 3.048).abs() < 1e-9);
         assert_eq!(round_length(12.0), 10.0);
         assert_eq!(round_length(3.0), 2.0);
         let (lo, hi) = m.bounds();

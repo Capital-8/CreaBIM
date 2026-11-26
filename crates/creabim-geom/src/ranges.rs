@@ -100,6 +100,93 @@ pub fn beyond(model: &Model, v: &View) -> HashSet<ElementId> {
 /// The drawing of plan view `v` of `level`: its own level as always,
 /// with the other levels its range reaches, or the view from above.
 pub fn plan(model: &Model, v: &View, level: ElementId, cut: f64) -> PlanView {
+    let mut d = plan_at_any_scale(model, v, level, cut);
+    // grid lines drawn shorter in this plan only (grid settings, decision 6)
+    for (id, trim) in &v.grid_ends {
+        let Some(creabim_core::ElementKind::Grid(g)) = model.get(*id).map(|e| &e.kind) else {
+            continue;
+        };
+        if !d.items.iter().any(|i| i.id() == *id) {
+            continue;
+        }
+        d.items.retain(|i| i.id() != *id);
+        let short = creabim_core::grids::trimmed(g, *trim);
+        d.items.extend(crate::plan::grid_items(model, *id, &short));
+    }
+    // a curtain wall's built profile reads at 1:50 and finer; coarser it
+    // is drawn as blocks with the glass between (mullions mockup, 3)
+    if v.scale >= 100.0 - 1e-6 {
+        coarse_curtains(model, &mut d.items, level, cut);
+    }
+    // the site as this view shows it
+    if !v.site.is_default() {
+        site_as_shown(model, &mut d.items, &v.site);
+    }
+    if !v.site.tints {
+        site_in_greys(model, &mut d.items);
+    }
+    // heights written on the ground are sized for this view's scale, and
+    // a paving's pattern is opened up where it would print as a patch
+    crate::parts::fit_ground_text(model, &mut d.items, v.scale);
+    crate::parts::fit_site_patterns(model, &mut d.items, v.scale);
+    // other levels' items and the site's own are in by now: what stands
+    // on the ground is painted over it once more
+    crate::plan::relayer(model, &mut d.items);
+    d
+}
+
+/// Curtain walls of `level` with a stick or flush profile, cut at `cut`
+/// above it, drawn again as plain blocks.
+fn coarse_curtains(
+    model: &Model,
+    items: &mut Vec<crate::plan::PlanItem>,
+    level: ElementId,
+    cut: f64,
+) {
+    use creabim_core::{ElementKind, MullionProfile};
+    for e in model.iter() {
+        let ElementKind::Wall(w) = &e.kind else {
+            continue;
+        };
+        let Some(g) = &w.curtain else {
+            continue;
+        };
+        if w.level != level || g.profile == MullionProfile::Box {
+            continue;
+        }
+        let drawn = |i: &crate::plan::PlanItem| {
+            i.id() == e.id
+                && matches!(i, crate::plan::PlanItem::Polygon { pen, .. } if matches!(pen, crate::plan::Pen::Cut | crate::plan::Pen::Symbol))
+        };
+        if !items.iter().any(drawn) {
+            continue;
+        }
+        items.retain(|i| !drawn(i));
+        let openings: Vec<&creabim_core::Opening> = model
+            .dependents(e.id)
+            .into_iter()
+            .filter_map(|d| match &model.get(d)?.kind {
+                ElementKind::Opening(o) => Some(o),
+                _ => None,
+            })
+            .collect();
+        let block = creabim_core::CurtainGrid {
+            profile: MullionProfile::Box,
+            ..g.clone()
+        };
+        let at = crate::curtain::setting(model, w);
+        items.extend(crate::curtain::curtain_plan_under(
+            e.id,
+            w,
+            &block,
+            &openings,
+            cut - w.base_offset,
+            &at,
+        ));
+    }
+}
+
+fn plan_at_any_scale(model: &Model, v: &View, level: ElementId, cut: f64) -> PlanView {
     let r = &v.graphics.range;
     if r.from_above {
         return from_above(model, v, level, cut);
@@ -200,8 +287,17 @@ fn from_above(model: &Model, v: &View, level: ElementId, cut: f64) -> PlanView {
     let (top, bottom) = from_above_span(model, v, level, cut);
     let scene = crate::scene::drawn_scene(model);
     let project = |p: DVec3| DVec3::new(p.x, p.y, top - p.z);
-    let (lines, image) =
-        crate::section::hidden_lines(&scene, &project, top - bottom, None, v.style, None);
+    let (lines, image) = crate::section::hidden_lines(
+        &scene,
+        &project,
+        top - bottom,
+        None,
+        v.style,
+        None,
+        &[],
+        &crate::section::smooth_meshes(model),
+        &std::collections::HashSet::new(),
+    );
     let mut items = Vec::new();
     // shadows on the ground, from every face, each point thrown by its height
     let tris = |s: &crate::SceneItem| -> Vec<[DVec3; 3]> {
@@ -304,11 +400,166 @@ fn from_above(model: &Model, v: &View, level: ElementId, cut: f64) -> PlanView {
     PlanView { items }
 }
 
+/// While a site element is dragged in plan view `v`: its drawing alone,
+/// as the view shows it, to put in place of its old one in the drawing
+/// held from before the drag (MU37: a drag shows a preview, the whole
+/// plan is drawn once on release). The ground it is worked into follows
+/// on release. None when one of `ids` is not a site element of the
+/// plan's level, and the whole plan must be drawn.
+pub fn site_preview(model: &Model, v: &View, ids: &[ElementId]) -> Option<Vec<PlanItem>> {
+    let creabim_core::ViewKind::Plan { level, .. } = v.kind else {
+        return None;
+    };
+    let mut out = vec![];
+    for id in ids {
+        let Some(creabim_core::ElementKind::Site(s)) = model.get(*id).map(|e| &e.kind) else {
+            return None;
+        };
+        if s.level != level {
+            return None;
+        }
+        out.extend(crate::parts::site_plan_with(model, *id, s, &v.site));
+    }
+    crate::parts::fit_ground_text(model, &mut out, v.scale);
+    crate::parts::fit_site_patterns(model, &mut out, v.scale);
+    if !v.site.tints {
+        site_in_greys(model, &mut out);
+    }
+    Some(out)
+}
+
+/// The site's tints and fills in greys of the same lightness: a plan in
+/// black and white (View › Site › Tints off, Site polish 5). Lines,
+/// hatches and text are left as they are.
+pub fn site_in_greys(model: &Model, items: &mut [PlanItem]) {
+    let grey = |c: [f32; 3]| {
+        let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        [l, l, l]
+    };
+    for it in items.iter_mut() {
+        let site = matches!(
+            model.get(it.id()).map(|e| &e.kind),
+            Some(creabim_core::ElementKind::Site(_))
+        );
+        if !site {
+            continue;
+        }
+        match it {
+            PlanItem::Tint { rgb, .. } | PlanItem::Shade { rgb, .. } => *rgb = grey(*rgb),
+            _ => {}
+        }
+    }
+}
+
+/// Redraw each site element in `items` as `sv` shows the site, in the
+/// place its own drawing had.
+pub fn site_as_shown(model: &Model, items: &mut Vec<PlanItem>, sv: &creabim_core::SiteView) {
+    let mut done = HashSet::new();
+    let mut i = 0;
+    while i < items.len() {
+        let id = items[i].id();
+        if done.contains(&id) {
+            i += 1;
+            continue;
+        }
+        let Some(creabim_core::ElementKind::Site(s)) = model.get(id).map(|e| &e.kind) else {
+            i += 1;
+            continue;
+        };
+        done.insert(id);
+        let fresh = crate::parts::site_plan_with(model, id, s, sv);
+        let n = fresh.len();
+        // its own drawing goes (what the plan added for it, such as its
+        // fill below the cut, stays) and the fresh one comes in its place
+        let mut own = crate::parts::site_plan_with(model, id, s, &Default::default());
+        let (mut kept, mut first) = (0, None);
+        items.retain(|it| {
+            let goes = it.id() == id
+                && match own.iter().position(|o| o == it) {
+                    Some(k) => {
+                        own.swap_remove(k);
+                        true
+                    }
+                    None => false,
+                };
+            if goes {
+                first.get_or_insert(kept);
+            } else {
+                kept += 1;
+            }
+            !goes
+        });
+        let at = first.unwrap_or(i).min(items.len());
+        items.splice(at..at, fresh);
+        i = at + n;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use creabim_core::graphics::RangeLimit;
     use creabim_core::{Element, Level, Slab, Transaction, ViewKind, Wall};
+
+    #[test]
+    fn grid_bubbles_levels_and_a_plans_own_ends() {
+        use creabim_core::grids::Bubbles;
+        use creabim_core::{ElementKind, Grid};
+        let (mut m, lv, _) = levels();
+        let g = Element::new(
+            "Grid A",
+            ElementKind::Grid(Grid {
+                label: "A".into(),
+                start: DVec2::new(0.0, 0.0),
+                end: DVec2::new(0.0, 10.0),
+                bubbles: Bubbles::Both,
+                ..Grid::default()
+            }),
+        );
+        let only_roof = Element::new(
+            "Grid B",
+            ElementKind::Grid(Grid {
+                label: "B".into(),
+                start: DVec2::new(5.0, 0.0),
+                end: DVec2::new(5.0, 10.0),
+                levels: vec![lv[2]],
+                ..Grid::default()
+            }),
+        );
+        let (gid, bid) = (g.id, only_roof.id);
+        Transaction::new("grids")
+            .insert(g)
+            .insert(only_roof)
+            .apply(&mut m)
+            .unwrap();
+        let mut v = View::plan(lv[1]);
+        let labels = |d: &PlanView, id: ElementId| -> Vec<DVec2> {
+            d.items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Label { id: l, at, .. } if *l == id => Some(*at),
+                    _ => None,
+                })
+                .collect()
+        };
+        let d = plan(&m, &v, lv[1], 1.2);
+        assert_eq!(labels(&d, gid).len(), 2, "a bubble at each end");
+        assert!(labels(&d, bid).is_empty(), "B shows on the roof only");
+        assert_eq!(labels(&plan(&m, &v, lv[2], 1.2), bid).len(), 1);
+        // this plan draws A 2 m shorter at its end; the model doesn't change
+        v.grid_ends.insert(gid, [0.0, 2.0]);
+        let d = plan(&m, &v, lv[1], 1.2);
+        let line = d
+            .items
+            .iter()
+            .find_map(|i| match i {
+                PlanItem::Line { id, a, b, .. } if *id == gid => Some((*a, *b)),
+                _ => None,
+            })
+            .unwrap();
+        assert!((line.1.y - 8.0).abs() < 1e-9, "{line:?}");
+        assert!(labels(&d, gid).iter().any(|p| p.y < 9.0 && p.y > 8.0));
+    }
 
     /// A site level at -0.45, a floor at 0, roofs at +4.6 and +6.35, each
     /// with an element of its own; a plan of the floor.

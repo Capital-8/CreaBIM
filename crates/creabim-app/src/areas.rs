@@ -31,6 +31,18 @@ pub enum Shows {
     Masters,
     /// The activity log as it is written, and Report a problem (MU40).
     Log,
+    /// Project time: stages against their budgets, entries, the week
+    /// (Mockup_Project_Time_REV02).
+    Time,
+    /// Every library in one place (Mockup_Libraries_REV00). The owner chose
+    /// a Manage window instead (2026-11-18); kept so a saved layout naming
+    /// it still opens.
+    Libraries,
+    /// A hatch pattern's tile, drawn large: what you edit gets an area
+    /// (owner 2026-11-18).
+    Patterns,
+    /// A render kept from the 3D view (Visuals REV02: renders are views).
+    Renders,
 }
 
 /// A layout of areas: one area, or two side by side (`across`) or one
@@ -146,9 +158,35 @@ impl Node {
 
     /// Set the divider at `path` so its line is at `at` (x when side by
     /// side, else y) inside `whole`, keeping each side at least [`MIN`].
+    /// The other dividers the same way inside it stay where they are on
+    /// screen: only the two areas touching the dragged one change, as in
+    /// Blender (MU133: dragging the 3D view's edge moved the Activity
+    /// area's other edge too).
     pub fn drag(&mut self, path: &[u8], whole: Rect, at: f32) {
-        if let Some(Node::Split { across, frac, .. }) = self.split_at(path) {
-            let (lo, size) = if *across {
+        let Some(node) = self.split_at(path) else {
+            return;
+        };
+        let Node::Split { across, .. } = *node else {
+            return;
+        };
+        // where the lines inside it are now
+        let (_, before) = node.layout(whole);
+        let lines: Vec<(Vec<u8>, f32)> = before
+            .iter()
+            .filter(|d| d.across == across && !d.path.is_empty())
+            .map(|d| {
+                (
+                    d.path.clone(),
+                    if across {
+                        d.strip.left()
+                    } else {
+                        d.strip.top()
+                    },
+                )
+            })
+            .collect();
+        if let Node::Split { frac, .. } = node {
+            let (lo, size) = if across {
                 (whole.left(), whole.width())
             } else {
                 (whole.top(), whole.height())
@@ -156,6 +194,33 @@ impl Node {
             let room = (size - GAP).max(1.0);
             let min = (MIN / room).min(0.5);
             *frac = ((at - lo - GAP / 2.0) / room).clamp(min, 1.0 - min);
+        }
+        node.keep_lines(whole, across, &mut vec![], &lines);
+    }
+
+    /// Put each divider `across` (by its path inside this node) back at
+    /// its line in `lines`, as far as its areas' [`MIN`] lets it.
+    fn keep_lines(&mut self, r: Rect, along: bool, path: &mut Vec<u8>, lines: &[(Vec<u8>, f32)]) {
+        let Node::Split { across, frac, kids } = self else {
+            return;
+        };
+        if *across == along {
+            if let Some((_, at)) = lines.iter().find(|(p, _)| p == path) {
+                let (lo, size) = if along {
+                    (r.left(), r.width())
+                } else {
+                    (r.top(), r.height())
+                };
+                let room = (size - GAP).max(1.0);
+                let min = (MIN / room).min(0.5);
+                *frac = ((at - lo) / room).clamp(min, 1.0 - min);
+            }
+        }
+        let (a, _, b) = cut(r, *across, *frac);
+        for (k, rk) in [a, b].into_iter().enumerate() {
+            path.push(k as u8);
+            kids[k].keep_lines(rk, along, path, lines);
+            path.pop();
         }
     }
 
@@ -337,6 +402,23 @@ pub fn built_in() -> Vec<Workspace> {
                 Node::Area(Shows::Current),
             ),
         ),
+        // the plan and 3D over the Time area and Notes on the Work log:
+        // a first look at how areas work together (owner 2026-11-18)
+        ws(
+            "Time",
+            "The drawing open now and the 3D view, over Project time and its Work log",
+            Node::split(
+                false,
+                0.55,
+                Node::split(
+                    true,
+                    0.5,
+                    Node::Area(Shows::Current),
+                    Node::Area(Shows::Model),
+                ),
+                Node::split(true, 0.5, Node::Area(Shows::Time), Node::Area(Shows::Notes)),
+            ),
+        ),
     ]
 }
 
@@ -376,10 +458,56 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_divider_leaves_the_others_where_they_are() {
+        // MU133: the 3D view, the Activity log and a plan side by side;
+        // dragging the 3D view's edge moved the log's other edge too
+        let v = ElementId::new();
+        let mut n = Node::split(
+            true,
+            0.45,
+            Node::Area(Shows::Model),
+            Node::split(
+                true,
+                0.25,
+                Node::Area(Shows::Log),
+                Node::Area(Shows::View(v)),
+            ),
+        );
+        let whole = r(1600.0, 900.0);
+        let (rects, divs) = n.layout(whole);
+        let plan_left = rects[2].left();
+        // the 3D view's edge 200 to the left: the log takes it all
+        let at = divs[0].strip.center().x - 200.0;
+        n.drag(&divs[0].path, divs[0].whole, at);
+        let (after, _) = n.layout(whole);
+        assert!(
+            (after[2].left() - plan_left).abs() < 1.0,
+            "{} {}",
+            after[2].left(),
+            plan_left
+        );
+        assert!((after[0].width() - (rects[0].width() - 200.0)).abs() < 1.0);
+        assert!((after[1].width() - (rects[1].width() + 200.0)).abs() < 1.0);
+        // dragged up to the plan's edge, the log keeps its smallest
+        n.drag(&divs[0].path, divs[0].whole, 1200.0);
+        let (after, _) = n.layout(whole);
+        assert!(after[1].width() >= MIN - 1.0 && after[2].width() >= MIN - 1.0);
+        // and the log's own edge still moves only the log and the plan
+        let (rects, divs) = n.layout(whole);
+        n.drag(
+            &divs[1].path,
+            divs[1].whole,
+            divs[1].strip.center().x - 50.0,
+        );
+        let (after, _) = n.layout(whole);
+        assert_eq!(after[0], rects[0]);
+    }
+
+    #[test]
     fn workspaces_open_with_the_drawing_and_its_sheet() {
         let (plan, sheet) = (ElementId::new(), ElementId::new());
         let names: Vec<String> = built_in().into_iter().map(|w| w.name).collect();
-        assert_eq!(names, ["Model", "Drawing", "Document", "Sheets"]);
+        assert_eq!(names, ["Model", "Drawing", "Document", "Sheets", "Time"]);
         let mut doc = built_in()[2].root.clone();
         doc.resolve(Some(plan), Some(sheet));
         assert_eq!(

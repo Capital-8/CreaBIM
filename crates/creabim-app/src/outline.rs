@@ -143,7 +143,14 @@ impl Outline {
         } else if self.roof.is_some() {
             "Drawing a roof"
         } else {
-            "Drawing a slab"
+            match &self.make {
+                Some(crate::partstool::Make::Terrain { .. }) => "Drawing the ground's outline",
+                Some(crate::partstool::Make::Property) => "Drawing a property line",
+                Some(crate::partstool::Make::Area(_)) => "Drawing an area",
+                Some(crate::partstool::Make::Extrusion { void: true, .. }) => "Drawing a void",
+                Some(crate::partstool::Make::Extrusion { .. }) => "Drawing an extrusion",
+                None => "Drawing a slab",
+            }
         };
         let next = match (self.arc_end, self.points.len()) {
             (Some(_), _) => "click a point the arc passes through",

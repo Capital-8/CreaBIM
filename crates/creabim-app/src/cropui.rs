@@ -12,6 +12,8 @@ use crate::ui_model::Item;
 use creabim_core::{cropbox, CropBox, CropScope};
 
 const FRAME: Color32 = Color32::from_rgb(40, 110, 200);
+/// A crop box switched off: its frame grey and dashed.
+const OFF_FRAME: Color32 = Color32::from_gray(140);
 fn frame_selected() -> Color32 {
     crate::theme::interaction()
 }
@@ -297,72 +299,73 @@ impl CreaBimApp {
     /// The crop boxes of `owner`, each with its switches, in Properties.
     pub(super) fn crop_list(&mut self, ui: &mut egui::Ui, owner: Option<ElementId>) {
         let title = format!("Crop boxes of {}", self.owner_name(owner));
-        if !self.prop_header(ui, "crops", &title, true, Some("crop-boxes")) {
-            return;
-        }
-        let rows: Vec<(ElementId, String, bool, bool)> =
-            cropbox::crop_boxes(self.doc.model(), owner)
-                .into_iter()
-                .map(|(e, c)| (e.id, e.name.clone(), c.enabled, !c.frame_hidden))
-                .collect();
-        if rows.is_empty() {
-            ui.label(
-                egui::RichText::new(
+        let open = self.prop_header(ui, "crops", &title, true, Some("crop-boxes"));
+        crate::props::fold(ui, open, |ui| {
+            let rows: Vec<(ElementId, String, bool, bool)> =
+                cropbox::crop_boxes(self.doc.model(), owner)
+                    .into_iter()
+                    .map(|(e, c)| (e.id, e.name.clone(), c.enabled, !c.frame_hidden))
+                    .collect();
+            if rows.is_empty() {
+                crate::props::empty(
+                    ui,
                     "None yet. A crop box cuts the 3D view down to what is inside it.",
-                )
-                .weak(),
-            );
-        }
-        let mut act: Option<(&str, ElementId)> = None;
-        for (id, name, on, shown) in &rows {
-            crate::props::flow(ui, |ui| {
-                let mut v = *on;
-                if ui
-                    .checkbox(&mut v, "")
-                    .on_hover_text("Crop with it")
-                    .changed()
-                {
-                    act = Some(("crop.toggle", *id));
-                }
-                let mut s = *shown;
-                if ui
-                    .checkbox(&mut s, "")
-                    .on_hover_text("Show its frame and handles (it crops either way)")
-                    .changed()
-                {
-                    act = Some(("crop.frame", *id));
-                }
-                let sel = self.selection.contains(*id);
-                if ui.selectable_label(sel, name).clicked() {
-                    act = Some(("crop.select", *id));
-                }
-                if ui.small_button("Delete").clicked() {
-                    act = Some(("delete", *id));
-                }
-            });
-        }
-        if let Some((what, id)) = act {
-            if what == "delete" {
-                let name = self
-                    .crop_box(id)
-                    .map_or(String::new(), |(e, _)| e.name.clone());
-                let r = self.doc.commit(
-                    Transaction::new(format!("Delete {name}"))
-                        .remove_all_cascade(self.doc.model(), &[id]),
                 );
-                self.report(r, format!("Deleted {name}. Ctrl+Z brings it back."));
-                self.drop_stale_selection();
-            } else {
-                self.crop_action(what, &id.0.to_string());
             }
-        }
-        crate::props::flow(ui, |ui| {
-            if ui.button("Add crop box").clicked() {
+            let mut act: Option<(&str, ElementId)> = None;
+            // a box each, titled by its name, with the house rows inside:
+            // the key in the label column, the tick, its value (MU71: no
+            // bare ticks, no small button)
+            for (id, name, on, shown) in &rows {
+                crate::props::sub_box(ui, &format!("crop.list.{}", id.0), name, None, true, |ui| {
+                    let mut v = *on;
+                    if crate::props::check(ui, "Crop box", &mut v, "Crop")
+                        .on_hover_text("Crop the view with it")
+                        .changed()
+                    {
+                        act = Some(("crop.toggle", *id));
+                    }
+                    let mut s = *shown;
+                    if crate::props::check(ui, "", &mut s, "Show the box")
+                        .on_hover_text("Its frame and handles; hidden, it still crops")
+                        .changed()
+                    {
+                        act = Some(("crop.frame", *id));
+                    }
+                    // in from the card's edges alike (MU145)
+                    let (sel, del) = crate::props::card_inset(ui, |ui| {
+                        super::gridvis::button_pair(ui, "Select", "Delete")
+                    });
+                    if sel {
+                        act = Some(("crop.select", *id));
+                    }
+                    if del {
+                        act = Some(("delete", *id));
+                    }
+                });
+            }
+            if let Some((what, id)) = act {
+                if what == "delete" {
+                    let name = self
+                        .crop_box(id)
+                        .map_or(String::new(), |(e, _)| e.name.clone());
+                    let r = self.doc.commit(
+                        Transaction::new(format!("Delete {name}"))
+                            .remove_all_cascade(self.doc.model(), &[id]),
+                    );
+                    self.report(r, format!("Deleted {name}. Ctrl+Z brings it back."));
+                    self.drop_stale_selection();
+                } else {
+                    self.crop_action(what, &id.0.to_string());
+                }
+            }
+            // the house buttons, on the rows' edges (MU69)
+            let some = !self.selected_croppable().is_empty();
+            if super::gridvis::full_button(ui, true, "Add crop box").clicked() {
                 self.add_crop_box(false, false);
             }
-            let some = !self.selected_croppable().is_empty();
-            if ui
-                .add_enabled(some, egui::Button::new("Round the selection"))
+            if super::gridvis::full_button(ui, some, "Round the selection")
+                .on_disabled_hover_text("Select what it should go round first")
                 .clicked()
             {
                 self.add_crop_box(true, false);
@@ -378,18 +381,22 @@ impl CreaBimApp {
         c: &mut CropBox,
     ) -> Option<&'static str> {
         let mut label = None;
-        ui.label(
-            egui::RichText::new(format!(
-                "Crops {}. Drag the round handles on its faces to resize it, the square one to move it.",
-                self.owner_name(c.view)
-            ))
-            .weak(),
+        crate::props::worked_out(
+            ui,
+            "crop",
+            &[crate::props::Worked::new("Crops", self.owner_name(c.view))],
         );
-        if crate::props::switch(ui, &mut c.enabled, "Crop").changed() {
+        crate::props::howto(
+            ui,
+            "Crop box: drag the round handles on its faces to resize it, the square one to move it.",
+        );
+        // the house rows (MU69: this panel had kept its own radios, a
+        // table running past the edge and a short button)
+        if crate::props::check(ui, "Crop box", &mut c.enabled, "Crop").changed() {
             label = Some("Crop box on or off");
         }
         let mut shown = !c.frame_hidden;
-        if crate::props::switch(ui, &mut shown, "Show the box")
+        if crate::props::check(ui, "", &mut shown, "Show the box")
             .on_hover_text(
                 "Hidden, it still crops; its frame shows again only while it is selected",
             )
@@ -399,7 +406,12 @@ impl CreaBimApp {
             label = Some("Show or hide crop box");
         }
         crate::props::row(ui, "Outside", |ui| {
+            let w = ui.available_width().floor().max(40.0);
+            let pad = ui.spacing().button_padding.x * 2.0 + ui.spacing().icon_width;
             egui::ComboBox::from_id_salt(("crop.outside", id))
+                .icon(crate::props::combo_icon)
+                .width((w - pad).max(20.0))
+                .truncate()
                 .selected_text(c.outside.label())
                 .show_ui(ui, |ui| {
                     for o in cropbox::Outside::ALL {
@@ -410,109 +422,123 @@ impl CreaBimApp {
                     }
                 })
                 .response
-                .on_hover_text("What shows of what the box crops away whole: nothing, a ghost of what is selected, or a ghost of all of it")
+                .on_hover_text(format!(
+                    "{}: what shows of what the box crops away whole: nothing, a ghost of what is selected, or a ghost of all of it",
+                    c.outside.label()
+                ))
         });
-        ui.add_space(4.0);
-        ui.label("What it crops");
-        let only = matches!(c.scope, CropScope::Only(_));
-        if ui.radio(!only, "Everything in the view").clicked() && only {
-            c.scope = CropScope::All;
-            label = Some("Crop everything");
-        }
         let n = match &c.scope {
             CropScope::Only(ids) => ids.len(),
             CropScope::All => 0,
         };
-        if ui
-            .radio(only, format!("Only chosen elements ({n})"))
-            .clicked()
-            && !only
-        {
-            c.scope = CropScope::Only(vec![]);
-            label = Some("Crop chosen elements");
-            self.start_crop_pick(id);
+        let was = matches!(c.scope, CropScope::Only(_));
+        let mut only = was;
+        let chosen = format!("Picked ({n})");
+        crate::props::choice(
+            ui,
+            "Crops",
+            &mut only,
+            &[
+                (false, "All", "every element in the view"),
+                (true, chosen.as_str(), "only the elements you pick"),
+            ],
+        );
+        if only != was {
+            if only {
+                c.scope = CropScope::Only(vec![]);
+                label = Some("Crop chosen elements");
+                self.start_crop_pick(id);
+            } else {
+                c.scope = CropScope::All;
+                label = Some("Crop everything");
+            }
         }
         if only {
-            crate::props::flow(ui, |ui| {
-                if self.crop_pick == Some(id) {
-                    if ui.button("Done picking").clicked() {
+            let picking = self.crop_pick == Some(id);
+            let pick = if picking {
+                "Done picking"
+            } else {
+                "Pick elements…"
+            };
+            if n > 0 {
+                let (p, clear) = super::gridvis::button_pair(ui, pick, "Clear");
+                if p {
+                    if picking {
                         self.end_crop_pick();
+                    } else {
+                        self.start_crop_pick(id);
                     }
-                } else if ui.button("Pick elements…").clicked() {
-                    self.start_crop_pick(id);
                 }
-                if n > 0 && ui.button("Clear").clicked() {
+                if clear {
                     c.scope = CropScope::Only(vec![]);
                     label = Some("Crop chosen elements");
                 }
+            } else if super::gridvis::full_button(ui, true, pick).clicked() {
+                if picking {
+                    self.end_crop_pick();
+                } else {
+                    self.start_crop_pick(id);
+                }
+            }
+        }
+        // where its faces are: one full-width row per axis, a box for each
+        // side, as Elbows (MU66: two fields in a row pushed the panel)
+        for (side, key, title) in [(0, "crop.from", "From"), (1, "crop.to", "To")] {
+            crate::props::sub_box(ui, key, title, None, true, |ui| {
+                for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
+                    let mut v = if side == 0 { c.min[axis] } else { c.max[axis] };
+                    crate::props::row(ui, name, |ui| {
+                        if crate::props::fill(ui, crate::units::drag(&mut v).range(-1e5..=1e5))
+                            .on_hover_text(
+                                "Where this face of the box is; or drag its round handle",
+                            )
+                            .changed()
+                        {
+                            c.set_face(axis * 2 + side, v);
+                            label = Some("Crop box extents");
+                        }
+                    });
+                }
             });
         }
-        ui.add_space(4.0);
-        // a small table, from | to, the axis as the row's label (A4-1)
-        egui::Grid::new(("crop extents", id))
-            .num_columns(3)
-            .spacing([6.0, 4.0])
-            .show(ui, |ui| {
-                ui.label("");
-                ui.label(egui::RichText::new("from").weak());
-                ui.label(egui::RichText::new("to").weak());
-                ui.end_row();
-                let w = ((ui.available_width() - 30.0) / 2.0).max(60.0);
-                for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
-                    let (mut lo, mut hi) = (c.min[axis], c.max[axis]);
-                    ui.label(*name);
-                    let h = ui.spacing().interact_size.y;
-                    if ui
-                        .add_sized([w, h], crate::units::drag(&mut lo).range(-1e5..=1e5))
-                        .changed()
-                    {
-                        c.set_face(axis * 2, lo);
-                        label = Some("Crop box extents");
-                    }
-                    if ui
-                        .add_sized([w, h], crate::units::drag(&mut hi).range(-1e5..=1e5))
-                        .changed()
-                    {
-                        c.set_face(axis * 2 + 1, hi);
-                        label = Some("Crop box extents");
-                    }
-                    ui.end_row();
-                }
-            });
+        // the unit once, at the end, so it fits the row (MU69)
         let s = c.size();
-        ui.label(
-            egui::RichText::new(format!(
-                "{} × {} × {}",
-                crate::units::len(s.x),
-                crate::units::len(s.y),
-                crate::units::len(s.z)
-            ))
-            .weak(),
+        let bare = |v: f64| {
+            let t = crate::units::len(v);
+            t.rsplit_once(' ').map_or(t.clone(), |(n, _)| n.to_string())
+        };
+        let unit = crate::units::len(s.z)
+            .rsplit_once(' ')
+            .map_or(String::new(), |(_, u)| format!(" {u}"));
+        crate::props::readout(
+            ui,
+            "Size",
+            format!("{} × {} × {}{unit}", bare(s.x), bare(s.y), bare(s.z)),
+            "Width × depth × height of the box",
         );
-        crate::props::flow(ui, |ui| {
-            let fit = |me: &Self, c: &mut CropBox| -> bool {
-                let only = match &c.scope {
-                    CropScope::Only(ids) if !ids.is_empty() => Some(ids.clone()),
-                    _ => None,
-                };
-                match me.shown_bounds(only.as_deref()) {
-                    Some((lo, hi)) => {
-                        c.min = lo - DVec3::splat(MARGIN);
-                        c.max = hi + DVec3::splat(MARGIN);
-                        true
-                    }
-                    None => false,
+        let fit = |me: &Self, c: &mut CropBox| -> bool {
+            let only = match &c.scope {
+                CropScope::Only(ids) if !ids.is_empty() => Some(ids.clone()),
+                _ => None,
+            };
+            match me.shown_bounds(only.as_deref()) {
+                Some((lo, hi)) => {
+                    c.min = lo - DVec3::splat(MARGIN);
+                    c.max = hi + DVec3::splat(MARGIN);
+                    c.fit = None;
+                    true
                 }
-            };
-            let what = if n > 0 {
-                "Fit to its elements"
-            } else {
-                "Fit to the model"
-            };
-            if ui.button(what).clicked() && fit(self, c) {
-                label = Some("Fit crop box");
+                None => false,
             }
-        });
+        };
+        let what = if n > 0 {
+            "Fit to its elements"
+        } else {
+            "Fit to the model"
+        };
+        if super::gridvis::full_button(ui, true, what).clicked() && fit(self, c) {
+            label = Some("Fit crop box");
+        }
         label
     }
 
@@ -638,26 +664,77 @@ impl CreaBimApp {
         true
     }
 
-    /// Draw the frames of the crop boxes the 3D window shows, with their
-    /// names; the selected one stands out (its handles come with it).
+    /// The frames of the crop boxes the 3D window shows, for its line
+    /// buffers: drawn with the model's depth, so what stands in front of a
+    /// frame hides it, as it hides the model's own edges. A frame painted
+    /// over the view crossed whatever lay in front of its far edges (MU143,
+    /// owner: "a line from the side ... looking like it's crossing the
+    /// foundation"). A box switched off has its frame dashed and grey.
+    pub(super) fn crop_frame_lines(&self) -> Vec<(DVec3, DVec3, [f32; 3])> {
+        // the 3D window's line shader raises its colours to the power 2.2
+        // (`fs_flat`): given so the frame shows in the colour its name and
+        // handles are in (seen in the app: a dull navy at first)
+        let rgb = |c: Color32| [c.r(), c.g(), c.b()].map(|k| (k as f32 / 255.0).powf(1.0 / 2.2));
+        let mut out = vec![];
+        for (_, c) in cropbox::crop_boxes(self.doc.model(), self.crop_owner()) {
+            if c.frame_hidden {
+                continue;
+            }
+            for (a, b) in c.edges() {
+                if c.enabled {
+                    out.push((a, b, rgb(FRAME)));
+                    continue;
+                }
+                let (len, dash, gap) = (a.distance(b), 0.3, 0.2);
+                let mut t = 0.0;
+                while t < len {
+                    let e = (t + dash).min(len);
+                    out.push((
+                        a + (b - a) * (t / len),
+                        a + (b - a) * (e / len),
+                        rgb(OFF_FRAME),
+                    ));
+                    t = e + gap;
+                }
+            }
+        }
+        out
+    }
+
+    /// The crop boxes whose frames are drawn over the view, whole: the one
+    /// selected or picked, which is being edited with its handles. The
+    /// others are drawn with the model ([`Self::crop_frame_lines`]).
+    pub(super) fn crop_frames_on_top(&self) -> Vec<ElementId> {
+        cropbox::crop_boxes(self.doc.model(), self.crop_owner())
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .filter(|id| self.selection.contains(*id) || self.crop_pick == Some(*id))
+            .collect()
+    }
+
+    /// Draw the names of the crop boxes the 3D window shows, and the frame
+    /// of the selected one over the view, whole, in the selection colour
+    /// (its handles come with it). The other frames are drawn with the
+    /// model, where it hides them.
     pub(super) fn draw_crop_frames(
         &self,
         painter: &egui::Painter,
         project: &dyn Fn(DVec3) -> Option<egui::Pos2>,
     ) {
         let owner = self.crop_owner();
+        let on_top = self.crop_frames_on_top();
         for (e, c) in cropbox::crop_boxes(self.doc.model(), owner) {
-            let selected = self.selection.contains(e.id) || self.crop_pick == Some(e.id);
+            let selected = on_top.contains(&e.id);
             if c.frame_hidden && !selected {
                 continue;
             }
             let color = match (selected, c.enabled) {
                 (true, _) => frame_selected(),
                 (false, true) => FRAME,
-                (false, false) => Color32::from_gray(140),
+                (false, false) => OFF_FRAME,
             };
-            let stroke = egui::Stroke::new(if selected { 2.0 } else { 1.3 }, color);
-            for (a, b) in c.edges() {
+            let stroke = egui::Stroke::new(2.0, color);
+            for (a, b) in c.edges().into_iter().filter(|_| selected) {
                 let (Some(pa), Some(pb)) = (project(a), project(b)) else {
                     continue;
                 };
@@ -842,7 +919,7 @@ impl CreaBimApp {
         let mut pick = None;
         egui::Area::new(ui.id().with("outside-crop"))
             .fixed_pos(rect.center_top() + Vec2::new(-200.0, 10.0))
-            .order(egui::Order::Foreground)
+            .order(crate::app::overlay_order())
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     crate::props::flow(ui, |ui| {
@@ -887,6 +964,7 @@ impl CreaBimApp {
                 self.edit_crop(b, "Extend the crop box", |c| {
                     c.min = c.min.min(lo - DVec3::splat(MARGIN));
                     c.max = c.max.max(hi + DVec3::splat(MARGIN));
+                    c.fit = None;
                 });
             }
             Some(1) => {
@@ -958,6 +1036,127 @@ fn e_name(cut_name: &str) -> &str {
 mod tests {
     use super::*;
 
+    /// In a crop box's card, Select and Delete stand in from its two edges
+    /// alike (MU145, owner: "the select button isn't fitting well with its
+    /// left padding": it sat on the card's left edge, Delete 6 px in from
+    /// its right).
+    #[test]
+    fn the_crop_cards_buttons_stand_in_from_both_edges_alike() {
+        let mut app = CreaBimApp::blank(None);
+        app.load_model(sample_house());
+        app.add_crop_box(false, false);
+        let ctx = egui::Context::default();
+        let mut card_fill = egui::Color32::TRANSPARENT;
+        let mut shapes = vec![];
+        // the folds open over a few frames
+        for k in 0..30 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(260.0, 700.0),
+                )),
+                time: Some(k as f64 * 0.05),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                card_fill = ui.visuals().extreme_bg_color;
+                app.crop_list(ui, None)
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        fn rects(s: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| rects(s, out)),
+                egui::Shape::Rect(r) => out.push((r.rect, r.fill)),
+                _ => {}
+            }
+        }
+        let mut all = vec![];
+        for c in &shapes {
+            rects(&c.shape, &mut all);
+        }
+        let cards: Vec<egui::Rect> = all
+            .iter()
+            .filter(|(_, f)| *f == card_fill)
+            .map(|(r, _)| *r)
+            .collect();
+        // the two buttons: 24 px high, side by side in a card
+        let pair: Vec<egui::Rect> = all
+            .iter()
+            .map(|(r, _)| *r)
+            .filter(|r| (r.height() - 24.0).abs() < 1.0)
+            .filter(|r| {
+                cards
+                    .iter()
+                    .any(|c| c.contains_rect(*r) && r.width() < c.width() * 0.7)
+            })
+            .collect();
+        assert!(
+            pair.len() >= 2,
+            "Select and Delete drawn in the card: {pair:?} in {cards:?}"
+        );
+        let card = cards
+            .iter()
+            .filter(|c| pair.iter().all(|r| c.contains_rect(*r)))
+            .min_by(|a, b| a.area().total_cmp(&b.area()))
+            .expect("one card holds both");
+        let left = pair.iter().map(|r| r.left()).fold(f32::INFINITY, f32::min) - card.left();
+        let right = card.right()
+            - pair
+                .iter()
+                .map(|r| r.right())
+                .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            left >= 4.0 && (left - right).abs() < 0.5,
+            "the buttons stand {left} px in from the card's left edge and {right} px from its right"
+        );
+    }
+
+    #[test]
+    fn a_crop_frame_is_hidden_by_what_stands_in_front_of_it() {
+        // MU143: the frames were painted over the view, so a far edge of
+        // the box crossed the piers and footings in front of it. They go
+        // to the 3D window's lines, with the model's depth; only the box
+        // being edited is drawn over the view, whole
+        let mut app = CreaBimApp::blank(None);
+        app.load_model(sample_house());
+        app.add_crop_box(false, false);
+        let id = app.selection.active.unwrap();
+        let c = app.crop_box(id).unwrap().1.clone();
+        app.selection.clear();
+        app.crop_pick = None;
+        assert!(
+            app.crop_frames_on_top().is_empty(),
+            "nothing painted over the model"
+        );
+        let lines = app.crop_frame_lines();
+        assert_eq!(lines.len(), 12, "its twelve edges, with the model's depth");
+        for (a, b) in c.edges() {
+            assert!(lines.iter().any(|l| l.0 == a && l.1 == b));
+        }
+        // being edited, it is drawn over the view, whole
+        app.crop_pick = Some(id);
+        assert_eq!(app.crop_frames_on_top(), vec![id]);
+        app.crop_pick = None;
+        // switched off, dashed and grey; hidden, not drawn
+        app.edit_crop(id, "off", |c| c.enabled = false);
+        let off = app.crop_frame_lines();
+        assert!(off.len() > 12, "dashed");
+        assert!(
+            off.iter()
+                .all(|l| l.2 == off[0].2 && l.2[0] == l.2[1] && l.2[1] == l.2[2]),
+            "grey"
+        );
+        // the 3D window builds again when a frame changes, even one
+        // switched off: the frame is in its buffers
+        let before = app.geometry_key_at(0);
+        app.edit_crop(id, "pull", |c| c.max.z -= 1.0);
+        assert_ne!(app.geometry_key_at(0), before);
+        app.edit_crop(id, "hide", |c| c.frame_hidden = true);
+        assert!(app.crop_frame_lines().is_empty());
+    }
+
     #[test]
     fn crop_boxes_are_added_toggled_and_undone_from_the_app() {
         let mut app = CreaBimApp::blank(None);
@@ -1018,5 +1217,31 @@ mod tests {
         let mine = app.selection.active.unwrap();
         assert_eq!(app.crop_box(mine).unwrap().1.view, Some(view));
         assert_eq!(app.crop_box(mine).unwrap().0.name, "Crop box 1");
+    }
+
+    #[test]
+    fn a_crop_face_dragged_recrops_3d_without_building_the_scene_again() {
+        let mut app = CreaBimApp::blank(None);
+        app.load_model(sample_house());
+        app.add_crop_box(false, false);
+        let id = app.selection.active.unwrap();
+        let built = app.doc.model().scene_revision();
+        let before = app.geometry_key_at(built);
+        // one step of a face drag
+        app.edit_crop(id, "Crop face", |c| c.max.x -= 1.0);
+        assert_eq!(
+            app.doc.model().scene_revision(),
+            built,
+            "the joined scene is not built again for it (0.3–0.5 s a step)"
+        );
+        assert_ne!(
+            app.geometry_key_at(built),
+            before,
+            "but the 3D view cuts its scene again with the moved box"
+        );
+        // and a box switched off shows the whole scene again
+        let on = app.geometry_key_at(built);
+        assert!(app.crop_action("crop.toggle", &id.0.to_string()));
+        assert_ne!(app.geometry_key_at(built), on);
     }
 }

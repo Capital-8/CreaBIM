@@ -55,6 +55,7 @@ pub fn sample_house() -> Model {
                 start: a,
                 end: b,
                 group: None,
+                ..Grid::default()
             }),
         ));
     }
@@ -132,12 +133,12 @@ pub fn sample_house() -> Model {
                         height: 1.3,
                         material: None,
                         // two casements side by side
-                        frame: OpeningFrame {
-                            panes_across: 2,
-                            ..Default::default()
-                        },
+                        frame: OpeningFrame::for_kind(OpeningKind::Window).with_panes(2, 1),
                         flip_hand: false,
                         flip_facing: false,
+                        roof_at: None,
+                        roof_build: Default::default(),
+                        arrangement: None,
                     }),
                 );
                 tagged.push((window.id, level, outside * 0.9));
@@ -155,9 +156,12 @@ pub fn sample_house() -> Model {
             width: 1.0,
             height: 2.2,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     );
     let front_door_id = front_door.id;
@@ -196,9 +200,12 @@ pub fn sample_house() -> Model {
             width: 0.9,
             height: 2.1,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     );
     tagged.push((inner_door.id, g, DVec2::new(0.8, 0.0)));
@@ -470,6 +477,8 @@ pub fn sample_house() -> Model {
                 // the entrance detail shows only the front of the house
                 crop: (view == entrance_id)
                     .then_some([DVec2::new(-0.8, -2.8), DVec2::new(5.0, 2.0)]),
+                fit: None,
+                pinned: false,
             }),
         ));
     }
@@ -629,9 +638,12 @@ pub fn typed_house() -> Model {
             width: 0.9,
             height: 2.1,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     );
     types::stamp(doc.model(), &mut door, starter("Single door 900 × 2100"));
@@ -646,9 +658,12 @@ pub fn typed_house() -> Model {
             width: 0.6,
             height: 0.4,
             material: None,
-            frame: Default::default(),
+            frame: crate::OpeningFrame::for_kind(OpeningKind::Hole),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     );
     let (g, f) = (named("Ground Floor"), named("First Floor"));

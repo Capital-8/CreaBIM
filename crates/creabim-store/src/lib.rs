@@ -110,6 +110,29 @@ pub fn load(path: impl AsRef<Path>) -> Result<Document> {
     }
 }
 
+/// Keep a small picture of the project in its file, as text (a data
+/// URL): a template's tile. Replaces the one there.
+pub fn set_picture(path: impl AsRef<Path>, picture: &str) -> Result<()> {
+    let conn = schema::open_existing(path.as_ref())?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('picture', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [picture],
+    )?;
+    Ok(())
+}
+
+/// The picture kept in a project file by [`set_picture`], if it has one.
+pub fn picture(path: impl AsRef<Path>) -> Option<String> {
+    let conn = schema::open_existing(path.as_ref()).ok()?;
+    conn.query_row("SELECT value FROM meta WHERE key = 'picture'", [], |r| {
+        r.get(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// Read the `meta` table of a project file.
 pub fn read_meta(path: impl AsRef<Path>) -> Result<Meta> {
     read_meta_from(&schema::open_existing(path.as_ref())?)
@@ -255,6 +278,8 @@ fn write_document(conn: &Connection, doc: &Document, name: &str) -> Result<Vec<i
         ])?;
     }
 
+    write_ifc_data(conn, doc.model().ifc_data())?;
+
     let seqs = timeline(doc)
         .map(|s| append_commit(conn, now, &s.tx))
         .collect::<Result<Vec<_>>>()?;
@@ -272,8 +297,9 @@ pub(crate) fn read_document(conn: &Connection) -> Result<(Document, Vec<i64>)> {
         .query_map([], |r| r.get::<_, String>(0))?
         .map(|data| from_json(&data?))
         .collect::<Result<Vec<_>>>()?;
-    let model = Model::from_elements(elements)
+    let mut model = Model::from_elements(elements)
         .map_err(|e| StoreError::Corrupt(format!("elements: {e}")))?;
+    model.set_ifc_data(read_ifc_data(conn)?);
 
     // First replay only the row kinds to learn which commits are still on the
     // stacks; steps dropped by a later commit are never parsed.
@@ -368,4 +394,138 @@ pub(crate) fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String> {
 
 pub(crate) fn from_json<T: serde::de::DeserializeOwned>(s: &str) -> Result<T> {
     serde_json::from_str(s).map_err(|e| StoreError::Corrupt(format!("bad JSON: {e}")))
+}
+
+/// The IFC data kept beside the model ([`creabim_core::ifcdata`]): two
+/// tables of their own, made only when there is some. `ifc_sets` holds
+/// each distinct property set once, as files share one set among many
+/// objects (the Castle's 143,000 values are 9,000 sets' worth); `ifc_data`
+/// holds one row per object by GlobalId, naming its sets and carrying its
+/// classification. Not part of the format version: a build that doesn't
+/// know them leaves them alone, and a file without them has none.
+fn write_ifc_data(conn: &Connection, data: &creabim_core::ifcdata::IfcData) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ifc_sets (id INTEGER PRIMARY KEY, data TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS ifc_data (guid TEXT PRIMARY KEY, data TEXT NOT NULL) WITHOUT ROWID;",
+    )?;
+    let mut set_ids: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut add_set = conn.prepare("INSERT INTO ifc_sets (id, data) VALUES (?1, ?2)")?;
+    let mut add_row =
+        conn.prepare("INSERT OR REPLACE INTO ifc_data (guid, data) VALUES (?1, ?2)")?;
+    for (guid, r) in &data.by_guid {
+        let mut sets = Vec::with_capacity(r.psets.len());
+        for p in &r.psets {
+            let json = to_json(p)?;
+            let next = set_ids.len() as i64 + 1;
+            let id = match set_ids.get(&json) {
+                Some(id) => *id,
+                None => {
+                    add_set.execute(params![next, json])?;
+                    set_ids.insert(json, next);
+                    next
+                }
+            };
+            sets.push(id);
+        }
+        let row = StoredRecord {
+            sets,
+            classes: r.classes.clone(),
+        };
+        add_row.execute(params![guid, to_json(&row)?])?;
+    }
+    // the relationships and objects kept as the file wrote them: entities
+    // first, then the relationships, in order
+    if !data.kept.is_empty() || !data.rels.is_empty() || !data.anchors.is_empty() {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ifc_kept (seq INTEGER PRIMARY KEY, data TEXT NOT NULL);",
+        )?;
+        let mut add = conn.prepare("INSERT INTO ifc_kept (data) VALUES (?1)")?;
+        for e in &data.kept {
+            add.execute([to_json(&Kept::Entity(e.clone()))?])?;
+        }
+        for r in &data.rels {
+            add.execute([to_json(&Kept::Rel(r.clone()))?])?;
+        }
+        if !data.anchors.is_empty() {
+            add.execute([to_json(&Kept::Anchors(data.anchors.clone()))?])?;
+        }
+    }
+    Ok(())
+}
+
+/// A row of `ifc_kept`.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum Kept {
+    #[serde(rename = "e")]
+    Entity(creabim_core::ifcdata::KeptEntity),
+    #[serde(rename = "r")]
+    Rel(creabim_core::ifcdata::KeptRel),
+    #[serde(rename = "a")]
+    Anchors(std::collections::BTreeMap<String, String>),
+}
+
+/// An object's row in `ifc_data`: its sets by their row in `ifc_sets`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredRecord {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sets: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    classes: Vec<creabim_core::ifcdata::ClassRef>,
+}
+
+fn read_ifc_data(conn: &Connection) -> Result<creabim_core::ifcdata::IfcData> {
+    use creabim_core::ifcdata::{Pset, Record};
+    let mut data = creabim_core::ifcdata::IfcData::default();
+    let has = |name: &str| -> Result<bool> {
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    };
+    if has("ifc_kept")? {
+        let mut stmt = conn.prepare("SELECT data FROM ifc_kept ORDER BY seq")?;
+        for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            match from_json::<Kept>(&row?)? {
+                Kept::Entity(e) => data.kept.push(e),
+                Kept::Rel(r) => data.rels.push(r),
+                Kept::Anchors(a) => data.anchors = a,
+            }
+        }
+    }
+    if !has("ifc_data")? || !has("ifc_sets")? {
+        return Ok(data);
+    }
+    let mut sets: std::collections::HashMap<i64, Pset> = std::collections::HashMap::new();
+    let mut stmt = conn.prepare("SELECT id, data FROM ifc_sets")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, json) = row?;
+        sets.insert(id, from_json(&json)?);
+    }
+    let mut stmt = conn.prepare("SELECT guid, data FROM ifc_data")?;
+    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (guid, json) = row?;
+        let stored: StoredRecord = from_json(&json)?;
+        let psets = stored
+            .sets
+            .iter()
+            .map(|id| {
+                sets.get(id)
+                    .cloned()
+                    .ok_or_else(|| StoreError::Corrupt(format!("ifc_data {guid}: no set {id}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        data.by_guid.insert(
+            guid,
+            Record {
+                psets,
+                classes: stored.classes,
+            },
+        );
+    }
+    Ok(data)
 }

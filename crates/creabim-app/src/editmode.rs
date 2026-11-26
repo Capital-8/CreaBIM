@@ -90,6 +90,18 @@ pub fn rings(model: &Model, e: &Element) -> Vec<RingInfo> {
             out.extend(holes(&r.holes, z));
             out
         }
+        // a stair's line, as drawn (walk line or side): the stair fills it
+        // again with flights and landings as it changes
+        ElementKind::Stair(s) if s.line.len() >= 2 => {
+            let z = s.base(model);
+            vec![RingInfo {
+                ring: Ring::Outline,
+                corners: s.line.iter().map(|p| s.to_plan(*p).extend(z)).collect(),
+                closed: false,
+                normal: DVec3::Z,
+                reshapes: true,
+            }]
+        }
         ElementKind::Railing(r) if r.stair.is_none() => {
             let z = elevation(model, Some(r.level));
             vec![RingInfo {
@@ -160,9 +172,18 @@ pub fn rings(model: &Model, e: &Element) -> Vec<RingInfo> {
         ElementKind::Site(s) => {
             let z = elevation(model, Some(s.level));
             match &s.form {
-                SiteForm::Terrain { boundary, top, .. } => {
+                // a trench is reshaped by its line; its outline follows
+                SiteForm::Pad { path, top, .. } if !path.is_empty() => vec![RingInfo {
+                    ring: Ring::Outline,
+                    corners: path.iter().map(|q| q.extend(z + top)).collect(),
+                    closed: false,
+                    normal: DVec3::Z,
+                    reshapes: true,
+                }],
+                SiteForm::Terrain { boundary, top, .. } | SiteForm::Pad { boundary, top, .. } => {
                     vec![flat(Ring::Outline, boundary, z + top)]
                 }
+                SiteForm::Property { boundary, .. } => vec![flat(Ring::Outline, boundary, z)],
                 SiteForm::Area {
                     boundary,
                     holes: h,
@@ -171,9 +192,53 @@ pub fn rings(model: &Model, e: &Element) -> Vec<RingInfo> {
                 } => {
                     let mut out = vec![flat(Ring::Outline, boundary, z + top)];
                     out.extend(holes(h, z + top));
+                    // a car park's aisles drawn by hand: lines to bend
+                    if let Some(cp) = s.as_car_park() {
+                        out.extend(cp.aisles.iter().enumerate().map(|(k, a)| RingInfo {
+                            ring: Ring::Line(k),
+                            corners: a.path.iter().map(|q| q.extend(z + top)).collect(),
+                            closed: false,
+                            normal: DVec3::Z,
+                            reshapes: true,
+                        }));
+                    }
                     out
                 }
-                SiteForm::Plant { .. } => vec![],
+                SiteForm::Plant { .. }
+                | SiteForm::Tank(_)
+                | SiteForm::Spot { .. }
+                | SiteForm::Investigation(_) => vec![],
+                // a ground line, each point at its height
+                SiteForm::Line(l) => vec![RingInfo {
+                    ring: Ring::Outline,
+                    corners: l.points.iter().map(|q| *q + DVec3::Z * z).collect(),
+                    closed: l.closed,
+                    normal: DVec3::Z,
+                    reshapes: true,
+                }],
+                // a drain's run, on its level
+                SiteForm::Walk(w) => vec![RingInfo {
+                    ring: Ring::Outline,
+                    corners: w.path.iter().map(|q| q.extend(z)).collect(),
+                    closed: false,
+                    normal: DVec3::Z,
+                    reshapes: true,
+                }],
+                SiteForm::Drain(d) => vec![RingInfo {
+                    ring: Ring::Outline,
+                    corners: d.path.iter().map(|q| q.extend(z)).collect(),
+                    closed: false,
+                    normal: DVec3::Z,
+                    reshapes: true,
+                }],
+                // a road's centreline, each point at its level
+                SiteForm::Road(r) => vec![RingInfo {
+                    ring: Ring::Outline,
+                    corners: r.path.iter().map(|q| *q + DVec3::Z * z).collect(),
+                    closed: false,
+                    normal: DVec3::Z,
+                    reshapes: true,
+                }],
             }
         }
         // drafting, on its view's paper: a region's outline, a path's points
@@ -239,6 +304,11 @@ pub fn outline_handles(model: &Model, id: ElementId, edit: bool) -> Vec<Handle> 
         ElementKind::Roof(r) => r.thickness / 2.0,
         _ => 0.0,
     };
+    // a stair's line opens with the stair (Enter): selected, the stair
+    // moves and turns as a whole
+    if !edit && matches!(e.kind, ElementKind::Stair(_)) {
+        return out;
+    }
     for r in rings(model, e) {
         if !edit && r.ring != Ring::Outline {
             continue;
@@ -304,6 +374,12 @@ fn edge_mid(e: &Element, ring: Ring, i: usize, z: f64) -> Option<DVec3> {
         (ElementKind::Slab(s), Ring::Outline) if i < s.boundary.len() && s.bulge(i) != 0.0 => {
             Some(s.edge(i).at(0.5).extend(z))
         }
+        (ElementKind::Stair(s), Ring::Outline) if i + 1 < s.line.len() && s.bend(i) != 0.0 => {
+            let (a, b) = (s.to_plan(s.line[i]), s.to_plan(s.line[i + 1]));
+            let sweep = s.bend(i).to_radians();
+            let c = creabim_core::members::arc_centre(a, b, sweep);
+            Some((c + DVec2::from_angle(sweep / 2.0).rotate(a - c)).extend(z))
+        }
         _ => None,
     }
 }
@@ -334,12 +410,35 @@ pub fn ring_mut(kind: &mut ElementKind, ring: Ring) -> Option<&mut Vec<DVec2>> {
             _ => None,
         },
         (ElementKind::Site(s), ring) => match (&mut s.form, ring) {
+            (SiteForm::Pad { path, .. }, Ring::Outline) if !path.is_empty() => Some(path),
             (SiteForm::Terrain { boundary, .. }, Ring::Outline)
-            | (SiteForm::Area { boundary, .. }, Ring::Outline) => Some(boundary),
+            | (SiteForm::Pad { boundary, .. }, Ring::Outline)
+            | (SiteForm::Area { boundary, .. }, Ring::Outline)
+            | (SiteForm::Property { boundary, .. }, Ring::Outline) => Some(boundary),
+            (SiteForm::Drain(d), Ring::Outline) => Some(&mut d.path),
+            (SiteForm::Walk(w), Ring::Outline) => Some(&mut w.path),
             (SiteForm::Area { holes, .. }, Ring::Hole(k)) => holes.get_mut(k),
+            (
+                SiteForm::Area {
+                    parking: Some(cp), ..
+                },
+                Ring::Line(k),
+            ) => cp.aisles.get_mut(k).map(|a| &mut a.path),
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// A trench's outline laid along its line again, after the line changed.
+fn retrench(e: &mut Element) {
+    match &mut e.kind {
+        ElementKind::Site(s) => s.retrench(),
+        // a corner folded back past 135° makes a half-turn (MU101)
+        ElementKind::Stair(s) => {
+            s.split_sharp();
+        }
+        _ => {}
     }
 }
 
@@ -353,15 +452,45 @@ fn sweep_points(kind: &mut ElementKind) -> Option<&mut Vec<DVec3>> {
             } => Some(points),
             _ => None,
         },
+        ElementKind::Site(creabim_core::Site {
+            form: SiteForm::Road(r),
+            ..
+        }) => Some(&mut r.path),
+        ElementKind::Site(creabim_core::Site {
+            form: SiteForm::Line(l),
+            ..
+        }) => Some(&mut l.points),
         _ => None,
     }
 }
 
 /// Put corner `i` of `ring` at `p` (a railing's keeps its height).
 fn set_corner(e: &mut Element, ring: Ring, i: usize, p: DVec2) -> Result<(), String> {
+    let before = matches!(e.kind, ElementKind::Stair(_)).then(|| e.clone());
+    let r = set_corner_raw(e, ring, i, p);
+    retrench(e);
+    // a stair keeps its flights apart: a point that folds them across
+    // each other is not taken (MU101 #5)
+    if let (Some(before), ElementKind::Stair(s)) = (before, &e.kind) {
+        if s.pieces_overlap(s.height.unwrap_or(3.0)) {
+            *e = before;
+            return Err(
+                "There its flights would cross each other: the stair stays as it was.".into(),
+            );
+        }
+    }
+    r
+}
+
+fn set_corner_raw(e: &mut Element, ring: Ring, i: usize, p: DVec2) -> Result<(), String> {
     if let (ElementKind::Railing(r), Ring::Outline) = (&mut e.kind, ring) {
         let c = r.path.get_mut(i).ok_or("that corner is gone")?;
         *c = p.extend(c.z);
+        return Ok(());
+    }
+    if let (ElementKind::Stair(s), Ring::Outline) = (&mut e.kind, ring) {
+        let q = s.to_local(p);
+        *s.line.get_mut(i).ok_or("that point is gone")? = q;
         return Ok(());
     }
     if let ElementKind::Part(part) = &e.kind {
@@ -434,6 +563,15 @@ fn round(v: f64, step: f64) -> f64 {
 /// outline its arcs split, a roof keeps its sloping edge, a sketch its
 /// segment kinds, a railing the heights either side.
 fn insert(e: &mut Element, ring: Ring, i: usize, p: DVec2) {
+    insert_raw(e, ring, i, p);
+    aisle_reshaped(e, ring);
+    if let (ElementKind::Site(s), Ring::Outline) = (&mut e.kind, ring) {
+        s.corner_added(i);
+    }
+    retrench(e);
+}
+
+fn insert_raw(e: &mut Element, ring: Ring, i: usize, p: DVec2) {
     let face = match &e.kind {
         ElementKind::Part(part) => sweep_plane(part),
         _ => None,
@@ -456,6 +594,13 @@ fn insert(e: &mut Element, ring: Ring, i: usize, p: DVec2) {
             if sk.kinds.len() > i {
                 sk.kinds.insert(i + 1, Default::default());
             }
+        }
+        (ElementKind::Stair(s), Ring::Outline) => {
+            let q = s.to_local(p);
+            let n = s.line.len();
+            s.line.insert((i + 1).min(n), q);
+            s.bend_split(i.min(n - 1));
+            s.pieces.point_added((i + 1).min(n));
         }
         (ElementKind::Railing(r), Ring::Outline) => {
             let n = r.path.len();
@@ -492,8 +637,30 @@ fn insert(e: &mut Element, ring: Ring, i: usize, p: DVec2) {
     }
 }
 
+/// A car park's aisle gained or lost a point: its rows' own lengths,
+/// which went by its stretches, are let go.
+fn aisle_reshaped(e: &mut Element, ring: Ring) {
+    if let (ElementKind::Site(s), Ring::Line(k)) = (&mut e.kind, ring) {
+        if let SiteForm::Area {
+            parking: Some(cp), ..
+        } = &mut s.form
+        {
+            cp.aisle_reshaped(k);
+        }
+    }
+}
+
 /// Take corner `i` of `ring` away.
 fn remove(e: &mut Element, ring: Ring, i: usize) {
+    remove_raw(e, ring, i);
+    aisle_reshaped(e, ring);
+    if let (ElementKind::Site(s), Ring::Outline) = (&mut e.kind, ring) {
+        s.corner_removed(i);
+    }
+    retrench(e);
+}
+
+fn remove_raw(e: &mut Element, ring: Ring, i: usize) {
     match (&mut e.kind, ring) {
         (ElementKind::Slab(s), Ring::Outline) => s.remove_corner(i),
         (ElementKind::Roof(r), Ring::Outline) => {
@@ -514,6 +681,13 @@ fn remove(e: &mut Element, ring: Ring, i: usize) {
         (ElementKind::Railing(r), Ring::Outline) => {
             if i < r.path.len() {
                 r.path.remove(i);
+            }
+        }
+        (ElementKind::Stair(s), Ring::Outline) => {
+            if i < s.line.len() {
+                s.pieces.point_removed(i, s.line.len());
+                s.bend_joined(i);
+                s.line.remove(i);
             }
         }
         (
@@ -621,7 +795,13 @@ pub fn reshape_unchecked(
     let d = now - grab;
     match kind {
         HandleKind::Vertex { ring, i } => {
-            let p = local(model, e, now);
+            let mut p = local(model, e, now);
+            // a stair line's last point steps by whole treads; Alt frees it
+            if let (ElementKind::Stair(s), Ring::Outline) = (&e.kind, ring) {
+                if i + 1 == s.line.len() && !crate::snaps::free() {
+                    p = s.whole_treads_end(s.rise(model), p);
+                }
+            }
             set_corner(e, ring, i, p)?;
             merge_if_on_neighbour(model, e, ring, i);
         }
@@ -641,6 +821,16 @@ pub fn reshape_unchecked(
             let (pa, pb) = (local(model, e, a + by), local(model, e, b + by));
             set_corner(e, ring, i % n, pa)?;
             set_corner(e, ring, (i + 1) % n, pb)?;
+        }
+        HandleKind::EdgeMove { ring, i } => {
+            // the edge as it is, taken where the pointer goes: its two
+            // ends move, the edges beside it stretch
+            let n = ring_of(model, e, ring)
+                .ok_or("that outline is gone")?
+                .corners
+                .len();
+            let by = DVec3::new(round(d.x, step), round(d.y, step), d.z);
+            shift_corners(model, e, &[(ring, i % n), (ring, (i + 1) % n)], by)?;
         }
         HandleKind::Ring { ring } => {
             let info = ring_of(model, e, ring).ok_or("that outline is gone")?;
@@ -673,6 +863,42 @@ pub fn reshape_unchecked(
     Ok(())
 }
 
+/// Corners `corners` of `e`'s outlines taken `by` from where they are.
+fn shift_corners(
+    model: &Model,
+    e: &mut Element,
+    corners: &[(Ring, usize)],
+    by: DVec3,
+) -> Result<(), String> {
+    let mut at = Vec::with_capacity(corners.len());
+    for (ring, i) in corners {
+        let c = ring_of(model, e, *ring)
+            .and_then(|r| r.corners.get(*i).copied())
+            .ok_or("that corner is gone")?;
+        at.push(c);
+    }
+    for ((ring, i), c) in corners.iter().zip(at) {
+        let p = local(model, e, c + by);
+        set_corner(e, *ring, *i, p)?;
+    }
+    Ok(())
+}
+
+/// The corners picked in Edit mode moved `by`: what M does there. Refused
+/// with the reason if the outline would be broken.
+pub fn move_corners(
+    model: &Model,
+    e: &mut Element,
+    corners: &[(Ring, usize)],
+    by: DVec3,
+) -> Result<(), String> {
+    shift_corners(model, e, corners, by)?;
+    match problem(model, e) {
+        Some(p) => Err(p),
+        None => Ok(()),
+    }
+}
+
 /// What is wrong with `e`'s outlines, if anything: one with no area or
 /// too few corners, one crossing itself, a hole outside or across the
 /// outline, two holes overlapping.
@@ -686,6 +912,7 @@ pub fn problem(model: &Model, e: &Element) -> Option<String> {
         let what = match r.ring {
             Ring::Outline => "the outline",
             Ring::Hole(_) => "a hole",
+            Ring::Line(_) => "an aisle",
         };
         if r.corners.len() < r.fewest() {
             return Some(format!("{what} needs at least {} corners", r.fewest()));
@@ -715,6 +942,7 @@ fn shape_problem(e: &Element, disc: bool) -> Option<String> {
         ElementKind::Railing(r) if r.stair.is_none() => {
             (r.path.iter().map(|p| p.truncate()).collect(), false, vec![])
         }
+        ElementKind::Stair(s) if s.line.len() >= 2 => (s.line.clone(), false, vec![]),
         ElementKind::Sketch(sk) if sk.circle.is_none() => (sk.points.clone(), sk.closed, vec![]),
         ElementKind::Detail(d) if d.kind.is_area() => (d.points.clone(), true, vec![]),
         ElementKind::Part(p) => match &p.form {
@@ -730,11 +958,25 @@ fn shape_problem(e: &Element, disc: bool) -> Option<String> {
             Form::Sweep { .. } => return None,
         },
         ElementKind::Site(s) => match &s.form {
-            SiteForm::Terrain { boundary, .. } => (boundary.clone(), true, vec![]),
+            SiteForm::Pad { path, .. } if !path.is_empty() => (path.clone(), false, vec![]),
+            SiteForm::Terrain { boundary, .. }
+            | SiteForm::Pad { boundary, .. }
+            | SiteForm::Property { boundary, .. } => (boundary.clone(), true, vec![]),
             SiteForm::Area {
                 boundary, holes, ..
             } => (boundary.clone(), true, holes.clone()),
-            SiteForm::Plant { .. } => return None,
+            SiteForm::Plant { .. }
+            | SiteForm::Tank(_)
+            | SiteForm::Spot { .. }
+            | SiteForm::Investigation(_) => return None,
+            SiteForm::Line(l) => (
+                l.points.iter().map(|q| q.truncate()).collect(),
+                l.closed,
+                vec![],
+            ),
+            SiteForm::Road(r) => (r.plan(), false, vec![]),
+            SiteForm::Drain(d) => (d.path.clone(), false, vec![]),
+            SiteForm::Walk(w) => (w.path.clone(), false, vec![]),
         },
         _ => return None,
     };
@@ -776,6 +1018,7 @@ pub fn remove_corners(
         let what = match ring {
             Ring::Outline => "outline",
             Ring::Hole(_) => "hole",
+            Ring::Line(_) => "aisle",
         };
         if info.corners.len() - idx.len() < info.fewest() {
             return Err(format!(
@@ -799,6 +1042,54 @@ pub fn remove_corners(
         n => format!("Remove {n} corners of {}", e.name),
     };
     doc.edit(id, &label, |el| *el = edited.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(format!("{label}. Ctrl+Z to undo."))
+}
+
+/// Remove edge `i` (corner `i` to the next) of drawn outline `id`: a
+/// closed outline opens there, keeping all its corners; an open line
+/// loses its end with it (MU46, MU48). In one undo step.
+pub fn remove_edge(doc: &mut Document, id: ElementId, i: usize) -> Result<String, String> {
+    let e = doc.model().get(id).ok_or("It is gone.")?.clone();
+    let ElementKind::Sketch(sk) = &e.kind else {
+        return Err(
+            "Only a drawn outline opens at an edge: Delete removes its corners here.".into(),
+        );
+    };
+    let n = sk.points.len();
+    let plain = sk.circle.is_none()
+        && sk.constraints.is_empty()
+        && sk
+            .kinds
+            .iter()
+            .all(|k| matches!(k, creabim_core::SegmentKind::Line));
+    if !plain {
+        return Err(
+            "This sketch has arcs or constraints, which keep its edges: drag them instead.".into(),
+        );
+    }
+    let mut now = sk.clone();
+    let label = if sk.closed {
+        if i >= n {
+            return Err("That edge is gone.".into());
+        }
+        now.points.rotate_left((i + 1) % n);
+        now.closed = false;
+        format!("Open {} at an edge", e.name)
+    } else if n < 3 {
+        return Err("A line of one edge has nothing left without it: delete the line.".into());
+    } else if i == 0 {
+        now.points.remove(0);
+        format!("Remove an end of {}", e.name)
+    } else if i + 2 == n {
+        now.points.pop();
+        format!("Remove an end of {}", e.name)
+    } else {
+        return Err("An edge in the middle would leave two lines: remove a corner instead, or an edge at an end.".into());
+    };
+    now.kinds.clear();
+    now.check()?;
+    doc.edit(id, &label, |el| el.kind = ElementKind::Sketch(now.clone()))
         .map_err(|e| e.to_string())?;
     Ok(format!("{label}. Ctrl+Z to undo."))
 }
@@ -866,12 +1157,37 @@ pub fn add_corner(
     Ok(format!("{label}: drag it into place. Ctrl+Z to undo."))
 }
 
-/// Bend edge `i` of a slab's outline into an arc, or straighten it.
+/// Bend edge `i` of a slab's outline, or straight `i` of a stair's line,
+/// into an arc, or straighten it.
 pub fn set_arc(doc: &mut Document, id: ElementId, i: usize, arc: bool) -> Result<String, String> {
     let e = doc.model().get(id).ok_or("It is gone.")?.clone();
     let mut edited = e.clone();
+    if let ElementKind::Stair(s) = &mut edited.kind {
+        if i + 1 >= s.line.len() {
+            return Err("That straight is gone.".into());
+        }
+        // a quarter turn, the way the line turns next (or turned before)
+        let turn = |k: usize| {
+            (k >= 1 && k + 1 < s.line.len()).then(|| {
+                let (a, b, c) = (s.line[k - 1], s.line[k], s.line[k + 1]);
+                (b - a).perp_dot(c - b).signum()
+            })
+        };
+        let side = turn(i + 1).or(turn(i)).unwrap_or(1.0);
+        s.set_bend(i, if arc { 90.0 * side } else { 0.0 });
+        let label = if arc {
+            format!("Curve a straight of {}", e.name)
+        } else {
+            format!("Straighten a curve of {}", e.name)
+        };
+        doc.edit(id, &label, |el| *el = edited.clone())
+            .map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "{label}. Set its bend in Properties. Ctrl+Z to undo."
+        ));
+    }
     let ElementKind::Slab(s) = &mut edited.kind else {
-        return Err("Only a slab's outline has arcs.".into());
+        return Err("Only a slab's outline or a stair's line has arcs.".into());
     };
     let n = s.boundary.len();
     if i >= n {
@@ -918,6 +1234,11 @@ pub fn add_or_remove(
 pub fn hint(model: &Model, e: &Element) -> String {
     let outlines = !rings(model, e).is_empty();
     let name = &e.name;
+    if outlines && matches!(e.kind, ElementKind::Stair(_)) {
+        return format!(
+            "Editing {name}'s line: drag a point, drag a ◇ to add a turn (a landing goes there), select a point and press Delete to take a turn away. The flights, landings and railings follow. Shift+Tab: its flights and landings one at a time. Esc finishes."
+        );
+    }
     if outlines {
         let layers = if crate::handles::has_layers(model, e.id) {
             " Tab: its layers' edges."
@@ -925,7 +1246,7 @@ pub fn hint(model: &Model, e: &Element) -> String {
             ""
         };
         format!(
-            "Editing {name}: select a corner and press Delete (Shift+click or drag a box for more); drag a corner to move it, an edge's grip to push it, a ◇ to pull out a corner, inside a hole to move it. Right-click for more.{layers} Esc finishes."
+            "Editing {name}: drag a corner or an edge to move it; click picks it (Shift+click or a box for more), M moves what is picked, Delete removes picked corners. A ◇ pulls out a corner, an edge's bar pushes it square. Right-click for more.{layers} Esc finishes."
         )
     } else if crate::handles::has_layers(model, e.id) {
         format!("Editing {name}: drag its grips in any view. Its layers' ends in the Grips row. Tab finishes.")
@@ -948,6 +1269,9 @@ pub fn panel_hint(kind: &ElementKind) -> &'static str {
         }
         ElementKind::Detail(_) => {
             "Click a point and press Delete to remove it; drag points to move them, a ◇ to add one. In this view only."
+        }
+        ElementKind::Stair(_) => {
+            "Its line: drag a point to move it, a ◇ to add a turn (a landing goes there); click a point and press Delete to take a turn away. The flights and landings fill the line again as it changes, and its railings follow. Flights and landings (the button below, or Shift+Tab): a grip on each flight's top riser for more or fewer treads, and in each landing to push it back deeper; each change stays when the line changes. Esc finishes."
         }
         ElementKind::Sketch(_) | ElementKind::Railing(_) => {
             "Click a corner and press Delete to remove it; drag corners to move them, a ◇ to add one. Right-click for more."
@@ -1003,6 +1327,198 @@ mod tests {
             ElementKind::Shaft(s) => s.clone(),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn a_stairs_line_is_edited_and_the_stair_fills_it_again() {
+        use creabim_core::members::StairLine;
+        let mut m = sample_house();
+        let g = m.iter().find(|e| e.name == "Ground Floor").unwrap().id;
+        let line = [
+            DVec2::new(30.0, 0.0),
+            DVec2::new(33.0, 0.0),
+            DVec2::new(33.0, 4.0),
+        ];
+        let s = creabim_core::Stair::from_line(g, &line, StairLine::Walk).unwrap();
+        let e = Element::new("S", ElementKind::Stair(s));
+        let id = e.id;
+        creabim_core::Transaction::new("s")
+            .insert(e)
+            .apply(&mut m)
+            .unwrap();
+        let mut doc = Document::from_model(m);
+        let lay = |doc: &Document| match &doc.model().get(id).unwrap().kind {
+            ElementKind::Stair(s) => (s.line.len(), s.layout(s.rise(doc.model()))),
+            _ => panic!(),
+        };
+        assert_eq!(lay(&doc).1.landings.len(), 1);
+        // a straight curved from its right-click menu, the way the line
+        // turns next (left here), and straightened again
+        set_arc(&mut doc, id, 0, true).unwrap();
+        let bend = |doc: &Document| match &doc.model().get(id).unwrap().kind {
+            ElementKind::Stair(s) => s.bend(0),
+            _ => panic!(),
+        };
+        assert_eq!(bend(&doc), 90.0);
+        assert!(handles_in(doc.model(), id, None, true)
+            .iter()
+            .any(|h| matches!(h.kind, HandleKind::AddVertex { i: 0, .. })
+                && h.at.truncate().distance(DVec2::new(31.5, 0.0)) > 0.3));
+        set_arc(&mut doc, id, 0, false).unwrap();
+        assert_eq!(bend(&doc), 0.0);
+        // selected, it moves and turns as a whole: no line grips
+        assert!(handles_in(doc.model(), id, None, false)
+            .iter()
+            .all(|h| !matches!(h.kind, HandleKind::Vertex { .. })));
+        // opened: a grip on each point and a ◇ on each stretch
+        let hs = handles_in(doc.model(), id, None, true);
+        assert_eq!(
+            hs.iter()
+                .filter(|h| matches!(h.kind, HandleKind::Vertex { .. }))
+                .count(),
+            3
+        );
+        // a ◇ pulled out of the second stretch: a second turn, a second landing
+        let z = hs[0].at.z;
+        drag(
+            &mut doc,
+            id,
+            HandleKind::AddVertex {
+                ring: Ring::Outline,
+                i: 1,
+            },
+            DVec3::new(33.0, 2.5, z),
+        );
+        drag(
+            &mut doc,
+            id,
+            HandleKind::Vertex {
+                ring: Ring::Outline,
+                i: 3,
+            },
+            DVec3::new(30.0, 2.5, z),
+        );
+        let (n, l) = lay(&doc);
+        assert_eq!(n, 4);
+        assert_eq!(l.landings.len(), 2, "a landing at each turn");
+        // a line crossing itself is refused
+        let mut e = doc.model().get(id).unwrap().clone();
+        let r = reshape(
+            doc.model(),
+            &mut e,
+            HandleKind::Vertex {
+                ring: Ring::Outline,
+                i: 3,
+            },
+            DVec3::new(30.0, 2.5, z),
+            DVec3::new(31.5, -1.0, z),
+            0.0,
+        );
+        assert!(r.is_err());
+        // the middle turn taken away again: the turn left is sharper than
+        // 135°, so it is read as a half-turn, one landing across (MU101)
+        remove_corners(&mut doc, id, &[(Ring::Outline, 2)]).unwrap();
+        let (n, l) = lay(&doc);
+        assert_eq!(n, 4);
+        assert_eq!(l.landings.len(), 1);
+        assert!(l.winders.is_empty());
+    }
+
+    #[test]
+    fn a_stairs_flights_and_landings_are_changed_one_at_a_time() {
+        use creabim_core::members::StairLine;
+        let mut m = sample_house();
+        let g = m.iter().find(|e| e.name == "Ground Floor").unwrap().id;
+        let line = [
+            DVec2::new(30.0, 0.0),
+            DVec2::new(33.0, 0.0),
+            DVec2::new(33.0, 4.0),
+        ];
+        let s = creabim_core::Stair::from_line(g, &line, StairLine::Walk).unwrap();
+        let e = Element::new("S", ElementKind::Stair(s));
+        let id = e.id;
+        creabim_core::Transaction::new("s")
+            .insert(e)
+            .apply(&mut m)
+            .unwrap();
+        let mut doc = Document::from_model(m);
+        let stair = |doc: &Document| match &doc.model().get(id).unwrap().kind {
+            ElementKind::Stair(s) => s.clone(),
+            _ => panic!(),
+        };
+        let risers = |doc: &Document| {
+            let s = stair(doc);
+            s.layout(s.rise(doc.model()))
+                .flights
+                .iter()
+                .map(|f| f.risers)
+                .collect::<Vec<_>>()
+        };
+        // its pieces' grips (Shift+Tab): the first flight's top riser and
+        // the landing; the last flight takes the rest, so has none
+        let piece = |doc: &mut Document, kind: HandleKind, by: DVec3| {
+            let h = crate::handles::layer_handles(doc.model(), id)
+                .into_iter()
+                .find(|h| h.kind == kind)
+                .unwrap_or_else(|| panic!("no {kind:?} grip"));
+            let (orig, joined) = originals(doc.model(), id, kind);
+            let model = doc.model().clone();
+            let out = apply(&model, &orig, &joined, kind, h.at, h.at + by, 0.0).unwrap();
+            let new = out[0].clone();
+            doc.edit(id, "drag", |e| *e = new.clone()).unwrap();
+        };
+        let hs = crate::handles::layer_handles(doc.model(), id);
+        assert_eq!(hs.len(), 2, "{hs:?}");
+        assert!(crate::handles::has_layers(doc.model(), id));
+        let before = risers(&doc);
+        // two treads off the first flight: the second takes them
+        piece(
+            &mut doc,
+            HandleKind::StairFlight { straight: 0 },
+            DVec3::new(-0.56, 0.0, 0.0),
+        );
+        let after = risers(&doc);
+        assert_eq!(after[0], before[0] - 2);
+        assert_eq!(after[1], before[1] + 2);
+        assert_eq!(stair(&doc).pieces.treads(0), Some(before[0] - 3));
+        // the landing pushed back: deeper
+        piece(
+            &mut doc,
+            HandleKind::StairLanding { turn: 0 },
+            DVec3::new(-0.3, 0.0, 0.0),
+        );
+        assert!((stair(&doc).pieces.deeper(0) - 0.3).abs() < 1e-9);
+        // the line changed: the stair fills it again and keeps both
+        let z = hs[0].at.z;
+        drag(
+            &mut doc,
+            id,
+            HandleKind::Vertex {
+                ring: Ring::Outline,
+                i: 2,
+            },
+            DVec3::new(33.0, 6.0, z),
+        );
+        assert_eq!(risers(&doc)[0], before[0] - 2);
+        assert!((stair(&doc).pieces.deeper(0) - 0.3).abs() < 1e-6);
+        // a turn put into the second straight: they stay with their pieces
+        drag(
+            &mut doc,
+            id,
+            HandleKind::AddVertex {
+                ring: Ring::Outline,
+                i: 1,
+            },
+            DVec3::new(34.5, 3.0, z),
+        );
+        assert_eq!(stair(&doc).pieces.treads(0), Some(before[0] - 3));
+        assert!((stair(&doc).pieces.deeper(0) - 0.3).abs() < 1e-6);
+        // reset, one at a time and all at once
+        crate::handles::reset_layer_ends(&mut doc, id, Some(HandleKind::StairLanding { turn: 0 }))
+            .unwrap();
+        assert_eq!(stair(&doc).pieces.deeper(0), 0.0);
+        crate::handles::reset_layer_ends(&mut doc, id, None).unwrap();
+        assert!(stair(&doc).pieces.is_empty());
     }
 
     #[test]
@@ -1208,6 +1724,76 @@ mod tests {
                 }
             ))
             .all(|h| h.nudge < 0.0));
+    }
+
+    #[test]
+    fn an_edge_taken_by_its_body_moves_as_it_is_and_move_takes_picked_corners_only() {
+        // MU46: a 4 by 3 outline on the ground
+        let pts = vec![
+            DVec2::ZERO,
+            DVec2::new(4.0, 0.0),
+            DVec2::new(4.0, 3.0),
+            DVec2::new(0.0, 3.0),
+        ];
+        let sk = creabim_core::Sketch::polyline(
+            None,
+            creabim_core::Workplane::ground(0.0),
+            pts.clone(),
+            true,
+        );
+        let e = Element::new("Sketch", ElementKind::Sketch(sk));
+        let model = Model::from_elements([e.clone()]).unwrap();
+        let now = |e: &Element| match &e.kind {
+            ElementKind::Sketch(s) => s.points.clone(),
+            _ => panic!(),
+        };
+        // the edge from (4, 0) to (4, 3), taken at its middle and carried
+        // 1 m along x and half a metre along y
+        let kind = HandleKind::EdgeMove {
+            ring: Ring::Outline,
+            i: 1,
+        };
+        let grab = DVec3::new(4.0, 1.5, 0.0);
+        let out = apply(
+            &model,
+            std::slice::from_ref(&e),
+            &[],
+            kind,
+            grab,
+            grab + DVec3::new(1.0, 0.5, 0.0),
+            0.0,
+        )
+        .unwrap();
+        let got = now(&out[0]);
+        assert!(got[1].distance(DVec2::new(5.0, 0.5)) < 1e-9);
+        assert!(got[2].distance(DVec2::new(5.0, 3.5)) < 1e-9);
+        assert_eq!((got[0], got[3]), (pts[0], pts[3]), "the others stay");
+        assert!(
+            (got[1].distance(got[2]) - 3.0).abs() < 1e-9,
+            "its length too"
+        );
+        // Move on two picked corners: they go, the rest stays
+        let mut moved = e.clone();
+        let picked = [(Ring::Outline, 2), (Ring::Outline, 3)];
+        move_corners(&model, &mut moved, &picked, DVec3::new(0.0, 2.0, 0.0)).unwrap();
+        let got = now(&moved);
+        assert_eq!((got[0], got[1]), (pts[0], pts[1]));
+        assert!(got[2].distance(DVec2::new(4.0, 5.0)) < 1e-9);
+        assert!(got[3].distance(DVec2::new(0.0, 5.0)) < 1e-9);
+        // what is picked: an edge is its two ends
+        let mut sel = crate::handles::GripSel::default();
+        sel.pick_edge(Ring::Outline, 3, 4, false);
+        assert!(sel.edge_picked(Ring::Outline, 3, 4) && !sel.edge_picked(Ring::Outline, 0, 4));
+        assert_eq!(
+            sel.one_edge(|_| 4),
+            Some((Ring::Outline, 3)),
+            "the closing edge"
+        );
+        sel.pick_edge(Ring::Outline, 0, 4, true);
+        assert_eq!(sel.corners.len(), 3);
+        assert_eq!(sel.one_edge(|_| 4), None, "two edges are not one");
+        sel.pick_edge(Ring::Outline, 3, 4, true);
+        assert!(sel.corners.is_empty() || !sel.edge_picked(Ring::Outline, 3, 4));
     }
 
     #[test]

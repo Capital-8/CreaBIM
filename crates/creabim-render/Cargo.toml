@@ -1,0 +1,14 @@
+[package]
+name = "creabim-render"
+description = "Prototype renderer: real-time look, drawing styles and a path tracer, all on one set of materials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+creabim-core.workspace = true
+creabim-geom.workspace = true
+glam.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

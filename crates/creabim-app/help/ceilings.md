@@ -9,7 +9,7 @@ A **ceiling** is a thin layer hung under the floor or roof above: plasterboard, 
 
 Clicking inside walls where there is no room yet gives a ceiling with the outline of the space there, which doesn't follow the walls. Place the room first for one that does.
 
-Like rooms and slabs, the tool can also draw the ceiling's outline: **Polygon (1)**, **Rectangle (2)** or **From sketch (4)**. Use a drawn ceiling for a bulkhead, or a ceiling over only part of a room.
+Like rooms and slabs, the tool can also draw the ceiling's outline with **Draw by**: *Polygon* (`1`), *Rectangle* (`2`) or *From sketch* (`4`). Use a drawn ceiling for a bulkhead, or a ceiling over only part of a room.
 
 ## Height, thickness and grid
 

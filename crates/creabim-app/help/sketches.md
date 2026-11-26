@@ -1,5 +1,9 @@
 # Sketches and the workplane
 
+> **Where it is now:** drawing starts from **Line** and **Rectangle** on the Model tab (Line holds Arc, Rectangle holds Circle), and **Pull** (`P`) turns what you drew into a solid or a surface. A new drawing is named *Shape*. The Sketch, Mass and Extrusion tools are still under *Create › Earlier tools*.
+
+With something selected, a short strip at the top right of the view lists the modelling tools that apply to it: Pull, Offset, Edit, Close it, Inset, Join, Separate. The right-click menu carries the same.
+
 A **sketch** is a flat drawing of lines, arcs and circles on a plane. A closed sketch can be extruded into a mass, or used as the outline of a slab, roof or shaft.
 
 ## Drawing a sketch
