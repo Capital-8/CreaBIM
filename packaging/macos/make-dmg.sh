@@ -69,6 +69,13 @@ cat > "$contents/Info.plist" <<PLIST
 PLIST
 
 mkdir -p "$(dirname "$output")"
+# hdiutil's own guess at the image size, from -srcfolder alone, came out too
+# small on GitHub's macos-26 runner ("create failed - No space left on
+# device", 1.2.0-rc.1 test run). Give it the folder's size plus a quarter
+# and 64 MB for the file system.
+stage_mb=$(du -sm "$stage" | cut -f1)
+size_mb=$((stage_mb + stage_mb / 4 + 64))
+echo "Disk image: ${stage_mb} MB of files, image size ${size_mb} MB"
 hdiutil create -volname "CreaBIM $version" -srcfolder "$stage" \
-    -ov -format UDZO "$output"
+    -size "${size_mb}m" -ov -format UDZO "$output"
 echo "Created $output for CreaBIM $version (release date $date)"

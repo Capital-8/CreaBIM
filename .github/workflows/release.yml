@@ -146,6 +146,7 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
           DATE: ${{ needs.meta.outputs.date }}
         run: |
+          df -h . /tmp
           bash packaging/macos/make-dmg.sh "$VERSION" "$DATE" target/release-macos-universal \
             "CreaBIM-${VERSION}-${DATE}-macos-universal.dmg"
       - uses: actions/upload-artifact@v4
