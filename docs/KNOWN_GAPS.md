@@ -2,7 +2,7 @@
 
 This is the one place to look for what CreaBIM doesn't do yet, or does wrong. It gathers the "Known gaps" sections of every milestone README in [docs/evolution](evolution), the review of the starter house on 2026-10-28, and gaps found while working. Each milestone README keeps its own list as it was written, and points here.
 
-Last checked against `main` on 2026-11-04, after the open JSON import (#44) and graphic styles and view ranges (#45).
+Last refreshed for **1.2.0** on 2026-11-26. Gaps that 1.1 and 1.2 closed were moved to [Recently fixed](#recently-fixed), each checked in the 1.2 code or guide, and [Still in development](#still-in-development) was added. Other gaps were carried over without a new check. The last full sweep was on 2026-11-04, after the open JSON import (#44) and graphic styles and view ranges (#45).
 
 **How to read it**
 
@@ -12,29 +12,40 @@ Last checked against `main` on 2026-11-04, after the open JSON import (#44) and 
 - Within each theme, the gaps that hurt users most come first.
 - When you close a gap, move it to [Recently fixed](#recently-fixed) with the branch that fixed it. When you find one, add it here and in your milestone README.
 
+## Still in development
+
+**Modelling free shapes is still in development.** In 1.2 you can already model with masses:
+- [Pull](../crates/creabim-app/help/move.md#pull-p) (`P`);
+- lines and outlines drawn on a face;
+- Inset and Outset;
+- a mass's Edit mode;
+- modifiers and booleans.
+
+They work, and you can use them for design studies. But they will change as this work goes on: tools may be renamed, merged or work differently in a later release, and some of the gaps under [Editing and manipulation](#editing-and-manipulation) belong to this work. Walls, slabs, roofs, stairs, doors, windows and the other building tools are not part of it.
+
 ## Summary
 
 | Theme | S | M | L | Open |
 | --- | ---: | ---: | ---: | ---: |
-| [Plans, sections and drawing quality](#plans-sections-and-drawing-quality) | 14 | 7 | 0 | 21 |
+| [Plans, sections and drawing quality](#plans-sections-and-drawing-quality) | 14 | 6 | 0 | 20 |
 | [Rooms and ceilings](#rooms-and-ceilings) | 3 | 2 | 0 | 5 |
 | [Walls, joins and details](#walls-joins-and-details) | 9 | 5 | 0 | 14 |
 | [Openings](#openings-doors-windows-curtain-walls) | 3 | 2 | 0 | 5 |
-| [Roofs, stairs, structure](#roofs-stairs-structure) | 7 | 3 | 2 | 12 |
-| [Furniture, fixtures, parts and site](#furniture-fixtures-parts-and-site) | 11 | 1 | 1 | 13 |
-| [Annotation and marks](#annotation-and-marks) | 15 | 4 | 0 | 19 |
+| [Roofs, stairs, structure](#roofs-stairs-structure) | 10 | 11 | 1 | 22 |
+| [Furniture, fixtures, parts and site](#furniture-fixtures-parts-and-site) | 16 | 3 | 2 | 21 |
+| [Annotation and marks](#annotation-and-marks) | 15 | 5 | 0 | 20 |
 | [Sheets and schedules](#sheets-and-schedules) | 8 | 3 | 0 | 11 |
 | [Editing and manipulation](#editing-and-manipulation) | 22 | 7 | 0 | 29 |
 | [3D view](#3d-view) | 10 | 4 | 0 | 14 |
 | [IFC import and export](#ifc-import-and-export) | 6 | 6 | 2 | 14 |
 | [JSON model format](#json-model-format) | 3 | 5 | 0 | 8 |
 | [DXF, SVG and other exchange](#dxf-svg-and-other-exchange) | 3 | 2 | 1 | 6 |
-| [Interface and help](#interface-and-help) | 13 | 4 | 1 | 18 |
+| [Interface and help](#interface-and-help) | 13 | 3 | 1 | 17 |
 | [Performance](#performance) | 0 | 2 | 0 | 2 |
-| **Total** | **127** | **57** | **7** | **191** |
-| [Brief 02](#brief-02-2026-11-04) (counted on its own; M–L as M, S–M as S; with addendum A3) | 7 | 9 | 4 | 20 |
+| **Total** | **135** | **66** | **7** | **208** |
+| [Brief 02](#brief-02-2026-11-04) (counted on its own; M–L as M, S–M as S; with addendum A3) | 9 | 7 | 1 | 17 |
 
-The sweep of 2026-11-04 fixed 8 gaps and found about 25 others already fixed since they were reported; see [Recently fixed](#recently-fixed).
+The counts were taken again from the tables on 2026-11-26: gaps added while 1.2 was built (stairs, trees, site) had not been counted. The sweep of 2026-11-04 fixed 8 gaps and found about 25 others already fixed since they were reported; see [Recently fixed](#recently-fixed).
 
 ---
 
@@ -56,13 +67,11 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | 3.6 | Edge palette done (offset edge, offset all, insert point, in 3D and plan). Still to do: icons for the palette (owner's OK); walls have no outline edges there. | 4 | S | B01-7 |
 | 3.7 | Layer editing is in (Phase 4 item 1). Left over: a layer run on by hand into the wall it meets overlaps that wall's layers in plan (Check layer joins lists it); a grip drag's preview leaves out the joins around it; thin layers' grips crowd together in plan at small scales; corner presets don't cover tees or three-way joints; a slab's arc edge keeps its bulge ratio when its layer moves; adding or removing an outline corner shifts the layer edits on the edges after it; the open JSON format doesn't carry layer ends, layer edges or corner presets yet (the project file does); an IFC read back takes a wall's layers from its layer set, so its parts, and the edits they show, are not read; Check layer joins covers wall ends only, not slab and roof edges. | 4 | S | MU08-01 |
 | 5.2 | Take-off leaves out stairs, railings, parts, masses, doors, windows and objects; a wall's area isn't trimmed at joins; one rate per material, no currency. | 4 | M | B01 |
-| 5.3 | No image or PDF references with calibration. | 4 | L | B01 |
-| 5.4 | No profile library for beams and columns as sweep presets. | 4 | L | B01 |
-| 5.5 | No curved walls. | 4 | L | B01 |
-| 5.6 | Stairs: no "Cut a well for this stair", headroom check, short-landing or re-flow warnings. Roofs: no overhang per edge, no offer to attach the walls under a new roof. No Check model panel (openings across joins, beams or footings in slabs, missing wells). | 4 | M | RR |
+| 5.3 | No PDF references. (An image can be traced and calibrated: *Calibrate…*.) | 4 | L | B01 |
+| 5.6 | Stairs: no short-landing or re-flow warnings. Roofs: no overhang per edge, no offer to attach the walls under a new roof. No Check model panel (openings across joins, beams or footings in slabs, missing wells). | 4 | M | RR |
 | A3-1 | A selected footing has no x-ray outline in 3D, and plans have no "Footings in this plan: Hidden / Dashed / Shown" choice. (Footings show while the tool is on, and a selected one always shows.) | 2 | S | MU13_01, MU13_05 |
 | A3-2 | Railing on a stair, Tag and Attach top don't yet let their host win over snaps before the first click. (Footing, Door, Window and Opening do.) | 2 | S | MU13_02 |
-| 6 | Release basics: Windows installer and portable zip, a file-format version in `.creabim`, README limits, issue templates, the Terrace House sample, CONTRIBUTING. | R | M | RR |
+| 6 | Release basics left: a file-format version in `.creabim`, and the Terrace House sample. | R | M | RR |
 
 ---
 
@@ -79,7 +88,7 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | Dimension text is not moved off other lines; labels keep clear of it instead. | M | drawing-quality, annotation | |
 | In a crowded room, a tag can move a fair way from its door or window (its leader still points back). | S | drawing-quality | |
 | The below-cut tint of furniture is the convex outline of each part, so an L-shaped worktop made as one part is tinted as its hull. | S | drawing-quality | |
-| Grid lines in plans and sections use the plain grid pen, not their group's colour, and have a bubble at one end only (`Grid` has no bubble settings). | S | grids-visibility | ✓ |
+| Grid lines in plans and sections use the plain grid pen, not their grid system's colour. | S | grids-visibility | |
 | A wall whose attached top drops below the cut along part of its length is still drawn cut along all of it. (A wall wholly under the cut is drawn in projection since the sweep.) | S | sweep | ✓ |
 | Parts that lie wholly above the plan cut, such as a screen wall's coping, are not drawn in plan. There is no overhead line style for them. | S | parts-site | |
 | Elevations draw each wall's own outline at corners. Joins clean up plans and sections only. | M | details-joins | |
@@ -148,7 +157,6 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | Ramps: a long straight ramp gets no landing partway along (Rise of a flight fails instead). A spiral ramp is laid out as a spiral stair and isn't checked against a curved-ramp rule. Ramp rule values are from notes, not checked against each code. No kerbs, edge protection or tactile strips. IFC import doesn't read IfcRamp. | M | stairs-part8a | |
 | Split stairs: the shared flight is always twice an arm's width and the arms exact mirror images; curved lines can't split; two walk-line arrows run up the shared flight; checks and headroom follow the drawn arm only. | S | stairs-part8c | |
 | Stacked stairs: copies keep only their level apart (no mirrored or shifted storey without releasing it), every storey takes the foot's rise rule, the schedule lists each storey with no grouping, and IFC has no stack link. | S | stairs-part8b | |
-| A stair doesn't cut the slab above by itself. A Shaft does, as in the starter house, but it isn't tied to the stair. | M | building-elements | ✓ |
 | Beams don't join or cut back at columns or at each other. They overlap. | M | building-elements | |
 | A strip footing is always centred under its wall: no eccentric offset. | S | levels-footings | |
 | Curtain walls get no strip footing. | S | levels-footings | |
@@ -188,6 +196,7 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 
 | Gap | Size | Found in | Checked |
 | --- | --- | --- | --- |
+| Chinese text isn't drawn in drawings or PDF yet ([#67](https://github.com/chopinregis/CreaBIM/issues/67)). | M | issues | |
 | Annotation tools don't work in the live 3D viewport. | M | annotation, annotations | |
 | Sketch constraints are set in Properties only, and there are no tangent, angle or fixed-point constraints. | M | editing | |
 | The duplicates list in the Mark numbering dialog is the only place that lists duplicate marks. There is no model-check window. | M | marks-annotation | |
@@ -289,7 +298,7 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | Each element is exported as one body. Layers are described only by the material layer set, not as one solid per layer. | M | layered-assemblies | |
 | Cut elements export as meshes, not `IfcBooleanResult` (attached wall tops already use `IfcBooleanClippingResult`). | M | exchange, wall-behaviour | |
 | IFC5 (`.ifcx`) export leaves out furniture, fixtures, objects and curtain-wall openings. | M | mep-fixtures, object-catalogue, edit-mode | |
-| IFC4 export writes no grids, so the starter house round trip loses them. A shaft comes back as the holes it cuts. | S | grids-visibility, ifc-import | ✓ |
+| A shaft read back from IFC comes back as the holes it cuts. | S | grids-visibility, ifc-import | |
 | Door hand and swing are exported but not read back on import. | S | wall-behaviour | ✓ |
 | The import report shows the element list in a small font, has no filter, and clicking a line doesn't select the element. | S | ifc-import | |
 | A typed door or window's per-instance frame override is lost on export. | S | types-curtainwalls | |
@@ -316,7 +325,7 @@ From the open JSON import (#44). [`docs/json-format.md`](json-format.md) keeps t
 | Gap | Size | Found in | Checked |
 | --- | --- | --- | --- |
 | No DXF or DWG export, including dimensions and annotations. | L | annotation | |
-| DXF import skips blocks (INSERT), hatches, dimensions and splines. | M | drafting-tools | |
+| DXF import skips hatches and splines. (Blocks and dimensions are exploded into their lines since 1.2.) | M | drafting-tools | |
 | FreeCAD export gives plain solids with a BIM type, not native Arch walls, and curved faces are faceted. Only rendering colours are read from FreeCAD materials. | M | exchange, materials | |
 | SVG import turns curves into chords and reads only plain text and `tspan`. | S | drafting-tools | |
 | Blender: only the Principled BSDF's unlinked inputs are read. | S | materials | |
@@ -326,7 +335,6 @@ From the open JSON import (#44). [`docs/json-format.md`](json-format.md) keeps t
 
 | Gap | Size | Found in | Checked |
 | --- | --- | --- | --- |
-| Not yet run on Windows. The build compiles in CI but hasn't been started on a Windows machine, and WebView2 page-size handling for help pictures is untested. This blocks the first Windows release. | M | interface, help-guide | |
 | The Properties panel and the in-view bars (slab modes, the move, rotate and scale panel, the sketch tools) are still egui, restyled. The quick-help popover in Properties is an egui popup. | L | interface, ui-workflow | ✓ |
 | On Linux the panes need X11 (XWayland on Wayland), and the file picker needs xdg-desktop-portal. | M | interface, editing | |
 | The classic panels are behind: menus are text only, the outliner lists views in one group, there are no *Hide in view* items, and the guide has no pictures or links. | M | ui-visibility, levels-window, grids-visibility, help-guide | |
@@ -363,6 +371,18 @@ Gaps reported by work that is still a pull request go here until it merges, then
 ---
 
 ## Recently fixed
+
+**Found fixed in the 1.2.0 refresh (2026-11-26).** These were checked in the 1.2 code or its guide. Everything 1.2 adds and fixes is in [releases/1.2.0.md](releases/1.2.0.md).
+
+- Curved, circular and rectangular walls, since 1.1 (Brief 02 5.5).
+- A profile library with twelve presets, since 1.1 (5.4).
+- An image can be a reference, calibrated by two points a known distance apart (*Calibrate…*) (5.3, in part: PDF references are still a gap).
+- *Cut a well* cuts the slab over a stair, sized from its headroom, and headroom is checked (5.6, in part).
+- IFC4 export writes grids: one `IfcGrid` per grid system and set of levels, each line an `IfcGridAxis`.
+- DXF import explodes blocks and dimensions, and reads files that aren't UTF-8.
+- A grid line's bubble can be at its start, its end or both.
+- CreaBIM runs on Windows, and ships for it, since 1.0. 1.2 has a standard installer ([#53](https://github.com/chopinregis/CreaBIM/issues/53)).
+- Release basics (Brief 02 item 6): the Windows setup and portable zip, the README's limits, issue templates and CONTRIBUTING.
 
 **In the tree generator, part 4, the finishing pass (`claude/project-thread-1stlrq`, 2026-11-12;** screenshots in [evolution/tree-generator](evolution/tree-generator)**):**
 
