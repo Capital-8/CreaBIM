@@ -37,6 +37,7 @@
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/parts.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/profiles.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/site.html</loc></url>
+  <url><loc>https://chopinregis.github.io/CreaBIM/guide/planting.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/curtain-walls.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/types.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/assemblies.html</loc></url>
@@ -49,10 +50,12 @@
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/rooms.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/ceilings.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/joins.html</loc></url>
+  <url><loc>https://chopinregis.github.io/CreaBIM/guide/phases.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/views.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/sections.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/view-range.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/graphic-styles.html</loc></url>
+  <url><loc>https://chopinregis.github.io/CreaBIM/guide/render.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/visibility.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/crop-boxes.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/trace-reference.html</loc></url>
@@ -71,6 +74,7 @@
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/guides.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/units.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/project-info.html</loc></url>
+  <url><loc>https://chopinregis.github.io/CreaBIM/guide/project-time.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/files.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/ifc.html</loc></url>
   <url><loc>https://chopinregis.github.io/CreaBIM/guide/blender.html</loc></url>

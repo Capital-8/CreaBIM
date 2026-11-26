@@ -710,7 +710,7 @@ def dl_cards(setup, zipf, dmg, deb, rpm, tar):
           <p>macOS 11 or later. One universal app for Apple Silicon and Intel Macs. Drag CreaBIM to Applications and open it once.</p>
           {btn(dmg, "Disk image (.dmg)")}
         </div>""")
-        notes.append('<div class="note"><b>macOS blocks it?</b><span>The app isn\'t code-signed yet. Go to <em>System Settings › Privacy &amp; Security</em> and choose <em>Open Anyway</em>.</span></div>')
+        notes.append('<div class="note"><b>macOS blocks it?</b><span>The app isn\'t signed or notarized yet. Go to <em>System Settings › Privacy &amp; Security</em> and choose <em>Open Anyway</em>.</span></div>')
     top.append(f"""        <div class="card">
           <div class="os"><svg aria-hidden="true"><use href="#i-code"/></svg><h3>From source</h3></div>
           <p>Any platform Rust and wgpu run on. You need Rust stable.</p>
@@ -946,6 +946,13 @@ def dev_banner(up):
             f'For the version you can download now, read the <a href="{up}guide/welcome.html">{rel["label"]} guide</a>.</span></div>')
 
 
+def old_banner(up, label):
+    rel = next(v for v in GUIDES if v["key"] == "latest")
+    return (f'<div class="devnote" role="note"><b>This guide is for CreaBIM {label}.</b>'
+            f'<span>The current version is {rel["label"]}: read the <a href="{up}guide/welcome.html">{rel["label"]} guide</a>, '
+            f'or <a href="{up}download.html">download {rel["label"]}</a>.</span></div>')
+
+
 def guide_page(pid, title, body, toc, order, pages, gv=None):
     gv = gv or {"label": "", "up": "../", "dev": False}
     up = gv["up"]
@@ -968,6 +975,7 @@ def guide_page(pid, title, body, toc, order, pages, gv=None):
       <div class="crumbs"><a href="{up}tutorials/index.html">Tutorials</a><span>/</span><a href="{up}tutorials/index.html#guide">Guide</a><span>/</span><span>{html.escape(sec)}</span></div>
       {version_bar(pid, gv["label"], up)}
       {dev_banner(up) if gv["dev"] else ""}
+      {old_banner(up, gv["label"]) if gv.get("old") else ""}
       {body.replace("</h1>", "</h1>" + inline_toc, 1)}
       <nav class="pager" aria-label="Pages">{prev}{nxt}</nav>
     </article>
@@ -1002,6 +1010,8 @@ def main():
     ap.add_argument("--ref", default="official/main", help="the released guide: /guide/ and /guide/<label>/")
     ap.add_argument("--dev-ref", default=None, help="the guide of the version in development, e.g. dev/builder2b/wave4")
     ap.add_argument("--dev-label", default=None, help="its version, e.g. 1.2: built to /guide/<label>/")
+    ap.add_argument("--old-ref", default=None, help="an earlier released guide kept, e.g. v1.1.1")
+    ap.add_argument("--old-label", default=None, help="its version, e.g. 1.1: built to /guide/<label>/")
     a = ap.parse_args()
     repo = Path(a.creabim)
     for remote in {a.ref.split("/")[0]} | ({a.dev_ref.split("/")[0]} if a.dev_ref else set()):
@@ -1012,11 +1022,14 @@ def main():
     rel_label = ".".join(version.split(".")[:2])      # 1.1.1 -> 1.1
     latest = load_guide(repo, a.ref)
     dev = load_guide(repo, a.dev_ref) if a.dev_ref else None
+    old = load_guide(repo, a.old_ref) if a.old_ref else None
     GUIDES_DEV_LABEL = a.dev_label or ""
     # the picker, newest first; the released guide lives at /guide/
     if dev:
         GUIDES.append({"label": a.dev_label, "tag": "in development", "dir": f"guide/{a.dev_label}", "order": dev["order"], "key": "dev"})
     GUIDES.append({"label": rel_label, "tag": "current", "dir": "guide", "order": latest["order"], "key": "latest"})
+    if old:
+        GUIDES.append({"label": a.old_label, "tag": "earlier", "dir": f"guide/{a.old_label}", "order": old["order"], "key": "old"})
     SECTIONS.clear()
     SECTIONS.update(latest["sections"])
     help_rs, order, texts, pages = latest["help_rs"], latest["order"], latest["texts"], latest["pages"]
@@ -1032,6 +1045,8 @@ def main():
     pictures(a.ref, "assets/help")
     if dev:
         pictures(a.dev_ref, f"assets/help/{a.dev_label}")
+    if old:
+        pictures(a.old_ref, f"assets/help/{a.old_label}")
     try:
         from PIL import Image
         for png in (SITE / "assets/img").glob("*.png"):
@@ -1088,6 +1103,12 @@ def main():
         # results so nobody lands on it thinking it is the current version
         guide(dev, f"guide/{a.dev_label}", {"label": a.dev_label, "up": "../../", "dev": True},
               f"../../assets/help/{a.dev_label}/", f"{a.dev_label} (in development)",
+              head='\n<meta name="robots" content="noindex">')
+    if old:
+        # an earlier version: kept so its links still work, marked on every
+        # page and left out of search results
+        guide(old, f"guide/{a.old_label}", {"label": a.old_label, "up": "../../", "dev": False, "old": True},
+              f"../../assets/help/{a.old_label}/", a.old_label,
               head='\n<meta name="robots" content="noindex">')
     SECTIONS.clear()
     SECTIONS.update(latest["sections"])
