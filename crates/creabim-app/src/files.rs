@@ -154,6 +154,7 @@ impl Recent {
 #[serde(default)]
 pub struct Settings {
     pub theme: String,
+    pub interface_scale: u16,
     /// Width of the project browser and of the properties panel, in points.
     pub left_width: f32,
     pub right_width: f32,
@@ -237,6 +238,7 @@ impl Default for Settings {
         Self {
             // the approved look (brief 02); anyone's saved theme stays theirs
             theme: "sage".into(),
+            interface_scale: 100,
             left_width: 264.0,
             right_width: 290.0,
             left_folded: false,
@@ -274,11 +276,17 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub const INTERFACE_SCALES: [u16; 6] = [80, 90, 100, 110, 125, 150];
+
     pub fn load() -> Self {
-        settings_dir()
+        let mut settings: Self = settings_dir()
             .and_then(|d| std::fs::read_to_string(d.join("settings.json")).ok())
             .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !Self::INTERFACE_SCALES.contains(&settings.interface_scale) {
+            settings.interface_scale = Self::default().interface_scale;
+        }
+        settings
     }
 
     pub fn store(&self) {
@@ -401,6 +409,7 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"theme": "paper", "left_width": 300.0}"#)
             .expect("old settings read");
         assert_eq!(s.theme, "paper");
+        assert_eq!(s.interface_scale, 100);
         assert!(!s.single_view);
         assert!(s.ground_grid);
         assert_eq!(s.ground_grid_spacing, 1.0);

@@ -867,7 +867,7 @@ pub fn show(
         state.zoom_to_scale = None;
         if let Some(ElementKind::View(v)) = doc.model().get(view).map(|e| &e.kind) {
             // a metre is 1000/scale paper mm; a screen mm is 96/25.4 points
-            scale = (1000.0 / v.scale.max(1.0) * 96.0 / 25.4) as f32;
+            scale = (1000.0 / v.scale.max(1.0) * 96.0 / 25.4) as f32 / ui.ctx().zoom_factor();
         }
     }
     let tool = match (kind, state.tool) {

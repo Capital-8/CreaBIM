@@ -64,6 +64,8 @@ pub struct WebUi {
     sent: [String; PANES],
     /// Where each pane is, in points.
     pub rects: [egui::Rect; PANES],
+    bounds: [Option<Rect>; PANES],
+    zoom: f32,
     popup_shown: bool,
     #[cfg(target_os = "linux")]
     x11: Option<X11Focus>,
@@ -158,6 +160,8 @@ impl WebUi {
             inbox,
             sent: Default::default(),
             rects: [egui::Rect::NOTHING; PANES],
+            bounds: [None; PANES],
+            zoom: 1.0,
             popup_shown: false,
             #[cfg(target_os = "linux")]
             x11: X11Focus::new(frame),
@@ -183,11 +187,8 @@ impl WebUi {
     /// Put a pane over `rect` (in points).
     pub fn place(&mut self, pane: Pane, rect: egui::Rect, ppp: f32) {
         let i = pane as usize;
-        if self.rects[i] == rect {
-            return;
-        }
         self.rects[i] = rect;
-        let _ = self.view(pane).set_bounds(Rect {
+        let bounds = Rect {
             position: PhysicalPosition::new(
                 (rect.min.x * ppp).round() as i32,
                 (rect.min.y * ppp).round() as i32,
@@ -198,7 +199,20 @@ impl WebUi {
                 (rect.height() * ppp).round().max(1.0) as u32,
             )
             .into(),
-        });
+        };
+        if self.bounds[i] != Some(bounds) {
+            self.bounds[i] = Some(bounds);
+            let _ = self.view(pane).set_bounds(bounds);
+        }
+    }
+
+    pub fn set_zoom(&mut self, zoom: f32) {
+        if self.zoom != zoom {
+            for (_, view) in &self.views {
+                let _ = view.zoom(f64::from(zoom));
+            }
+            self.zoom = zoom;
+        }
     }
 
     /// Send a pane its state, if it changed since last time.
