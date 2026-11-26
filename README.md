@@ -30,9 +30,20 @@
 
 **CreaBIM is developed and designed by Regis Benoit Brice Nde Tene.** This repository is its official source. Forks and changes are welcome under the GPL.
 
-**Status: 1.1. Ready to explore, not yet for production work.** The whole path works, from modelling to permit sheets and IFC. Some parts are young: IFC export of some elements, Blender exchange, DXF (lines only) and stairs. Everything that doesn't work yet is listed in [docs/KNOWN_GAPS.md](docs/KNOWN_GAPS.md).
+**Status: 1.2. Ready to explore, not yet for production work.** The whole path works, from the site survey to permit sheets and IFC. Some parts are young: IFC export of some elements, Blender exchange and DXF. Everything that doesn't work yet is listed in [docs/KNOWN_GAPS.md](docs/KNOWN_GAPS.md).
 
-**New in 1.1:** box, circle and lasso selection with a live count · a Blender-style Edit mode (points, edges and faces; G, R, S) · curved, circular and rectangular walls · twelve modifiers for masses · profiles with arcs for columns, beams and railings, and beams drawn on roof slopes · Masters: title blocks drawn in a view of their own, and pictures and logos on sheets · a Divide bar and a Split tool · eight themes and a selection colour of your own · a Log view and *Help › Report a problem*. The full list is in [docs/releases/1.1.0.md](docs/releases/1.1.0.md).
+**New in 1.2:**
+- template sets and a drawing standard per project (ISO or US);
+- the site, from a survey to terrain, earthworks, paving and planting;
+- 17 kinds of door and 14 kinds of window, drawn three ways;
+- stairs along a walk line, built as they are really built and checked against stair rules;
+- phasing for existing buildings;
+- a render with the sun, moods and the model's lamps;
+- hand-drawn line styles, pen sets and palettes;
+- general notes written once and broken into columns on sheets;
+- project time against the fee, kept on your own computer.
+
+The full list is in [docs/releases/1.2.0.md](docs/releases/1.2.0.md); 1.1 is in [docs/releases/1.1.0.md](docs/releases/1.1.0.md).
 
 ## Get it
 
@@ -106,7 +117,9 @@ Written in Rust and drawn on your graphics card. Sections and 3D drawings are bu
 
 ## The starter house
 
-CreaBIM opens on the **Maple Lane House**, a contemporary two-storey family house with a kitchen wing, built to show what the program does and to be taken apart:
+CreaBIM 1.2 opens on **Ridgeline House**, a two-storey timber house on a sloping lot, with its site, structure, details and a permit set of sheets.
+
+The 1.1 starter, the **Maple Lane House**, is still there under *New project › Earlier starter houses*. It is a contemporary two-storey family house with a kitchen wing, built to show what the program does and to be taken apart:
 
 - three levels (foundation, ground and first floor) and a structural grid;
 - layered walls in render and timber cladding, joined at every corner and tee, with typed doors and windows (some flipped), a curtain wall that cuts its host and a plain wall opening;
@@ -118,7 +131,7 @@ CreaBIM opens on the **Maple Lane House**, a contemporary two-storey family hous
 
 ![The starter house's cover sheet: a live 3D view, the drawing list and a filled-in title block](docs/screenshot-sheet.png)
 
-*File → New starter house* brings it back; *File → New simple sample house* opens the smaller house the tests use. The [Help](crates/creabim-app/help/starter-house.md) has a tour of it.
+*New project › Starter house* opens Ridgeline House again, and *Earlier starter houses* opens Maple Lane. *Samples › Simple house* is the smaller house the tests use. The [Help](crates/creabim-app/help/starter-house.md) has a tour of it.
 
 ## What works today
 
