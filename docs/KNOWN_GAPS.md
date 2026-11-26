@@ -90,7 +90,6 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | In sections, a hidden element's coloured fill is the convex hull of its shape, so it is rough for L-shaped or hollow elements. | S | picking-xray | |
 | A selected shaft is highlighted only on its base level's plan. | S | types-curtainwalls | |
 | Fine patterns (block paving) fill solid when zoomed far out; their lines don't thin out with the scale. | S | parts-site | |
-| Plants in section are drawn with the facets of their 3D form, not a soft outline. | M | parts-site | |
 
 ## Rooms and ceilings
 
@@ -136,15 +135,26 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | Gap | Size | Found in | Checked |
 | --- | --- | --- | --- |
 | Gable and hip roofs need a convex outline. On an L shape they fall back to flat, and valleys aren't computed. | L | building-elements | ✓ |
-| Stairs are straight or L-shaped only: no U-shaped stairs, winders or spirals. | L | building-elements | |
+| Winders fan from the inside corner: they aren't balanced into the flights either side, so their narrow ends come to a point. Their going and narrow end are now checked, and fail rule sets that ask for a narrow end, such as the UK's. | M | stairs-part3a | |
+| Curved and spiral stairs: a bend is set in degrees in Properties or by *Make arc*, with no grip to drag it. A spiral's going is checked in from its inside edge where the rule set has spiral limits; a curved flight's narrow side isn't checked. | M | stairs-part3b | |
+| A stair's pieces (Shift+Tab in Edit mode) can only change a flight's treads and a landing's depth: not one flight's width, material or soffit. A landing can't become winders yet (stairs part 3). | M | stairs-part2 | |
+| A stair is built one way all through (*Built as*), with fixed sizes: stringers 50 × 280 mm, spine 200 × 250 mm, post Ø 200 mm, tread boards 40 mm. Stringers and a spine stop at landings and winders, whose treads are then loose boards on nothing, and an open stair's landing is a 100 mm plate. The stair is one IfcStair body: no IfcMember stringers, and its finishes aren't IfcCovering elements. The top flight still meets the floor slab above as two separate solids. | M | stairs-part4a | |
+| Stair finishes: landings and winders take the tread finish (no build-up of their own), and the floors either end are assumed finished as thick as the treads. A nosing is square: no rounded or bullnose profile, and nothing checks it against the code's limits. The structure's take-off is an estimate from the layout, not the mesh. | M | stairs-part4b | |
+| A guard's height is one value along its whole path: it can't rise only on landings or at the top. Newels show in 3D and sections, not in plan. Glass panels have no clamps or base shoe, and nothing checks a glass guard's strength. The grip check uses NBC 9.8.7.5's sizes only. Rails, balusters and newels are one mesh: no IfcMember or IfcRailing parts. | M | stairs-part5 | |
+| Stair rule sets advise only: the riser and going still come from *Max riser* and *Tread*, with no fit to the rules. The presets' values are from notes, not checked against each code's text: Ontario is OBC 2024 for a dwelling (NBC's national values differ a little), with no public-stair presets. A winder's going is measured at one distance in from the inside edge, whatever the code measures it on. Grip uses NBC 9.8.7.5's sizes for every rule set. Own rule sets can't be renamed, deleted or shared between projects. | M | stairs-part6a | |
+| Stair headroom counts only slabs, beams and roofs above, not another stair, a mass or a duct. A tied stair well is redrawn when its stair changes, so a hand edit to its outline is lost, and its outline can't be squared off on a curved or spiral stair. The floor a well cuts is found from the slab over the stair's top. The red headroom box shows only in 3D, not in plans, sections or sheets, and not yet in a saved 3D view. Headroom is measured on every redraw, which may slow large models. | M | stairs-part6b | |
+| A stair's walk-line section draws its steps as one cut in the stair's material: no finish layers, nosings or railings, stringers and spines as two lines, no spiral post. The edge of a well can't be dragged in it. The floor drawn over the stair is the one over the walk line, though headroom is checked across the width. | M | stairs-part7a | |
+| Stair drawings: riser numbers are upright, not turned with the flight, and can't be switched off. A stair sheet's plans and 3D cut-out follow the stair, but its layout doesn't: a stair that grows can push its views into each other. The stair schedule lists every stair and ignores grouping by type. | S | stairs-part7b | |
+| Ramps: a long straight ramp gets no landing partway along (Rise of a flight fails instead). A spiral ramp is laid out as a spiral stair and isn't checked against a curved-ramp rule. Ramp rule values are from notes, not checked against each code. No kerbs, edge protection or tactile strips. IFC import doesn't read IfcRamp. | M | stairs-part8a | |
+| Split stairs: the shared flight is always twice an arm's width and the arms exact mirror images; curved lines can't split; two walk-line arrows run up the shared flight; checks and headroom follow the drawn arm only. | S | stairs-part8c | |
+| Stacked stairs: copies keep only their level apart (no mirrored or shifted storey without releasing it), every storey takes the foot's rise rule, the schedule lists each storey with no grouping, and IFC has no stack link. | S | stairs-part8b | |
 | A stair doesn't cut the slab above by itself. A Shaft does, as in the starter house, but it isn't tied to the stair. | M | building-elements | ✓ |
-| Railings are rails and posts only: no balusters, glass panels or handrail profiles. | M | building-elements | |
 | Beams don't join or cut back at columns or at each other. They overlap. | M | building-elements | |
 | A strip footing is always centred under its wall: no eccentric offset. | S | levels-footings | |
 | Curtain walls get no strip footing. | S | levels-footings | |
 | Arcs in a roof outline are flattened to straight segments. | S | building-elements | |
 | Pushing a sloped roof face changes its thickness rather than moving the eave along the slope. | S | manipulation | |
-| Pushing a stair's side widens the first flight only, not the landings. | S | manipulation | |
+| Pushing a stair's side widens the first flight only, not the landings. A stair with turns widens about its line. | S | manipulation | |
 | Railings that follow a stair only change height with push and pull. | S | manipulation | |
 | Grips not done: flipping a stair and its landing grips; a wall's base offset and a beam's height in section. | S | edit-safety | |
 
@@ -154,6 +164,7 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | --- | --- | --- | --- |
 | There are no pipes, ducts, cable runs or circuits, and no `IfcDistributionSystem` or ports. | L | mep-fixtures | |
 | Sloped terrain doesn't leave holes for areas on its surface. Areas cut the ground only when the terrain is flat. | M | parts-site | |
+| The terrain's *Dug out* total leaves out footing trenches. Footings stay buried under the finished ground (their trenches are filled back, so sections draw earth against them), and nothing measures their dig and backfill yet, as a drain's or a tank's is. On hold (owner, 2026-11-22). | M | site | |
 | Changing a type between *On the floor / On a wall* and *From the ceiling* keeps the stored offset, so existing instances jump. | S | mep-fixtures | |
 | Pasting objects into a project that lacks their type drops them. | S | object-catalogue | |
 | Mounting heights in the schedule are to the underside of a wall fixture, not its centre line. | S | mep-fixtures | |
@@ -165,6 +176,13 @@ Every item of *CreaBIM brief 02: consolidated*, approved by the owner on 2026-11
 | There is no preview of a sweep's path while drawing it. | S | parts-site | |
 | Wall-hosted sweeps have no corner grips; they follow their wall. | S | parts-site | |
 | Objects have no host: they can't snap to a wall face and slide along it with a grip. | S | edit-safety | |
+| A generated tree's crown is shaped at its widest only: its side grips don't shape it at other heights. | M | tree-generator | |
+| A generated tree's plan symbol keeps scallops about 0.9 m round its crown at every drawing scale; it doesn't simplify for 1:500 site plans yet. | S | tree-generator | |
+| The JSON model format (`creabim-spec`) doesn't carry a generated tree's shape: a spec export and rebuild gives a simple tree. | S | tree-generator | |
+| Generated trees come in broadleaf crowns only. Palms, conifers, shrubs, indoor plants and a Planting catalogue with saved presets come later. | L | tree-generator | |
+| The project's month is set in Project information only: a sun study, or a 3D view of its own, doesn't set it. | S | tree-generator | |
+| A low-poly crown is one fused body: its plan and drawings come from its clumps, so a *Facets 1* crown still draws a rounded outline in plan and elevation. | S | tree-generator | |
+| A crown drawn in a hand-drawn style hides what is behind it with a flat card halfway into the crown: something standing inside the crown's front half draws over it. | S | tree-generator | |
 
 ## Annotation and marks
 
@@ -345,6 +363,38 @@ Gaps reported by work that is still a pull request go here until it merges, then
 ---
 
 ## Recently fixed
+
+**In the tree generator, part 4, the finishing pass (`claude/project-thread-1stlrq`, 2026-11-12;** screenshots in [evolution/tree-generator](evolution/tree-generator)**):**
+
+- One month for the whole project (*Season in 3D* in Project information). A tree follows it unless its *Own month* is on; picking a month on a tree's strip turns it on.
+- A section through a crown draws the cut in the crown's own style, heavy, with the crown beyond it light, over a wash: *Where cut* chooses Tinted, Outline or Filled.
+- Branches rebuilt as smooth swept paths: a flared, tapering trunk; main limbs curve out from inside it with no seam or stub; lesser branches leave their limb part-way along; twigs fan into each clump. The trunk no longer sticks up through the top of the crown.
+- *Low poly* crown form, one faceted body over the whole crown, with *Facets* 1 to 5 (about 24 to 200 faces, never thousands).
+- Drawings got faster: a hundred hand-drawn trees draw in 136 ms as an elevation (was 216) and 83 ms as a section (was 117).
+- Trunks in elevations draw as two clean lines up to the crown; the *Cells* plan style is now cells that share the crown out; *Skeleton* is untangled.
+
+**In the tree generator, part 3 (`claude/project-thread-1stlrq`, 2026-11-12;** screenshots in [evolution/tree-generator](evolution/tree-generator)**):**
+
+- Leaves and seasons: Evergreen, Deciduous (temperate) or Dry-season (tropical), a month strip, and leaf and autumn colours. 3D thins and turns the crown with the month; the southern hemisphere's year runs six months on.
+- 3D detail levels: Lite (about a tenth of the triangles, main limbs only), Everyday, and Presentation (finer, with twigs).
+- Nine more plan symbol styles (13 in all): Serrated, Wavy, Skeleton, Hatched rim, Cells, Wedges, Starburst, Leafy and Jagged, and a *Bold outline* switch for any of them. *Clumps* now layers its clumps as seen from above instead of drawing whole circles.
+- Three more section and elevation styles, drawn as by hand: Wavy (with the gaps between the leaves), Scalloped (billows) and Leafy, and *Limbs through the crown* for any style.
+
+**In the tree generator, part 2 (`claude/project-thread-1stlrq`, 2026-11-12;** screenshots in [evolution/tree-generator](evolution/tree-generator)**):**
+
+- Seven crown forms: Polyhedra, Fully random, Pseudo-random, Fibonacci, Geodesic, Noise and Metaballs (the clumps fused into one smooth crown). A crown can be a single clump.
+- Limbs are rebuilt: each curves up from the trunk and ends inside a clump, so none sticks out past the foliage or past a side pulled in off a wall.
+- The trunk and limbs are solid (closed), so a section fills their cut and 3D can't see into them; *Wood* can make them hollow again. Elevations draw the trunk's outline, not its facet lines.
+- Sections and elevations can draw a crown as **Clumps** (each clump cut, rugged) or as one smooth **Outline**, as the plan reads.
+- The plan symbol can be drawn as **Clumps** (the outline with each clump inside it), and its trunk mark and a light canopy tint turn on and off.
+
+**In the tree generator, part 1 (`claude/project-thread-1stlrq`, 2026-11-11;** screenshots in [evolution/tree-generator](evolution/tree-generator)**):**
+
+- A tree can be grown from a shape: crown width and depth, clear trunk, trunk, crown outline (Rounded, Spreading, Upright, Conical, Vase), clumps, clump size, irregularity, openness, limbs and a seed. Properties has *Start from* presets (Shade tree, Umbrella, Columnar, Conical, Vase).
+- Its plan symbol is its crown's real outline from above, as scallops, one line or scallops with the main limbs, plus the trunk.
+- Eight side grips pull one side of its crown in, off a wall, while the trunk stays; grips at its top and the crown's underside set its height and clear trunk. They work in plan, sections and 3D.
+- Grown trees are cached by shape and seed: a scene rebuild after an unrelated edit grows none of them (100 trees: about 7.5 ms).
+- Plants in sections and elevations are drawn as their crown's outline, not the facets of their 3D form.
 
 **In Brief 02, Phase 4, item 4, take-off (`claude/project-thread-2a2eta`, 2026-11-05;** screenshots in [evolution/brief02-phase4](evolution/brief02-phase4)**):**
 

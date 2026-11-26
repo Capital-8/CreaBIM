@@ -43,9 +43,12 @@ fn door_splits_wall_into_two_cut_pieces_with_a_swing() {
             width: 1.0,
             height: 2.1,
             material: None,
-            frame: Default::default(),
+            frame: creabim_core::OpeningFrame::for_kind(OpeningKind::Door),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         }),
     );
     let lid = l.id;
@@ -146,6 +149,7 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
             target: w.id,
             cutter: b.id,
             op: BoolOp::Difference,
+            reach: Default::default(),
         }),
     );
     let (lid, wid, bid) = (l.id, w.id, b.id);
@@ -165,9 +169,18 @@ fn a_box_subtracted_from_a_wall_leaves_a_gap_in_the_plan() {
         .filter(|i| matches!(i, PlanItem::Fill { id, .. } if *id == wid))
         .collect();
     assert_eq!(fills.len(), 2, "the wall is cut in two");
+    // the cutting shape is not drawn as a solid, only as its outline from
+    // above (MU71: a plan showed nothing of the shapes that cut)
     assert!(
-        plan.items.iter().all(|i| i.id() != bid),
-        "cutters are not drawn"
+        !plan
+            .items
+            .iter()
+            .any(|i| matches!(i, PlanItem::Fill { id, .. } if *id == bid)),
+        "a cutter is not drawn as a solid"
+    );
+    assert!(
+        plan.items.iter().any(|i| i.id() == bid),
+        "a cutter shows as its outline"
     );
 
     // above the box the wall is whole again

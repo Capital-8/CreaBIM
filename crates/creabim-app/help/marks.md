@@ -10,7 +10,7 @@ If another element already has the same mark, *Properties* says so under the fie
 
 ## Numbering rules
 
-**File > Mark numbering…** sets how elements without a typed mark are numbered. Each kind of element has its own rule:
+**Mark numbering** (on the **Manage** tab, or *File › Mark numbering…*) sets how elements without a typed mark are numbered. Each kind of element has its own rule:
 
 - **Number**: number this kind automatically. When it is off, only typed marks show, and a tag shows what it showed before (a wall's material and thickness, for example).
 - **Prefix** and **Sep.**: the letters before the number, and what goes between them: `D` and nothing gives D01, `D` and `-` gives D-01.

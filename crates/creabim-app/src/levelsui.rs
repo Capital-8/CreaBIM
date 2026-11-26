@@ -20,6 +20,8 @@ pub(super) struct LevelsUi {
     /// A level asked to be deleted: where its elements go (`None`: they
     /// are deleted with it).
     delete: Option<(ElementId, Option<ElementId>)>,
+    /// The level picked in the list (MU42).
+    current: Option<ElementId>,
     pub units_open: bool,
     /// The kind shown in the Number formats window; none: the project's.
     pub units_kind: Option<creabim_core::NumberKind>,
@@ -32,6 +34,7 @@ impl Default for LevelsUi {
             with_plan: true,
             at: 0.0,
             names: HashMap::new(),
+            current: None,
             delete: None,
             units_open: false,
             units_kind: None,
@@ -231,7 +234,8 @@ impl CreaBimApp {
             // below the 3D view's navigation buttons, which draw on top
             .default_pos(area.min + Vec2::new(16.0, 56.0))
             .constrain_to(area)
-            .min_width(660.0)
+            .default_size([680.0, 460.0])
+            .min_width(600.0)
             .collapsible(false)
             .show(ctx, |ui| self.levels_contents(ui, &mut asks));
         self.levels.open = open;
@@ -246,230 +250,101 @@ impl CreaBimApp {
     fn levels_contents(&mut self, ui: &mut egui::Ui, asks: &mut Vec<Ask>) {
         let model = self.doc.model();
         let list = levels::sorted(model);
-        crate::props::flow(ui, |ui| {
-            if ui
-                .button("Add level above the top")
-                .on_hover_text("One storey above the highest level, as tall as it")
-                .clicked()
-            {
-                asks.push(Ask::AddAbove);
-            }
-            ui.separator();
-            ui.label("Add at");
-            ui.add(crate::units::drag(&mut self.levels.at).range(-1000.0..=10_000.0));
-            if ui
-                .button("Add")
-                .on_hover_text("A new level at this elevation")
-                .clicked()
-            {
-                asks.push(Ask::AddAt(self.levels.at));
-            }
-        });
-        ui.checkbox(
-            &mut self.levels.with_plan,
-            "Make a floor plan for each new level",
-        );
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Highest first. Moving a level moves everything on it. Height is the storey's: new walls and columns are this tall. In a section or elevation you can also drag a level line, or draw a new one with the Level tool.",
-            )
-            .weak(),
-        );
-        ui.separator();
-        egui::Grid::new("levels")
-            .striped(true)
-            .num_columns(7)
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                for h in [
-                    "Name",
-                    "Elevation",
-                    "Height",
-                    "To next",
-                    "On it",
-                    "Floor plan",
-                    "",
-                ] {
-                    ui.label(egui::RichText::new(h).strong());
+        let current = self
+            .levels
+            .current
+            .filter(|c| list.iter().any(|(id, ..)| id == c))
+            .or_else(|| list.first().map(|l| l.0));
+        let mut state = (&mut self.levels, asks);
+        crate::library::frame(
+            ui,
+            "levels",
+            220.0,
+            &mut state,
+            |ui, (lv, _)| {
+                // highest first, as they stand
+                for (id, name, l) in list.iter().rev() {
+                    if crate::library::item(
+                        ui,
+                        current == Some(*id),
+                        name,
+                        &crate::units::elevation(l.elevation),
+                        None,
+                    )
+                    .clicked()
+                    {
+                        lv.current = Some(*id);
+                    }
                 }
-                ui.end_row();
-                for (i, (id, name, l)) in list.iter().enumerate().rev() {
-                    let draft = self.levels.names.entry(*id).or_insert_with(|| name.clone());
-                    let r = ui.add_sized(
-                        [150.0, 20.0],
-                        egui::TextEdit::singleline(draft).vertical_align(egui::Align::Center),
-                    );
-                    if r.lost_focus() && draft.trim() != name && !draft.trim().is_empty() {
-                        asks.push(Ask::Rename(*id, draft.trim().to_string()));
-                    } else if !r.has_focus() && *draft != *name {
-                        *draft = name.clone();
-                    }
-                    let (mut z, mut h) = (l.elevation, l.height);
-                    let ze = ui.add(crate::units::drag(&mut z).range(-1000.0..=10_000.0));
-                    let he = ui.add(crate::units::drag(&mut h).range(0.5..=100.0));
-                    if ze.changed() || he.changed() {
-                        asks.push(Ask::Set(*id, z, h));
-                    }
-                    // the gap up to the level above, which the storey can be fitted to
-                    match list.get(i + 1) {
-                        Some((_, above, a)) => {
-                            let gap = a.elevation - l.elevation;
-                            crate::props::flow(ui, |ui| {
-                                ui.label(crate::units::len(gap))
-                                    .on_hover_text(format!("From here up to {above}"));
-                                if (gap - l.height).abs() > 1e-6
-                                    && gap > 0.5
-                                    && ui
-                                        .small_button("Fit")
-                                        .on_hover_text(format!(
-                                            "Make the storey as tall as the gap up to {above}"
-                                        ))
-                                        .clicked()
-                                {
-                                    asks.push(Ask::Set(*id, l.elevation, gap));
-                                }
-                            });
+            },
+            |ui, (_, asks)| {
+                if crate::library::new_button(
+                    ui,
+                    "One storey above the highest level, as tall as it",
+                )
+                .clicked()
+                {
+                    asks.push(Ask::AddAbove);
+                }
+                ui.add_enabled_ui(current.is_some(), |ui| {
+                    ui.menu_button("Duplicate", |ui| {
+                        let Some(id) = current else { return };
+                        if ui.button("The level only").clicked() {
+                            asks.push(Ask::Duplicate(id, false));
+                            ui.close();
                         }
-                        None => {
-                            ui.label(egui::RichText::new("top").weak());
-                        }
-                    }
-                    let n = levels::on_level(model, *id).len();
-                    ui.label(format!("{n} element{}", if n == 1 { "" } else { "s" }));
-                    let plans = levels::plan_views(model, *id);
-                    match plans.first() {
-                        Some(v) => {
-                            if ui
-                                .button("Open")
-                                .on_hover_text("Show it in the 2D view")
-                                .clicked()
-                            {
-                                asks.push(Ask::OpenPlan(*v));
-                            }
-                        }
-                        None => {
-                            if ui
-                                .button("Make")
-                                .on_hover_text("Make a floor plan of this level")
-                                .clicked()
-                            {
-                                asks.push(Ask::MakePlan(*id));
-                            }
-                        }
-                    }
-                    crate::props::flow(ui, |ui| {
-                        ui.menu_button("Duplicate", |ui| {
-                            if ui.button("The level only").clicked() {
-                                asks.push(Ask::Duplicate(*id, false));
-                                ui.close();
-                            }
-                            if ui
-                                .button("With everything on it")
-                                .on_hover_text(
-                                    "Walls, slabs, doors, windows and the rest, one storey up",
-                                )
-                                .clicked()
-                            {
-                                asks.push(Ask::Duplicate(*id, true));
-                                ui.close();
-                            }
-                        })
-                        .response
-                        .on_hover_text("A copy above the top level");
-                        let can = list.len() > 1;
                         if ui
-                            .add_enabled(can, egui::Button::new("Delete"))
-                            .on_disabled_hover_text("A project keeps at least one level")
+                            .button("With everything on it")
+                            .on_hover_text(
+                                "Walls, slabs, doors, windows and the rest, one storey up",
+                            )
                             .clicked()
                         {
-                            asks.push(Ask::Delete(*id));
+                            asks.push(Ask::Duplicate(id, true));
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("A copy above the top level");
+                });
+                let tip = if list.len() > 1 {
+                    "Asks what happens to what is on it first"
+                } else {
+                    "A project keeps at least one level"
+                };
+                if crate::library::delete_button(ui, current.is_some() && list.len() > 1, tip)
+                    .clicked()
+                {
+                    if let Some(id) = current {
+                        asks.push(Ask::Delete(id));
+                    }
+                }
+            },
+            |ui, (lv, asks)| {
+                if let Some(id) = current {
+                    level_editor(ui, model, &list, id, lv, asks);
+                }
+                crate::library::heading(ui, "Add a level");
+                crate::props::row(ui, "At", |ui| {
+                    crate::props::flow(ui, |ui| {
+                        ui.add(crate::units::drag(&mut lv.at).range(-1000.0..=10_000.0));
+                        if ui
+                            .button("Add")
+                            .on_hover_text("A new level at this elevation")
+                            .clicked()
+                        {
+                            asks.push(Ask::AddAt(lv.at));
                         }
                     });
-                    ui.end_row();
-                }
-            });
-
-        // asked to delete a level: what happens to what is on it
-        let Some((del, mut target)) = self.levels.delete else {
-            return;
-        };
-        let Some(e) = model.get(del) else {
-            asks.push(Ask::CancelDelete);
-            return;
-        };
-        ui.add_space(8.0);
-        ui.separator();
-        let on = levels::on_level(model, del);
-        let plans = levels::plan_views(model, del);
-        ui.label(egui::RichText::new(format!("Delete {}?", e.name)).strong());
-        let mut what = vec![];
-        if !plans.is_empty() {
-            what.push(format!(
-                "its floor plan{} (and what is drawn on {})",
-                if plans.len() == 1 { "" } else { "s" },
-                if plans.len() == 1 { "it" } else { "them" }
-            ));
-        }
-        if on.is_empty() {
-            ui.label("Nothing is on it.");
-            if !what.is_empty() {
-                ui.label(format!("This also deletes {}.", what.join(" and ")));
-            }
-        } else {
-            ui.label(format!(
-                "{} element{} on it. This also deletes {}.",
-                on.len(),
-                if on.len() == 1 { " is" } else { "s are" },
-                if what.is_empty() {
-                    "dimensions taken from the level".to_string()
-                } else {
-                    what.join(" and ")
-                }
-            ));
-            let others: Vec<&(ElementId, String, creabim_core::Level)> =
-                list.iter().filter(|(id, ..)| *id != del).collect();
-            let mut keep = target.is_some();
-            ui.radio_value(
-                &mut keep,
-                true,
-                "Move them to another level, keeping them where they are",
-            );
-            if keep {
-                let current = target
-                    .and_then(|t| others.iter().find(|(id, ..)| *id == t))
-                    .map_or("Pick a level", |(_, n, _)| n.as_str());
-                ui.indent("to", |ui| {
-                    egui::ComboBox::from_id_salt("move-to")
-                        .icon(crate::props::combo_icon)
-                        .selected_text(current)
-                        .show_ui(ui, |ui| {
-                            for (id, n, _) in &others {
-                                ui.selectable_value(&mut target, Some(*id), n);
-                            }
-                        });
                 });
-            }
-            ui.radio_value(&mut keep, false, "Delete them with the level");
-            if keep && target.is_none() {
-                target = nearest(&list, del);
-            } else if !keep {
-                target = None;
-            }
-            self.levels.delete = Some((del, target));
-        }
-        crate::props::flow(ui, |ui| {
-            if ui
-                .button(egui::RichText::new("Delete level").color(Color32::from_rgb(190, 50, 40)))
-                .clicked()
-            {
-                asks.push(Ask::ConfirmDelete(del, target));
-            }
-            if ui.button("Cancel").clicked() {
-                asks.push(Ask::CancelDelete);
-            }
-            ui.label(egui::RichText::new("Ctrl+Z brings it all back.").weak());
-        });
+                crate::props::tickbox(
+                    ui,
+                    &mut lv.with_plan,
+                    "Make a floor plan for each new level",
+                );
+                level_delete(ui, model, &list, lv, asks);
+            },
+        );
     }
 
     fn run_level_ask(&mut self, ask: Ask) {
@@ -698,7 +573,6 @@ fn format_summary(
 
 /// The project's own units: what every kind uses unless it says otherwise.
 fn project_units(ui: &mut egui::Ui, units: &mut Units) {
-    crate::props::note(ui, "How lengths are shown and typed everywhere. The model keeps metres, so switching is lossless.");
     let mut imperial = units.is_imperial();
     if crate::props::choice(
         ui,
@@ -746,9 +620,10 @@ fn project_units(ui: &mut egui::Ui, units: &mut Units) {
             .wrap(),
         )
     });
-    crate::props::note(
+    crate::props::info(
         ui,
-        "Any unit can be typed in a field: 3'-6 1/2\", 3 6, 1067 mm, 1.2 m.",
+        "How lengths are shown and typed everywhere. The model keeps metres, so switching is lossless. Any unit can be typed in a field: 3'-6 1/2\", 3 6, 1067 mm, 1.2 m.",
+        "",
     );
 }
 
@@ -849,9 +724,10 @@ pub(super) fn kind_format(
     };
     precision_row(ui, label, &mut u, Some(&mut f.precision));
     if u.length.is_fractional() {
-        crate::props::note(
+        crate::props::info(
             ui,
             "Feet and inches keep their marks and round to a fraction.",
+            "",
         );
     } else {
         crate::props::choice(
@@ -871,10 +747,11 @@ pub(super) fn kind_format(
         let mut lead = f.leading_zero.unwrap_or(true);
         let mut trail = f.trailing_zeros.unwrap_or(true);
         crate::props::row(ui, "Zeros", |ui| {
-            crate::props::flow(ui, |ui| {
+            // a fixed row in whole pixels: wrapping, it flickered as the panel was resized (MU59)
+            ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
                 let h = ui.spacing().interact_size.y;
-                let w = ((ui.available_width() - 1.0) / 2.0).max(40.0);
+                let w = ((ui.available_width() - 1.0) / 2.0).floor().max(40.0);
                 if ui
                     .add_sized([w, h], egui::Button::selectable(lead, "Leading 0.450"))
                     .on_hover_text("Off: .450")
@@ -946,4 +823,176 @@ fn nearest(list: &[(ElementId, String, creabim_core::Level)], id: ElementId) -> 
                 .then(a.2.elevation.total_cmp(&b.2.elevation))
         })
         .map(|(i, ..)| *i)
+}
+
+/// The picked level: its name, elevation and storey height, the gap up to
+/// the next, what is on it, its floor plan.
+fn level_editor(
+    ui: &mut egui::Ui,
+    model: &creabim_core::Model,
+    list: &[(ElementId, String, creabim_core::Level)],
+    id: ElementId,
+    lv: &mut LevelsUi,
+    asks: &mut Vec<Ask>,
+) {
+    let Some(i) = list.iter().position(|(l, ..)| *l == id) else {
+        return;
+    };
+    let (_, name, l) = &list[i];
+    let draft = lv.names.entry(id).or_insert_with(|| name.clone());
+    let r = ui.add(
+        egui::TextEdit::singleline(draft)
+            .vertical_align(egui::Align::Center)
+            .font(egui::TextStyle::Heading)
+            .desired_width(f32::INFINITY),
+    );
+    if r.lost_focus() && draft.trim() != name && !draft.trim().is_empty() {
+        asks.push(Ask::Rename(id, draft.trim().to_string()));
+    } else if !r.has_focus() && *draft != *name {
+        *draft = name.clone();
+    }
+    crate::props::info(
+        ui,
+        "Moving a level moves everything on it. Its height is the storey's: new walls and columns are this tall.",
+        "",
+    );
+    crate::library::heading(ui, "Settings");
+    let (mut z, mut h) = (l.elevation, l.height);
+    let ze = crate::props::row(ui, "Elevation", |ui| {
+        crate::props::fill(ui, crate::units::drag(&mut z).range(-1000.0..=10_000.0))
+    });
+    let he = crate::props::row(ui, "Height", |ui| {
+        crate::props::fill(ui, crate::units::drag(&mut h).range(0.5..=100.0))
+    });
+    if ze.changed() || he.changed() {
+        asks.push(Ask::Set(id, z, h));
+    }
+    // the gap up to the level above, which the storey can be fitted to
+    if let Some((_, above, a)) = list.get(i + 1) {
+        let gap = a.elevation - l.elevation;
+        crate::props::row(ui, "To next", |ui| {
+            crate::props::flow(ui, |ui| {
+                ui.label(crate::units::len(gap))
+                    .on_hover_text(format!("From here up to {above}"));
+                if (gap - l.height).abs() > 1e-6
+                    && gap > 0.5
+                    && ui
+                        .small_button("Fit")
+                        .on_hover_text(format!("Make the storey as tall as the gap up to {above}"))
+                        .clicked()
+                {
+                    asks.push(Ask::Set(id, l.elevation, gap));
+                }
+            });
+        });
+    }
+    let n = levels::on_level(model, id).len();
+    let plans = levels::plan_views(model, id);
+    crate::library::foot(
+        ui,
+        &format!("{n} element{} on it.", if n == 1 { "" } else { "s" }),
+        |ui| match plans.first() {
+            Some(v) => {
+                if ui.button("Open its plan").clicked() {
+                    asks.push(Ask::OpenPlan(*v));
+                }
+            }
+            None => {
+                if ui.button("Make a floor plan").clicked() {
+                    asks.push(Ask::MakePlan(id));
+                }
+            }
+        },
+    );
+}
+
+/// Asked to delete a level: what happens to what is on it.
+fn level_delete(
+    ui: &mut egui::Ui,
+    model: &creabim_core::Model,
+    list: &[(ElementId, String, creabim_core::Level)],
+    lv: &mut LevelsUi,
+    asks: &mut Vec<Ask>,
+) {
+    // asked to delete a level: what happens to what is on it
+    let Some((del, mut target)) = lv.delete else {
+        return;
+    };
+    let Some(e) = model.get(del) else {
+        asks.push(Ask::CancelDelete);
+        return;
+    };
+    ui.add_space(8.0);
+    ui.separator();
+    let on = levels::on_level(model, del);
+    let plans = levels::plan_views(model, del);
+    ui.label(egui::RichText::new(format!("Delete {}?", e.name)).strong());
+    let mut what = vec![];
+    if !plans.is_empty() {
+        what.push(format!(
+            "its floor plan{} (and what is drawn on {})",
+            if plans.len() == 1 { "" } else { "s" },
+            if plans.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    if on.is_empty() {
+        ui.label("Nothing is on it.");
+        if !what.is_empty() {
+            ui.label(format!("This also deletes {}.", what.join(" and ")));
+        }
+    } else {
+        ui.label(format!(
+            "{} element{} on it. This also deletes {}.",
+            on.len(),
+            if on.len() == 1 { " is" } else { "s are" },
+            if what.is_empty() {
+                "dimensions taken from the level".to_string()
+            } else {
+                what.join(" and ")
+            }
+        ));
+        let others: Vec<&(ElementId, String, creabim_core::Level)> =
+            list.iter().filter(|(id, ..)| *id != del).collect();
+        let mut keep = target.is_some();
+        crate::props::radio_tick(
+            ui,
+            &mut keep,
+            true,
+            "Move them to another level, keeping them where they are",
+        );
+        if keep {
+            let current = target
+                .and_then(|t| others.iter().find(|(id, ..)| *id == t))
+                .map_or("Pick a level", |(_, n, _)| n.as_str());
+            ui.indent("to", |ui| {
+                egui::ComboBox::from_id_salt("move-to")
+                    .icon(crate::props::combo_icon)
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (id, n, _) in &others {
+                            ui.selectable_value(&mut target, Some(*id), n);
+                        }
+                    });
+            });
+        }
+        crate::props::radio_tick(ui, &mut keep, false, "Delete them with the level");
+        if keep && target.is_none() {
+            target = nearest(list, del);
+        } else if !keep {
+            target = None;
+        }
+        lv.delete = Some((del, target));
+    }
+    crate::props::flow(ui, |ui| {
+        if ui
+            .button(egui::RichText::new("Delete level").color(Color32::from_rgb(190, 50, 40)))
+            .clicked()
+        {
+            asks.push(Ask::ConfirmDelete(del, target));
+        }
+        if ui.button("Cancel").clicked() {
+            asks.push(Ask::CancelDelete);
+        }
+        ui.label(egui::RichText::new("Ctrl+Z brings it all back.").weak());
+    });
 }

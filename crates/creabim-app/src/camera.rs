@@ -11,6 +11,11 @@ pub struct OrbitCamera {
     /// Orthographic (parallel) projection instead of perspective. The
     /// visible height is the one perspective has at the target.
     pub ortho: bool,
+    /// Verticals kept straight (two-point perspective, an architect's
+    /// shift lens): the camera stays level and its picture is moved up or
+    /// down, where it would have tilted. Perspective only, and not when
+    /// looking more than 60 degrees up or down.
+    pub straight: bool,
 }
 
 /// The standard directions to look from.
@@ -77,6 +82,7 @@ impl Default for OrbitCamera {
             distance: 24.0,
             fov_y: 45f32.to_radians(),
             ortho: false,
+            straight: false,
         }
     }
 }
@@ -134,9 +140,38 @@ impl OrbitCamera {
         Vec3::new(-cy * sp.signum(), -sy * sp.signum(), 0.0)
     }
 
+    /// The lens as a focal length on a full-frame camera (24 mm high), mm.
+    pub fn lens_mm(&self) -> f32 {
+        12.0 / (self.fov_y / 2.0).tan()
+    }
+
+    /// Change the lens to `mm`, moving the camera so that what is at the
+    /// target stays the size it was: a wide lens comes close, a long one
+    /// stands back.
+    pub fn set_lens_mm(&mut self, mm: f32) {
+        let h = self.distance * (self.fov_y / 2.0).tan();
+        self.fov_y = 2.0 * (12.0 / mm.clamp(8.0, 400.0)).atan();
+        self.distance = h / (self.fov_y / 2.0).tan();
+    }
+
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
-        let view = Mat4::look_at_rh(self.eye(), self.target, self.up());
         let aspect = aspect.max(0.01);
+        if self.straight && !self.ortho {
+            // a level camera with its picture shifted, so that the target
+            // is still in the middle and every vertical stays vertical
+            let eye = self.eye();
+            let f = self.target - eye;
+            let flat = Vec2::new(f.x, f.y).length();
+            if flat > 1e-4 && (f.z / flat).abs() < 1.732 {
+                let level = Vec3::new(f.x, f.y, 0.0) / flat;
+                let view = Mat4::look_at_rh(eye, eye + level, Vec3::Z);
+                let shift = -(f.z / flat) / (self.fov_y / 2.0).tan();
+                return Mat4::from_translation(Vec3::new(0.0, shift, 0.0))
+                    * Mat4::perspective_rh(self.fov_y, aspect, 0.05, 2000.0)
+                    * view;
+            }
+        }
+        let view = Mat4::look_at_rh(self.eye(), self.target, self.up());
         let proj = if self.ortho {
             let h = self.half_height();
             // the near plane sits well behind the eye so nothing is clipped
@@ -242,6 +277,54 @@ mod tests {
             "{before} {after}"
         );
         assert!((c.pitch - (0.55 - 0.2)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn straight_verticals_stay_vertical_and_the_target_stays_in_the_middle() {
+        let mut c = OrbitCamera {
+            target: Vec3::new(0.0, 0.0, 3.0),
+            ..Default::default()
+        };
+        // a wall's edge off to one side, floor to eaves
+        let right = {
+            let f = c.target - c.eye();
+            Vec3::new(f.y, -f.x, 0.0).normalize()
+        };
+        let foot = c.target + right * 4.0 - Vec3::Z * 3.0;
+        let head = foot + Vec3::Z * 6.0;
+        let lean = |c: &OrbitCamera| {
+            let vp = c.view_proj(1.5);
+            (vp.project_point3(head).x - vp.project_point3(foot).x).abs()
+        };
+        // looking down on it, the edge leans; kept straight, it does not
+        assert!(lean(&c) > 0.01, "{}", lean(&c));
+        c.straight = true;
+        assert!(lean(&c) < 1e-5, "{}", lean(&c));
+        let mid = c.view_proj(1.5).project_point3(c.target);
+        assert!(mid.truncate().length() < 1e-5, "{mid}");
+        // what is higher is still higher on the screen
+        let vp = c.view_proj(1.5);
+        assert!(vp.project_point3(head).y > vp.project_point3(foot).y);
+        // from nearly overhead it is the plain view again
+        c.pitch = 1.4;
+        let plain = OrbitCamera {
+            straight: false,
+            ..c.clone()
+        };
+        assert_eq!(c.view_proj(1.5), plain.view_proj(1.5));
+    }
+
+    #[test]
+    fn a_change_of_lens_keeps_the_targets_size() {
+        let mut c = OrbitCamera::default();
+        assert!((c.lens_mm() - 28.97).abs() < 0.05, "{}", c.lens_mm());
+        let seen = |c: &OrbitCamera| c.distance * (c.fov_y / 2.0).tan();
+        let was = seen(&c);
+        c.set_lens_mm(18.0);
+        assert!((c.lens_mm() - 18.0).abs() < 1e-3 && (seen(&c) - was).abs() < 1e-3);
+        assert!(c.distance < 24.0, "a wide lens comes close");
+        c.set_lens_mm(85.0);
+        assert!(c.distance > 24.0 && (seen(&c) - was).abs() < 1e-3);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 Each view keeps its own list of what it leaves out:
 
-- whole **categories**: walls, slabs, doors, windows, columns, beams, roofs, stairs, railings, masses, void cutters, grids, levels, section marks, dimensions, tags, notes, sketches, guides;
+- whole **categories**: walls, slabs, doors, windows, columns, beams, roofs, stairs, railings, masses, cutting shapes (dashed red), grids, levels, section marks, dimensions, tags, notes, sketches, guides;
 - single **grid systems**;
 - single **elements**.
 

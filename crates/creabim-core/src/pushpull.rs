@@ -57,6 +57,106 @@ pub fn affected(model: &Model, id: ElementId) -> Vec<Element> {
     out
 }
 
+/// Can the Pull tool take a face of this kind of element? Everything
+/// [`push_face`] moves, and a shape's faces, which it also makes solid.
+pub fn can_pull(kind: &ElementKind) -> bool {
+    can_push(kind) || matches!(kind, ElementKind::Sketch(_))
+}
+
+/// Pull: [`push_face`] for building elements, whose own values follow.
+/// On a shape it is [`crate::EditMesh::pull_face`]: a flat face standing
+/// alone becomes a solid, a face of a box lengthens it, a face with
+/// leaning sides grows new ones.
+pub fn pull(model: &Model, elements: &[Element], face: &FaceRef, s: f64) -> Option<Vec<Element>> {
+    pull_with(model, elements, face, &[], s)
+}
+
+/// [`pull`], with the faces `others` of the same shape pulled as far,
+/// each along its own direction (MU47, decision 3): what is picked
+/// together goes together, as Blender's extrude of individual faces.
+pub fn pull_with(
+    model: &Model,
+    elements: &[Element],
+    face: &FaceRef,
+    others: &[usize],
+    s: f64,
+) -> Option<Vec<Element>> {
+    let first = elements.first()?;
+    // a slab's top or underside takes the whole slab with it: how thick it
+    // is belongs to its type (MU44)
+    if let (ElementKind::Slab(_), true) = (&first.kind, face.normal.z.abs() > 0.99) {
+        let mut out = elements.to_vec();
+        if let ElementKind::Slab(sl) = &mut out[0].kind {
+            sl.top_offset += s * face.normal.z.signum();
+        }
+        return Some(out);
+    }
+    // a drawn outline becomes a solid, an open line a surface along it:
+    // the sketch is used up and the shape takes its place
+    if let ElementKind::Sketch(sk) = &first.kind {
+        if s.abs() < 1e-6 {
+            return None;
+        }
+        let sign = if sk.plane.normal().dot(face.normal) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let mesh = sk.extrude(sign * s);
+        mesh.validate().ok()?;
+        let mut out = elements.to_vec();
+        out[0].kind = ElementKind::FreeMesh(crate::FreeMesh::new(sk.level, sk.plane.origin, mesh));
+        if out[0].name.is_empty() || out[0].name.starts_with("Sketch") {
+            out[0].name = "Shape".into();
+        }
+        return Some(out);
+    }
+    let ElementKind::FreeMesh(m) = &first.kind else {
+        return push_face(model, elements, face, s);
+    };
+    let f = face.mesh_face.filter(|f| *f < m.mesh.faces.len())?;
+    let mut out = elements.to_vec();
+    if let ElementKind::FreeMesh(m) = &mut out[0].kind {
+        // the picked normal may look the other way from the mesh face's
+        // own (a flat face seen from behind): the pointer's side decides
+        let own = m.to_model(m.mesh.face_normal(f)).normalize_or_zero();
+        let sign = if own.dot(face.normal) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let scale = if m.scale.abs() > 1e-9 {
+            m.scale.abs()
+        } else {
+            1.0
+        };
+        let by = sign * s / scale;
+        // in as far as the far side, or past it: a hole right through
+        // (it came out the other side as a block, MU45)
+        let through = m
+            .mesh
+            .through(f)
+            .is_some_and(|(_, depth)| by <= -(depth - 1e-6));
+        let before = m.mesh.clone();
+        if !(through && m.mesh.pull_through(f)) {
+            m.mesh.pull_face(f, by);
+            // a pull keeps its face's number and adds the new ones after
+            // it, so the others are still where they were
+            for o in others {
+                if *o != f && *o < before.faces.len() {
+                    m.mesh.pull_face(*o, by);
+                }
+            }
+        }
+        // faces that now lie in one plane are one face
+        m.mesh.merge_flat(&before);
+        if m.mesh.validate().is_err() {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 /// Which way a face looks, in an element's own terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Facing {
@@ -268,8 +368,8 @@ pub fn push_face(
         ElementKind::Stair(st) => {
             let rise = st.rise(model);
             let lay = st.layout(rise);
-            let f = lay.flights.first().copied()?;
-            let last = lay.flights.last().copied().unwrap_or(f);
+            let f = lay.flights.first().cloned()?;
+            let last = lay.flights.last().cloned().unwrap_or_else(|| f.clone());
             let treads = |risers: u32| risers.saturating_sub(1).max(1) as f64;
             // the start and end faces are the first riser and the last
             // nosing, not the risers between
@@ -288,8 +388,9 @@ pub fn push_face(
                     st.tread += s / treads(f.risers);
                 }
                 Facing::Side(flat)
-                    if flat.dot(last.dir) > 0.9
-                        && (at - last.end(st.tread)).dot(last.dir) > -st.tread / 2.0 =>
+                    if flat.dot(last.end_dir(st.tread)) > 0.9
+                        && (at - last.end(st.tread)).dot(last.end_dir(st.tread))
+                            > -st.tread / 2.0 =>
                 {
                     st.tread += s / treads(last.risers);
                 }
@@ -297,7 +398,9 @@ pub fn push_face(
                     // a side of the first flight: wider, the other side stays
                     let side = flat.dot(f.dir.perp()).signum();
                     st.width += s;
-                    if st.landing.is_none() {
+                    // a straight stair keeps the other side; one with turns
+                    // widens about its line
+                    if st.landing.is_none() && st.line.len() <= 2 {
                         st.start += f.dir.perp() * side * s / 2.0;
                     }
                 }
@@ -464,6 +567,199 @@ fn slab_edge(boundary: &[DVec2], bulges: &[f64], face: &FaceRef) -> Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pull_makes_a_flat_shape_solid_and_lengthens_a_box() {
+        use crate::{EditMesh, FreeMesh};
+        let mut flat = EditMesh::default();
+        let p = [
+            DVec3::ZERO,
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(4.0, 3.0, 0.0),
+            DVec3::new(0.0, 3.0, 0.0),
+        ];
+        for i in 0..4 {
+            flat.add_line(p[i], p[(i + 1) % 4]);
+        }
+        flat.fill_loops(DVec3::Z);
+        let e = Element::new(
+            "Shape",
+            ElementKind::FreeMesh(FreeMesh::new(None, DVec3::ZERO, flat)),
+        );
+        let m = Model::from_elements([e.clone()]).unwrap();
+        let face = FaceRef {
+            point: DVec3::new(2.0, 1.5, 0.0),
+            normal: DVec3::Z,
+            mesh_face: Some(0),
+        };
+        for s in [2.5, -2.5] {
+            let out = pull(&m, std::slice::from_ref(&e), &face, s).unwrap();
+            let ElementKind::FreeMesh(f) = &out[0].kind else {
+                panic!()
+            };
+            assert_eq!(f.mesh.kind(), crate::shape::Kind::Solid);
+            assert!((f.mesh.volume() - 30.0).abs() < 1e-9);
+            assert!((f.mesh.face_center(0).z - s).abs() < 1e-9);
+        }
+        // seen from below, out is down
+        let under = FaceRef {
+            normal: -DVec3::Z,
+            ..face
+        };
+        let out = pull(&m, std::slice::from_ref(&e), &under, 1.0).unwrap();
+        let ElementKind::FreeMesh(f) = &out[0].kind else {
+            panic!()
+        };
+        assert!((f.mesh.face_center(0).z + 1.0).abs() < 1e-9);
+        // a drawn outline pulled is a solid under the same id; an open
+        // line a surface
+        for closed in [true, false] {
+            let pts = vec![
+                DVec2::ZERO,
+                DVec2::new(4.0, 0.0),
+                DVec2::new(4.0, 3.0),
+                DVec2::new(0.0, 3.0),
+            ];
+            let sk = crate::Sketch::polyline(None, crate::Workplane::ground(0.0), pts, closed);
+            let se = Element::new("Sketch", ElementKind::Sketch(sk));
+            let sm = Model::from_elements([se.clone()]).unwrap();
+            let on = FaceRef {
+                point: DVec3::new(1.0, 0.0, 0.0),
+                normal: DVec3::Z,
+                mesh_face: None,
+            };
+            assert!(can_pull(&se.kind));
+            assert!(pull(&sm, std::slice::from_ref(&se), &on, 0.0).is_none());
+            let out = pull(&sm, std::slice::from_ref(&se), &on, 2.0).unwrap();
+            assert_eq!(out[0].id, se.id);
+            let ElementKind::FreeMesh(f) = &out[0].kind else {
+                panic!()
+            };
+            if closed {
+                assert_eq!(out[0].name, "Shape");
+                assert_eq!(f.mesh.kind(), crate::shape::Kind::Solid);
+                assert!((f.mesh.volume() - 24.0).abs() < 1e-9);
+            } else {
+                assert_eq!(out[0].name, "Shape");
+                assert_eq!(f.mesh.kind(), crate::shape::Kind::Surface);
+                assert_eq!(f.mesh.faces.len(), 3);
+            }
+            // the model takes the sketch's place being a shape
+            let mut m2 = sm.clone();
+            m2.replace(out[0].clone()).unwrap();
+        }
+        // a slab's top takes the slab up; it stays as thick as it was
+        let lv = Element::new(
+            "L1",
+            ElementKind::Level(crate::Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let mut slab = crate::Slab::new(
+            lv.id,
+            crate::polygon::rectangle(DVec2::ZERO, DVec2::new(4.0, 3.0)),
+            0.2,
+        );
+        slab.top_offset = 0.0;
+        let se = Element::new("Slab", ElementKind::Slab(slab));
+        let sm = Model::from_elements([lv, se.clone()]).unwrap();
+        let top = FaceRef {
+            point: DVec3::new(2.0, 1.5, 0.0),
+            normal: DVec3::Z,
+            mesh_face: None,
+        };
+        let out = pull(&sm, std::slice::from_ref(&se), &top, 0.4).unwrap();
+        let (ElementKind::Slab(a), ElementKind::Slab(b)) = (&se.kind, &out[0].kind) else {
+            panic!()
+        };
+        assert!((b.top_offset - 0.4).abs() < 1e-9);
+        assert_eq!(a.thickness, b.thickness);
+        // a box: its top goes up and nothing is added
+        let b = Element::new(
+            "Box",
+            ElementKind::FreeMesh(FreeMesh::new(
+                None,
+                DVec3::ZERO,
+                EditMesh::cuboid(DVec3::new(2.0, 2.0, 1.0)),
+            )),
+        );
+        let ElementKind::FreeMesh(bm) = &b.kind else {
+            panic!()
+        };
+        let top = (0..6).find(|f| bm.mesh.face_normal(*f).z > 0.9).unwrap();
+        let face = FaceRef {
+            point: DVec3::new(0.0, 0.0, 0.5),
+            normal: DVec3::Z,
+            mesh_face: Some(top),
+        };
+        let out = pull(&m, std::slice::from_ref(&b), &face, 0.75).unwrap();
+        let ElementKind::FreeMesh(f) = &out[0].kind else {
+            panic!()
+        };
+        assert_eq!(f.mesh.vertices.len(), 8);
+        assert!((f.mesh.volume() - 2.0 * 2.0 * 1.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn faces_picked_together_are_pulled_each_its_own_way() {
+        use crate::{EditMesh, FreeMesh};
+        let b = Element::new(
+            "Box",
+            ElementKind::FreeMesh(FreeMesh::new(
+                None,
+                DVec3::ZERO,
+                EditMesh::cuboid(DVec3::new(2.0, 2.0, 2.0)),
+            )),
+        );
+        let m = Model::from_elements([b.clone()]).unwrap();
+        let ElementKind::FreeMesh(bm) = &b.kind else {
+            panic!()
+        };
+        let facing = |n: DVec3| {
+            (0..6)
+                .find(|f| bm.mesh.face_normal(*f).dot(n) > 0.9)
+                .unwrap()
+        };
+        let (top, east) = (facing(DVec3::Z), facing(DVec3::X));
+        let face = FaceRef {
+            point: DVec3::new(0.0, 0.0, 1.0),
+            normal: DVec3::Z,
+            mesh_face: Some(top),
+        };
+        let out = pull_with(&m, std::slice::from_ref(&b), &face, &[east], 0.5).unwrap();
+        let ElementKind::FreeMesh(f) = &out[0].kind else {
+            panic!()
+        };
+        f.mesh.validate().unwrap();
+        // up by half a metre, and out to the east by as much
+        let hi = f.mesh.vertices.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        let far = f.mesh.vertices.iter().map(|v| v.x).fold(f64::MIN, f64::max);
+        let was_hi = bm
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| v.z)
+            .fold(f64::MIN, f64::max);
+        let was_far = bm
+            .mesh
+            .vertices
+            .iter()
+            .map(|v| v.x)
+            .fold(f64::MIN, f64::max);
+        assert!((hi - was_hi - 0.5).abs() < 1e-9, "top {was_hi} to {hi}");
+        assert!(
+            (far - was_far - 0.5).abs() < 1e-9,
+            "east {was_far} to {far}"
+        );
+        assert!(f.mesh.volume() > 8.0 + 2.0 - 1e-9);
+        // alone, the top only
+        let one = pull(&m, std::slice::from_ref(&b), &face, 0.5).unwrap();
+        let ElementKind::FreeMesh(f) = &one[0].kind else {
+            panic!()
+        };
+        assert!((f.mesh.volume() - 10.0).abs() < 1e-9);
+    }
 
     #[test]
     fn a_part_on_a_sloped_face_gets_deeper_and_wider_square_to_it() {

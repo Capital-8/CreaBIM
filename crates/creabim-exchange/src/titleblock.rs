@@ -49,6 +49,7 @@ pub fn from_items(items: Vec<TitleItem>) -> Result<SheetTemplate, String> {
         paper: None,
         guides: vec![],
         margins: None,
+        stock: Default::default(),
     };
     let (lo, hi) = t.bounds().unwrap_or_default();
     let size = hi - lo;
@@ -427,6 +428,8 @@ fn dxf_draw(
                         text: line.to_string(),
                         align,
                         angle,
+                        colour: None,
+                        font: None,
                     });
                 }
             }
@@ -1321,6 +1324,8 @@ pub fn svg_items(text: &str) -> Result<Vec<TitleItem>, String> {
                         text: words,
                         align,
                         angle: if angle.abs() < 1e-9 { 0.0 } else { angle },
+                        colour: None,
+                        font: None,
                     });
                 }
                 rest = &rest[end..];
@@ -1450,6 +1455,7 @@ pub fn to_svg(t: &SheetTemplate) -> String {
             text,
             align,
             angle,
+            ..
         } = it
         {
             // by its baseline, as SVG places text; a title item by its middle

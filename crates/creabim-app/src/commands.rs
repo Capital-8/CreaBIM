@@ -9,10 +9,14 @@ pub enum Command {
     Move,
     Rotate,
     Scale,
+    /// Stretch (wave 3): a box over corners and ends, then a move.
+    Stretch,
     /// Mirror across a line of two clicks.
     Mirror,
     /// Offset a line or an outline to one side.
     Offset,
+    /// Pull the face under the pointer (MU43).
+    Pull,
     Duplicate,
     Copy,
     Cut,
@@ -33,12 +37,14 @@ pub enum Command {
 }
 
 impl Command {
-    pub const ALL: [Command; 19] = [
+    pub const ALL: [Command; 21] = [
         Command::Move,
         Command::Rotate,
         Command::Scale,
+        Command::Stretch,
         Command::Mirror,
         Command::Offset,
+        Command::Pull,
         Command::Duplicate,
         Command::Copy,
         Command::Cut,
@@ -60,8 +66,10 @@ impl Command {
             Command::Move => "Move",
             Command::Rotate => "Rotate",
             Command::Scale => "Scale",
+            Command::Stretch => "Stretch",
             Command::Mirror => "Mirror",
             Command::Offset => "Offset",
+            Command::Pull => "Pull",
             Command::Duplicate => "Duplicate",
             Command::Copy => "Copy",
             Command::Cut => "Cut",
@@ -84,7 +92,10 @@ impl Command {
             Command::Move => "M",
             Command::Rotate => "R",
             Command::Scale => "S",
-            Command::Mirror | Command::Offset => "",
+            Command::Stretch => "Shift+S",
+            Command::Mirror => "Ctrl+M",
+            Command::Offset => "",
+            Command::Pull => "P",
             Command::Duplicate => "Shift+D",
             Command::Copy => "Ctrl+C",
             Command::Cut => "Ctrl+X",
@@ -128,6 +139,7 @@ impl Command {
             Command::Scale => Some((Mode::Scale, false)),
             Command::Mirror => Some((Mode::Mirror, false)),
             Command::Offset => Some((Mode::Offset, false)),
+            Command::Pull => Some((Mode::Pull, false)),
             Command::Duplicate => Some((Mode::Move, true)),
             _ => None,
         }
@@ -167,6 +179,7 @@ pub fn context_menu(ui: &mut egui::Ui, selected: usize) -> Option<Command> {
             Command::Move,
             Command::Rotate,
             Command::Scale,
+            Command::Stretch,
             Command::Mirror,
             Command::Offset,
             Command::Duplicate,
@@ -174,6 +187,7 @@ pub fn context_menu(ui: &mut egui::Ui, selected: usize) -> Option<Command> {
             item(ui, c);
         }
         ui.separator();
+        item(ui, Command::Pull);
         for c in [Command::Copy, Command::Cut, Command::Delete] {
             item(ui, c);
         }
@@ -204,8 +218,10 @@ pub fn modify_bar(ui: &mut egui::Ui, selected: bool) -> Option<Command> {
             Command::Move,
             Command::Rotate,
             Command::Scale,
+            Command::Stretch,
             Command::Mirror,
             Command::Offset,
+            Command::Pull,
             Command::Duplicate,
         ],
         &[Command::Copy, Command::Cut, Command::Paste, Command::Delete],

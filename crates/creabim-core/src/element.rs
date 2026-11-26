@@ -34,6 +34,26 @@ pub struct Element {
     /// [`crate::marks`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+    /// The phase it is built in and the one it is taken down in (see
+    /// [`crate::phases`]); unset, it is there from the first phase on.
+    #[serde(default, skip_serializing_if = "crate::phases::Phasing::is_default")]
+    pub phase: crate::phases::Phasing,
+    /// Part of the site, not of the building: outdoor steps, a retaining
+    /// wall, a parked car. It then shows and hides with the Site category
+    /// in every view, whatever its own (see
+    /// [`crate::visibility::Category::shown_with`]), and an IFC export
+    /// places it in the site. Only for what can stand indoors or out
+    /// ([`Element::can_be_site`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_site: bool,
+    /// Its own declared ratings, over its type's: an empty field is its
+    /// type's (see [`crate::common`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratings: Option<Box<crate::construction::Ratings>>,
+    /// Its documents: data sheets, specs, links (see [`crate::docrefs`]).
+    /// A type's are every element of the type's too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub documents: Vec<crate::docrefs::DocRef>,
 }
 
 /// An object in another file that an element mirrors.
@@ -58,7 +78,37 @@ impl Element {
             source: None,
             of_type: None,
             mark: None,
+            phase: Default::default(),
+            on_site: false,
+            ratings: None,
+            documents: Vec::new(),
         }
+    }
+
+    /// Can it be made part of the site? What may stand indoors or out:
+    /// walls, slabs, stairs, railings, columns, beams, objects, footings,
+    /// extrusions and sweeps, and modelled forms. Terrain, roads and
+    /// plants are the site already; what hangs on another element (a
+    /// door) goes with it.
+    pub fn can_be_site(&self) -> bool {
+        match &self.kind {
+            ElementKind::Part(p) => !p.void,
+            ElementKind::Wall(_)
+            | ElementKind::Slab(_)
+            | ElementKind::Stair(_)
+            | ElementKind::Railing(_)
+            | ElementKind::Column(_)
+            | ElementKind::Beam(_)
+            | ElementKind::Object(_)
+            | ElementKind::Footing(_)
+            | ElementKind::FreeMesh(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Is it part of the site by its owner's choice (see `on_site`)?
+    pub fn is_site_part(&self) -> bool {
+        self.on_site && self.can_be_site()
     }
 
     /// The same element, marked as mirroring `object` in `file`.
@@ -89,6 +139,12 @@ impl Element {
             ElementKind::FreeMesh(m) => m.level.into_iter().collect(),
             ElementKind::View(v) => match &v.kind {
                 ViewKind::Plan { level, .. } => vec![*level],
+                // a long section goes with its drain
+                ViewKind::LongSection { drain } => vec![*drain],
+                // and a log with its borehole
+                ViewKind::BoreholeLog { probe } => vec![*probe],
+                // and a walk-line section with its stair
+                ViewKind::WalkSection { stair } => vec![*stair],
                 ViewKind::Section { .. }
                 | ViewKind::Axonometric { .. }
                 | ViewKind::Schedule { .. } => vec![],
@@ -120,7 +176,8 @@ impl Element {
             ElementKind::ElementType(_) => vec![],
             // a shaft's top level is soft: without it the shaft stops at
             // its own level's height
-            ElementKind::Shaft(s) => vec![s.level],
+            // a stair's well goes with its stair
+            ElementKind::Shaft(s) => std::iter::once(s.level).chain(s.stair).collect(),
             // an object's shape is its type's: without it there is nothing
             // to show, so deleting a type deletes its objects
             ElementKind::Object(o) => std::iter::once(o.level)
@@ -191,6 +248,7 @@ impl Element {
             ElementKind::Column(_) => "IfcColumn",
             ElementKind::Beam(_) => "IfcBeam",
             ElementKind::Roof(_) => "IfcRoof",
+            ElementKind::Stair(s) if s.is_ramp() => "IfcRamp",
             ElementKind::Stair(_) => "IfcStair",
             ElementKind::Railing(_) => "IfcRailing",
             ElementKind::Footing(_) => "IfcFooting",
@@ -199,7 +257,16 @@ impl Element {
             ElementKind::Site(s) => match s.form {
                 crate::SiteForm::Terrain { .. } => "IfcGeographicElement",
                 crate::SiteForm::Area { .. } => "IfcCivilElement",
+                // IFC 4.3 has IfcEarthworksFill and Cut; IFC4 readers know this
+                crate::SiteForm::Pad { .. } => "IfcCivilElement",
                 crate::SiteForm::Plant { .. } => "IfcGeographicElement",
+                crate::SiteForm::Property { .. } => "IfcAnnotation",
+                crate::SiteForm::Road(_) => "IfcPavement",
+                crate::SiteForm::Drain(_) => "IfcPipeSegment",
+                crate::SiteForm::Tank(_) => "IfcTank",
+                crate::SiteForm::Walk(_) => "IfcPavement",
+                crate::SiteForm::Investigation(_) => "IfcBorehole",
+                crate::SiteForm::Spot { .. } | crate::SiteForm::Line(_) => "IfcAnnotation",
             },
             ElementKind::Room(_) => "IfcSpace",
             ElementKind::RoomSeparator(_) => "IfcVirtualElement",
@@ -293,7 +360,10 @@ impl Element {
                             Err(format!("view altitude must be within ±90°, got {altitude}"))
                         }
                     }
-                    ViewKind::Schedule { .. } => Ok(()),
+                    ViewKind::Schedule { .. }
+                    | ViewKind::LongSection { .. }
+                    | ViewKind::BoreholeLog { .. }
+                    | ViewKind::WalkSection { .. } => Ok(()),
                 }
             }
             ElementKind::Sheet(sh) => {
@@ -620,6 +690,11 @@ pub struct Material {
     /// faces; none uses the built-in pattern `hatch` names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    /// A pattern of the project's style pack, by name, drawn on its
+    /// surfaces seen in projection (a roof from above, paving, a floor):
+    /// true-size coursing, tiles, boards. None draws them plain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_pattern: Option<String>,
     /// Its price for take-off, per m², m³, m or piece (see
     /// [`crate::takeoff`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -657,6 +732,7 @@ impl Default for Material {
             metallic: 0.0,
             opacity: 1.0,
             pattern: None,
+            surface_pattern: None,
             rate: None,
         }
     }
@@ -731,6 +807,49 @@ pub struct Cut {
     pub target: ElementId,
     pub cutter: ElementId,
     pub op: crate::csg::BoolOp,
+    /// How far the cutter works up and down (wave 3): as drawn, or run on
+    /// without end, so one rectangle cuts a whole stack of floors.
+    #[serde(default, skip_serializing_if = "Reach::is_as_drawn")]
+    pub reach: Reach,
+}
+
+/// How far a boolean's cutter works, up and down (ArchiCAD's solid
+/// operations' extrusion): as drawn, or its top, its bottom or both run on
+/// without end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Reach {
+    #[default]
+    AsDrawn,
+    Up,
+    Down,
+    Both,
+}
+
+impl Reach {
+    pub const ALL: [Reach; 4] = [Reach::AsDrawn, Reach::Up, Reach::Down, Reach::Both];
+
+    pub fn is_as_drawn(&self) -> bool {
+        *self == Reach::AsDrawn
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Reach::AsDrawn => "As drawn",
+            Reach::Up => "Up \u{221e}",
+            Reach::Down => "Down \u{221e}",
+            Reach::Both => "Both",
+        }
+    }
+
+    /// Does its top, its bottom run on?
+    pub fn runs(self) -> (bool, bool) {
+        match self {
+            Reach::AsDrawn => (false, false),
+            Reach::Up => (true, false),
+            Reach::Down => (false, true),
+            Reach::Both => (true, true),
+        }
+    }
 }
 
 /// A construction line, endless through `a` and `b`, to snap to. Guides are
@@ -776,6 +895,9 @@ pub struct Dimension {
     /// Its own number format over its kind's in the style pack (A5-2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<crate::units::NumberFormat>,
+    /// Its text: an override, words around it, a note below, its place.
+    #[serde(default, skip_serializing_if = "crate::annotation::DimText::is_plain")]
+    pub label: crate::annotation::DimText,
 }
 
 impl Dimension {
@@ -794,6 +916,7 @@ impl Dimension {
             pattern: None,
             held: None,
             format: None,
+            label: Default::default(),
         }
     }
 
@@ -853,6 +976,13 @@ pub struct Tag {
     /// its mark.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub material: bool,
+    /// A room's tag moved out of its room draws no leader back to it
+    /// (MU141: the owner could not turn the leader off).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_leader: bool,
+    /// A ceiling's height tag: the words before the height; none is "CH".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
 }
 
 impl Tag {
@@ -868,7 +998,14 @@ impl Tag {
             end: None,
             leader_end: None,
             material: false,
+            no_leader: false,
+            prefix: None,
         }
+    }
+
+    /// What a ceiling's height tag reads before the height.
+    pub fn prefix(&self) -> &str {
+        self.prefix.as_deref().unwrap_or("CH")
     }
 }
 
@@ -880,7 +1017,7 @@ pub struct Level {
     pub height: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Grid {
     /// The label after its group's prefix (see [`crate::grids`]).
     pub label: String,
@@ -889,6 +1026,22 @@ pub struct Grid {
     /// The grid system it belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<ElementId>,
+    /// Which ends carry a bubble (grid settings, decision 2). Older files
+    /// had one at the end.
+    #[serde(default, skip_serializing_if = "crate::grids::Bubbles::is_default")]
+    pub bubbles: crate::grids::Bubbles,
+    /// A bubble moved aside on an elbow, at the start and at the end:
+    /// how far across the line, metres, to its left; 0 for none.
+    #[serde(default, skip_serializing_if = "crate::grids::no_elbows")]
+    pub elbows: [f64; 2],
+    /// A curved line: the tangent of a quarter of the angle it turns
+    /// through, as a sketch's arcs (positive turns counter-clockwise);
+    /// 0 for a straight line.
+    #[serde(default, skip_serializing_if = "crate::grids::is_zero")]
+    pub bulge: f64,
+    /// The levels it shows on; none listed is every level (decision 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<ElementId>,
 }
 
 /// A wall defined by its centreline on a level: straight, or an arc.
@@ -1462,6 +1615,7 @@ pub enum OpeningKind {
 
 /// A door or window cut into a host wall, or a bare hole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "OpeningFile", into = "OpeningOut")]
 pub struct Opening {
     pub host: ElementId,
     pub kind: OpeningKind,
@@ -1474,8 +1628,7 @@ pub struct Opening {
     /// What the door or window is made of; none draws it in its default colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<ElementId>,
-    /// Its frame, glazing bars and leaf.
-    #[serde(default, skip_serializing_if = "OpeningFrame::is_default")]
+    /// Its frame and the cells inside it.
     pub frame: OpeningFrame,
     /// A door hinged on its other jamb: the one at the wall's end side
     /// instead of its start side.
@@ -1485,6 +1638,193 @@ pub struct Opening {
     /// window with its outside face (and its sill) to the wall's interior.
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip_facing: bool,
+    /// A roof window's centre in plan, on the roof that hosts it. Its
+    /// width runs across the slope and its height up it; its offset and
+    /// sill are not used. None for a door or window in a wall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roof_at: Option<DVec2>,
+    /// How a roof window is built round its glass (Mockup_Roof_Window_REV00,
+    /// owner MU127): its upstand, glazing, flashing, lining and collar.
+    /// Unused in a wall.
+    #[serde(default, skip_serializing_if = "RoofBuild::is_default")]
+    pub roof_build: RoofBuild,
+    /// How a window stands with others: in a ribbon, round a corner, in a
+    /// bay or a bow (doors and windows part 9). None: on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrangement: Option<Arrangement>,
+}
+
+/// How a roof window is built round its glass, as roof windows are made
+/// (Mockup_Roof_Window_REV00, approved A on all five, 2026-11-22): it
+/// stands on an upstand above the roof finish, a flashing collar round it,
+/// its lining splayed inside so it lets the light in.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoofBuild {
+    /// How far its frame stands above the roof finish, m: 0 for a flush
+    /// roof window.
+    pub upstand: f64,
+    /// Panes in its glazing unit: 1, 2 or 3.
+    pub glazing: u8,
+    /// A flashing collar round it, lapped into the roofing.
+    pub flashing: bool,
+    /// Its lining inside: splayed (head level, sill plumb) or square to
+    /// the glass.
+    pub lining: RoofLining,
+    /// An insulation collar round its frame, inside the roof.
+    pub collar: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoofLining {
+    /// Its head lining level and its sill lining plumb, as roof windows
+    /// are lined to let the most light in.
+    #[default]
+    Splayed,
+    /// Square to the glass, through the roof.
+    Square,
+}
+
+impl Default for RoofBuild {
+    fn default() -> Self {
+        RoofBuild {
+            upstand: 0.09,
+            glazing: 2,
+            flashing: true,
+            lining: RoofLining::Splayed,
+            collar: true,
+        }
+    }
+}
+
+impl RoofBuild {
+    pub fn is_default(&self) -> bool {
+        *self == RoofBuild::default()
+    }
+}
+
+/// Windows that make one thing together (doors and windows part 9,
+/// "arrangements of ordinary windows"): each keeps its own frame and
+/// cells; the arrangement says which group it is in and, round a corner,
+/// which of its ends reaches into the corner and how it meets the window
+/// round it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Arrangement {
+    pub kind: ArrangementKind,
+    /// The group's number, the same for every window in it.
+    pub group: u32,
+    /// Its end at the wall's start reaches into the corner there.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub corner_start: bool,
+    /// Its end at the wall's end reaches into the corner there.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub corner_end: bool,
+    /// How it meets the window round the corner.
+    #[serde(default)]
+    pub joint: CornerJoint,
+    /// At its start's corner the other wall runs off to this wall's left
+    /// (seen along the wall), else to its right: where the two windows'
+    /// members are mitred.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub left_start: bool,
+    /// The same at its end's corner.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub left_end: bool,
+    /// At its start's corner, the way the other wall runs off, as an angle
+    /// (radians) from this wall's direction towards its left: where a bay's
+    /// windows are mitred at any angle. None: square, to the side
+    /// `left_start` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_start: Option<f64>,
+    /// The same at its end's corner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_end: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrangementKind {
+    /// Side by side in one wall, coupled.
+    Ribbon,
+    /// Round a corner, one in each wall.
+    Corner,
+    /// In a bay: a projecting run of short walls, a window in each.
+    Bay,
+    /// In a bow: a projecting curve of short facets.
+    Bow,
+}
+
+impl ArrangementKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ArrangementKind::Ribbon => "Ribbon",
+            ArrangementKind::Corner => "Corner",
+            ArrangementKind::Bay => "Bay",
+            ArrangementKind::Bow => "Bow",
+        }
+    }
+}
+
+/// Where two windows meet at a corner: a corner post, or glass to glass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CornerJoint {
+    #[default]
+    Post,
+    Glass,
+}
+
+impl Arrangement {
+    /// A short name for schedules: "Ribbon 1", "Corner 2, glass".
+    pub fn label(&self) -> String {
+        match self.kind {
+            ArrangementKind::Ribbon => format!("Ribbon {}", self.group),
+            ArrangementKind::Bay | ArrangementKind::Bow => {
+                format!("{} {}", self.kind.label(), self.group)
+            }
+            k => match self.joint {
+                CornerJoint::Post => format!("{} {}", k.label(), self.group),
+                CornerJoint::Glass => format!("{} {}, glass", k.label(), self.group),
+            },
+        }
+    }
+
+    /// The other wall's way off from that corner, as an angle from this
+    /// wall's direction towards its left.
+    pub fn angle_at(&self, end: bool) -> f64 {
+        let a = if end {
+            self.angle_end
+        } else {
+            self.angle_start
+        };
+        a.unwrap_or_else(|| {
+            let q = std::f64::consts::FRAC_PI_2;
+            if self.left_at(end) {
+                q
+            } else {
+                -q
+            }
+        })
+    }
+
+    /// Does the other wall run off to this wall's left at that corner?
+    pub fn left_at(&self, end: bool) -> bool {
+        if end {
+            self.left_end
+        } else {
+            self.left_start
+        }
+    }
+
+    /// Does its end at the wall's start (`false`) or end (`true`) reach
+    /// into a corner?
+    pub fn corner_at(&self, end: bool) -> bool {
+        if end {
+            self.corner_end
+        } else {
+            self.corner_start
+        }
+    }
 }
 
 impl Opening {
@@ -1504,44 +1844,534 @@ impl Opening {
 }
 
 /// How a door or window is built inside its opening: a frame round the
-/// edge, a window's glass split into panes by glazing bars, a door's leaf.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+/// edge, and inside it a grid of cells (see [`crate::cells`]), each a
+/// fixed light or a panel that opens.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OpeningFrame {
     /// Face width of the frame members, seen from the front.
     pub width: f64,
     /// Depth of the frame through the wall (at most the wall's thickness).
     pub depth: f64,
-    /// Window panes side by side and one above the other, split by bars.
-    pub panes_across: u32,
-    pub panes_up: u32,
+    /// The outline and its grid of cells.
+    pub grid: crate::cells::Grid,
+    /// Its leaves' make, its trim and its declared ratings.
+    #[serde(skip_serializing_if = "crate::construction::Construction::is_none")]
+    pub construction: crate::construction::Construction,
 }
 
-impl Default for OpeningFrame {
-    fn default() -> Self {
-        Self {
-            width: 0.06,
-            depth: 0.1,
-            panes_across: 1,
-            panes_up: 1,
+/// An [`OpeningFrame`] as files hold it: today's grid of cells, or the
+/// single operation (with its pair share, sliding panels and window
+/// panes) that files held before cells, converted as it loads.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct FrameFile {
+    width: Option<f64>,
+    depth: Option<f64>,
+    grid: Option<crate::cells::Grid>,
+    construction: crate::construction::Construction,
+    panes_across: Option<u32>,
+    panes_up: Option<u32>,
+    operation: Option<Operation>,
+    active_share: Option<f64>,
+    panels: Option<u32>,
+    fixed: Option<u32>,
+}
+
+impl FrameFile {
+    /// The frame, for a door, window or hole of `kind`.
+    pub fn into_frame(self, kind: OpeningKind) -> OpeningFrame {
+        let d = OpeningFrame::for_kind(kind);
+        let grid = self.grid.unwrap_or_else(|| {
+            crate::cells::Grid::of_operation(
+                kind,
+                self.operation.unwrap_or_default(),
+                self.active_share.unwrap_or(0.5),
+                self.panels.unwrap_or(2),
+                self.fixed.unwrap_or(1),
+                [self.panes_across.unwrap_or(1), self.panes_up.unwrap_or(1)],
+            )
+        });
+        OpeningFrame {
+            width: self.width.unwrap_or(d.width),
+            depth: self.depth.unwrap_or(d.depth),
+            grid,
+            construction: self.construction,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OpeningFrame {
+    /// On its own, read as a window's; doors and their types read theirs
+    /// through [`FrameFile`] knowing what they are.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(FrameFile::deserialize(d)?.into_frame(OpeningKind::Window))
+    }
+}
+
+/// An [`Opening`] as files hold it, its frame read knowing its kind.
+#[derive(Deserialize)]
+struct OpeningFile {
+    host: ElementId,
+    kind: OpeningKind,
+    offset: f64,
+    sill: f64,
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    material: Option<ElementId>,
+    #[serde(default)]
+    frame: Option<FrameFile>,
+    #[serde(default)]
+    flip_hand: bool,
+    #[serde(default)]
+    flip_facing: bool,
+    #[serde(default)]
+    roof_at: Option<DVec2>,
+    #[serde(default)]
+    roof_build: RoofBuild,
+    #[serde(default)]
+    arrangement: Option<Arrangement>,
+}
+
+/// An [`Opening`] as it is written: its frame left out when it is a new
+/// one of its kind's.
+#[derive(Serialize)]
+struct OpeningOut {
+    host: ElementId,
+    kind: OpeningKind,
+    offset: f64,
+    sill: f64,
+    width: f64,
+    height: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    material: Option<ElementId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<OpeningFrame>,
+    #[serde(skip_serializing_if = "is_false")]
+    flip_hand: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    flip_facing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roof_at: Option<DVec2>,
+    #[serde(skip_serializing_if = "RoofBuild::is_default")]
+    roof_build: RoofBuild,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arrangement: Option<Arrangement>,
+}
+
+impl From<Opening> for OpeningOut {
+    fn from(o: Opening) -> Self {
+        let plain = o.frame == OpeningFrame::for_kind(o.kind);
+        OpeningOut {
+            host: o.host,
+            kind: o.kind,
+            offset: o.offset,
+            sill: o.sill,
+            width: o.width,
+            height: o.height,
+            material: o.material,
+            frame: (!plain).then_some(o.frame),
+            flip_hand: o.flip_hand,
+            flip_facing: o.flip_facing,
+            roof_at: o.roof_at,
+            roof_build: o.roof_build,
+            arrangement: o.arrangement,
+        }
+    }
+}
+
+impl From<OpeningFile> for Opening {
+    fn from(f: OpeningFile) -> Self {
+        Opening {
+            host: f.host,
+            kind: f.kind,
+            offset: f.offset,
+            sill: f.sill,
+            width: f.width,
+            height: f.height,
+            material: f.material,
+            frame: f.frame.unwrap_or_default().into_frame(f.kind),
+            flip_hand: f.flip_hand,
+            flip_facing: f.flip_facing,
+            roof_at: f.roof_at,
+            roof_build: f.roof_build,
+            arrangement: f.arrangement,
+        }
+    }
+}
+
+/// How a door or window opens, kept apart from its size, frame and
+/// glazing so any of them can go with any operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Operation {
+    /// What openings were before operations: a door's single hinged
+    /// leaf, a window's fixed glazing.
+    #[default]
+    Standard,
+    /// A door's pair of hinged leaves meeting in the middle, both
+    /// opening to the same side: the active leaf on the hinge side, the
+    /// inactive one bolted shut until needed.
+    DoubleSwing,
+    /// A leaf hung from a track on the wall's face, sliding along it
+    /// clear of the opening.
+    SurfaceSliding,
+    /// Two leaves on a track on the wall's face, parting from the middle.
+    SurfaceSlidingPair,
+    /// A leaf sliding into a cavity in the wall beside the opening.
+    Pocket,
+    /// Two leaves sliding into cavities on both sides.
+    PocketPair,
+    /// Two to four glazed panels on offset tracks in the frame, each
+    /// fixed or sliding (a patio door).
+    MultiSlide,
+    /// A leaf turning on a pivot set in from its hinge side.
+    Pivot,
+    /// A leaf turning on a pivot at its middle.
+    CentrePivot,
+    /// A leaf swinging both ways.
+    DoubleAction,
+    /// A pair of leaves swinging both ways, meeting in the middle.
+    DoubleActionPair,
+    /// Two panels folding against the hand's jamb.
+    Bifold,
+    /// Two panels folding to each jamb, meeting in the middle.
+    BifoldPair,
+    /// Three to six panels folding and stacking against the hand's jamb.
+    Folding,
+    /// Hinged horizontal panels running up under the ceiling.
+    Sectional,
+    /// A slatted curtain rolling up into a coil box over the opening.
+    Roller,
+    /// Four wings turning in a drum.
+    Revolving,
+}
+
+impl Operation {
+    pub fn is_standard(&self) -> bool {
+        *self == Operation::Standard
+    }
+
+    /// The operations a door or window can have, in menu order.
+    pub fn for_kind(kind: OpeningKind) -> &'static [Operation] {
+        match kind {
+            OpeningKind::Door => &[
+                Operation::Standard,
+                Operation::DoubleSwing,
+                Operation::SurfaceSliding,
+                Operation::SurfaceSlidingPair,
+                Operation::Pocket,
+                Operation::PocketPair,
+                Operation::MultiSlide,
+                Operation::Pivot,
+                Operation::CentrePivot,
+                Operation::DoubleAction,
+                Operation::DoubleActionPair,
+                Operation::Bifold,
+                Operation::BifoldPair,
+                Operation::Folding,
+                Operation::Sectional,
+                Operation::Roller,
+                Operation::Revolving,
+            ],
+            OpeningKind::Window | OpeningKind::Hole => &[Operation::Standard],
+        }
+    }
+
+    /// Its name on a door or window, as menus and schedules show it.
+    pub fn label(self, kind: OpeningKind) -> &'static str {
+        match (self, kind) {
+            (Operation::Standard, OpeningKind::Door) => "Single hinged",
+            (Operation::Standard, OpeningKind::Window) => "Fixed",
+            (Operation::Standard, OpeningKind::Hole) => "Opening",
+            (Operation::DoubleSwing, _) => "Double hinged",
+            (Operation::SurfaceSliding, _) => "Surface sliding",
+            (Operation::SurfaceSlidingPair, _) => "Surface sliding pair",
+            (Operation::Pocket, _) => "Pocket sliding",
+            (Operation::PocketPair, _) => "Pocket sliding pair",
+            (Operation::MultiSlide, _) => "Multi-panel sliding",
+            (Operation::Pivot, _) => "Offset pivot",
+            (Operation::CentrePivot, _) => "Centre pivot",
+            (Operation::DoubleAction, _) => "Double action",
+            (Operation::DoubleActionPair, _) => "Double action pair",
+            (Operation::Bifold, _) => "Bifold",
+            (Operation::BifoldPair, _) => "Bifold pair",
+            (Operation::Folding, _) => "Folding",
+            (Operation::Sectional, _) => "Sectional overhead",
+            (Operation::Roller, _) => "Roller shutter",
+            (Operation::Revolving, _) => "Revolving",
+        }
+    }
+
+    /// A short form of its name that fits a narrow menu button (the menu
+    /// itself lists the full names).
+    pub fn short_label(self, kind: OpeningKind) -> &'static str {
+        match self {
+            Operation::Standard if kind == OpeningKind::Door => "Hinged",
+            Operation::Standard => self.label(kind),
+            Operation::DoubleSwing => "Double",
+            Operation::SurfaceSliding => "Sliding",
+            Operation::SurfaceSlidingPair => "Sliding ×2",
+            Operation::Pocket => "Pocket",
+            Operation::PocketPair => "Pocket ×2",
+            Operation::MultiSlide => "Multi-slide",
+            Operation::Pivot => "Pivot",
+            Operation::CentrePivot => "Mid pivot",
+            Operation::DoubleAction => "Two-way",
+            Operation::DoubleActionPair => "Two-way ×2",
+            Operation::Bifold => "Bifold",
+            Operation::BifoldPair => "Bifold ×2",
+            Operation::Folding => "Folding",
+            Operation::Sectional => "Sectional",
+            Operation::Roller => "Roller",
+            Operation::Revolving => "Revolving",
+        }
+    }
+
+    /// Does it slide rather than swing?
+    pub fn slides(self) -> bool {
+        matches!(
+            self,
+            Operation::SurfaceSliding
+                | Operation::SurfaceSlidingPair
+                | Operation::Pocket
+                | Operation::PocketPair
+                | Operation::MultiSlide
+        )
+    }
+
+    /// Does it slide into the wall?
+    pub fn pocket(self) -> bool {
+        matches!(self, Operation::Pocket | Operation::PocketPair)
+    }
+
+    /// Does it go up out of the way (a sectional door, a roller
+    /// shutter)?
+    pub fn lifts(self) -> bool {
+        matches!(self, Operation::Sectional | Operation::Roller)
+    }
+
+    /// Does it fold away?
+    pub fn folds(self) -> bool {
+        matches!(
+            self,
+            Operation::Bifold | Operation::BifoldPair | Operation::Folding
+        )
+    }
+
+    /// Does it turn on a pivot?
+    pub fn pivots(self) -> bool {
+        matches!(self, Operation::Pivot | Operation::CentrePivot)
+    }
+
+    /// Does it swing both ways?
+    pub fn double_action(self) -> bool {
+        matches!(self, Operation::DoubleAction | Operation::DoubleActionPair)
+    }
+
+    /// Is it a pair of leaves meeting in the middle, one with the handle?
+    pub fn pair(self) -> bool {
+        matches!(self, Operation::DoubleSwing | Operation::DoubleActionPair)
+    }
+
+    /// The number of leaves it is hung as (a multi-panel slider or a
+    /// folding door has as many as its panels: 0 here).
+    pub fn leaves(self) -> usize {
+        match self {
+            Operation::Standard
+            | Operation::SurfaceSliding
+            | Operation::Pocket
+            | Operation::Pivot
+            | Operation::CentrePivot
+            | Operation::DoubleAction => 1,
+            Operation::DoubleSwing
+            | Operation::SurfaceSlidingPair
+            | Operation::PocketPair
+            | Operation::DoubleActionPair
+            | Operation::Bifold => 2,
+            Operation::BifoldPair => 4,
+            Operation::MultiSlide | Operation::Folding => 0,
+            Operation::Sectional | Operation::Roller | Operation::Revolving => 0,
         }
     }
 }
 
 impl OpeningFrame {
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
+    /// A new door's (one hinged leaf), window's (one fixed light) or
+    /// hole's frame.
+    pub fn for_kind(kind: OpeningKind) -> Self {
+        Self {
+            width: 0.06,
+            depth: 0.1,
+            grid: crate::cells::Grid::of_operation(kind, Operation::Standard, 0.5, 2, 1, [1, 1]),
+            construction: Default::default(),
+        }
+    }
+
+    /// With every cell's glass split into `across` × `up` panes.
+    pub fn with_panes(mut self, across: u32, up: u32) -> Self {
+        self.set_panes(across, up);
+        self
+    }
+
+    /// A frame of the default size filled as one of the operations
+    /// before cells (see [`crate::cells::Grid::of_operation`]).
+    pub fn of_operation(kind: OpeningKind, op: Operation) -> Self {
+        Self {
+            grid: crate::cells::Grid::of_operation(kind, op, 0.5, 2, 1, [1, 1]),
+            ..Self::for_kind(kind)
+        }
+    }
+
+    /// Its grid read as an assembly with lights round a core (a door
+    /// with a sidelight, a casement under a transom), if it is one.
+    pub fn assembly(&self) -> Option<crate::cells::Assembly> {
+        self.grid.assembly().filter(|a| a.has_lights())
+    }
+
+    /// The core's grid: the door's leaves or the window's sashes, without
+    /// the lights round them.
+    pub fn core(&self) -> crate::cells::Grid {
+        self.assembly().map_or_else(
+            || crate::cells::Grid {
+                outline: crate::cells::Outline::Rectangle,
+                ..self.grid.clone()
+            },
+            |a| a.core,
+        )
+    }
+
+    /// The outline of the opening as a whole.
+    pub fn outline(&self) -> crate::cells::Outline {
+        self.grid.outline
+    }
+
+    /// Change the core alone, keeping the lights round it.
+    fn edit_core(&mut self, f: impl FnOnce(&mut crate::cells::Grid)) {
+        match self.assembly() {
+            Some(mut a) => {
+                f(&mut a.core);
+                self.grid = a.grid();
+            }
+            None => {
+                let outline = self.grid.outline;
+                f(&mut self.grid);
+                self.grid.outline = outline;
+            }
+        }
+    }
+
+    /// The operation before cells that its grid (or its core, in an
+    /// assembly) is, for what still draws from operations; a grid that is
+    /// none of them reads as standard.
+    pub fn operation(&self, kind: OpeningKind) -> Operation {
+        self.core().operation(kind).unwrap_or_default()
+    }
+
+    /// Set to one of the operations before cells, keeping what carries
+    /// over (a pair's share, a window's panes) and any lights round it.
+    pub fn set_operation(&mut self, kind: OpeningKind, op: Operation) {
+        self.edit_core(|g| {
+            *g = crate::cells::Grid::of_operation(
+                kind,
+                op,
+                g.active_share(),
+                g.cells.len() as u32,
+                g.fixed_bits(),
+                g.panes(),
+            )
+        });
+    }
+
+    /// A pair's active leaf share of the clear width (of the core's).
+    pub fn active_share(&self) -> f64 {
+        self.core().active_share()
+    }
+
+    pub fn set_active_share(&mut self, share: f64) {
+        let share = share.clamp(0.5, 0.85);
+        self.edit_core(|g| {
+            if g.columns.len() == 2 {
+                let active = g.cells.iter().position(|c| c.active).unwrap_or(0);
+                g.columns[active].share = share;
+                g.columns[1 - active].share = 1.0 - share;
+            }
+        });
+    }
+
+    /// A multi-panel slider's panels.
+    pub fn panels(&self) -> u32 {
+        self.core().cells.len() as u32
+    }
+
+    /// A multi-panel slider's fixed panels, one bit each from the start.
+    pub fn fixed(&self) -> u32 {
+        self.core().fixed_bits()
+    }
+
+    /// Rebuild a multi-panel slider with `panels` panels, `fixed` of them
+    /// fixed, keeping any lights round it.
+    pub fn set_panels(&mut self, kind: OpeningKind, panels: u32, fixed: u32) {
+        self.edit_core(|g| *g = Self::multi_slide(kind, panels, fixed, g.panes()));
+    }
+
+    /// Rebuild a folding door with `panels` panels (3 to 6), keeping any
+    /// lights round it.
+    pub fn set_folding_panels(&mut self, kind: OpeningKind, panels: u32) {
+        self.edit_core(|g| {
+            *g = crate::cells::Grid::of_operation(
+                kind,
+                Operation::Folding,
+                0.5,
+                panels,
+                0,
+                g.panes(),
+            )
+        });
+    }
+
+    fn multi_slide(
+        kind: OpeningKind,
+        panels: u32,
+        fixed: u32,
+        panes: [u32; 2],
+    ) -> crate::cells::Grid {
+        crate::cells::Grid::of_operation(kind, Operation::MultiSlide, 0.5, panels, fixed, panes)
+    }
+
+    /// A window's glazing bars: panes across and up (every cell's).
+    pub fn panes(&self) -> [u32; 2] {
+        self.grid.panes()
+    }
+
+    pub fn set_panes(&mut self, across: u32, up: u32) {
+        for c in &mut self.grid.cells {
+            c.panes = [across, up];
+        }
     }
 
     /// The frame kept to what fits an opening `w` × `h` in a wall `t` thick:
-    /// members no wider than a third of the opening, at least one pane.
+    /// members no wider than a third of the opening, a whole grid.
     pub fn fitted(&self, w: f64, h: f64, t: f64) -> Self {
         let fw = self.width.clamp(0.01, (w.min(h) / 3.0).max(0.01));
+        let mut grid = self.grid.fitted();
+        grid.outline = grid.outline.fitted(w, h);
+        // shares a pair of leaves can take
+        if grid.columns.len() == 2 && grid.cells.iter().filter(|c| c.active).count() == 1 {
+            let total: f64 = grid.columns.iter().map(|c| c.share).sum();
+            let a = grid.cells.iter().position(|c| c.active).unwrap();
+            let s = (grid.columns[a].share / total).clamp(0.5, 0.85);
+            if grid.cells[0].mechanism == grid.cells[1].mechanism {
+                grid.columns[a].share = s;
+                grid.columns[1 - a].share = 1.0 - s;
+            }
+        }
+        let mut construction = self.construction.clone();
+        construction.trim = construction.trim.fitted();
         Self {
             width: fw,
             depth: self.depth.clamp(0.02, t.max(0.02)),
-            panes_across: self.panes_across.clamp(1, 12),
-            panes_up: self.panes_up.clamp(1, 12),
+            grid,
+            construction,
         }
     }
 }
@@ -1571,6 +2401,10 @@ pub struct FreeMesh {
     /// Uniform size factor about `origin`.
     #[serde(default = "one")]
     pub scale: f64,
+    /// What it is for: part of the building, a void that cuts what it is
+    /// joined to, or a guide to draw by (MU43).
+    #[serde(default, skip_serializing_if = "crate::shape::Role::is_solid")]
+    pub role: crate::shape::Role,
 }
 
 fn one() -> f64 {
@@ -1595,6 +2429,7 @@ impl FreeMesh {
             rot_x: 0.0,
             rot_y: 0.0,
             scale: 1.0,
+            role: crate::shape::Role::Solid,
         }
     }
 
@@ -1756,10 +2591,28 @@ pub struct View {
     /// heads where the automatic layout puts them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub level_heads: BTreeMap<ElementId, LevelHead>,
+    /// Grid lines drawn shorter in this plan only: how much is taken off
+    /// each end, metres (grid settings, decision 6).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grid_ends: BTreeMap<ElementId, [f64; 2]>,
     /// Its view template, graphic overrides and depth cues, over the
     /// project's style pack.
     #[serde(default, skip_serializing_if = "crate::styles::boxed_look_is_default")]
     pub look: Box<crate::styles::ViewLook>,
+    /// How it shows the site: the ground before or after the works, and
+    /// which kinds of site information it draws.
+    #[serde(default, skip_serializing_if = "crate::site::SiteView::is_default")]
+    pub site: crate::site::SiteView,
+    /// The phase it stands at (see [`crate::phases`]): it shows the
+    /// project as it is then. None is the project's last phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<u32>,
+    /// The options it shows, where not each question's pick.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<u32>,
+    /// Options it does not show but draws faintly, to compare with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ghost: Vec<u32>,
 }
 
 /// Where a detail view comes from: the box `lo`..`hi` (drawing
@@ -1890,10 +2743,18 @@ pub enum ScheduleCategory {
     /// The take-off: what each material adds up to (area, volume, length,
     /// pieces), priced by its rate; grouped, it goes level by level.
     Materials,
+    /// The drainage: each chamber with its cover, invert and depth, and
+    /// each tank, with their digs.
+    Drainage,
+    /// The stairs: risers, goings, pitch, width, headroom and how each
+    /// does against its rule set.
+    Stairs,
+    /// Car parks' bays by type, against what is required.
+    Parking,
 }
 
 impl ScheduleCategory {
-    pub const ALL: [ScheduleCategory; 9] = [
+    pub const ALL: [ScheduleCategory; 12] = [
         ScheduleCategory::Doors,
         ScheduleCategory::Windows,
         ScheduleCategory::Walls,
@@ -1903,6 +2764,9 @@ impl ScheduleCategory {
         ScheduleCategory::Fixtures,
         ScheduleCategory::Rooms,
         ScheduleCategory::Materials,
+        ScheduleCategory::Drainage,
+        ScheduleCategory::Stairs,
+        ScheduleCategory::Parking,
     ];
 
     /// The name of a new schedule of it: "Door Schedule".
@@ -1917,6 +2781,9 @@ impl ScheduleCategory {
             ScheduleCategory::Fixtures => "Fixture",
             ScheduleCategory::Rooms => "Room",
             ScheduleCategory::Materials => return "Take-off".into(),
+            ScheduleCategory::Drainage => "Drainage",
+            ScheduleCategory::Stairs => "Stair",
+            ScheduleCategory::Parking => "Parking",
         };
         format!("{one} Schedule")
     }
@@ -1940,6 +2807,9 @@ impl ScheduleCategory {
             ScheduleCategory::Fixtures => "Fixtures",
             ScheduleCategory::Rooms => "Rooms",
             ScheduleCategory::Materials => "Take-off",
+            ScheduleCategory::Drainage => "Drainage",
+            ScheduleCategory::Stairs => "Stairs",
+            ScheduleCategory::Parking => "Parking",
         }
     }
 }
@@ -1970,6 +2840,16 @@ pub enum ViewKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         by_type: bool,
     },
+    /// A drain run unfolded along its length: the ground over it, the
+    /// pipe falling from chamber to chamber, and its levels tabled under.
+    LongSection { drain: ElementId },
+    /// The log of a borehole, trial pit or probe: its layers with their
+    /// soil symbols and descriptions, its water and its tests, by depth.
+    BoreholeLog { probe: ElementId },
+    /// A stair unrolled along its walk line: its steps, pitch line and
+    /// landings drawn true, the floor over it, and its headroom line, red
+    /// where the head comes too close.
+    WalkSection { stair: ElementId },
 }
 
 impl View {
@@ -1993,7 +2873,12 @@ impl View {
             room_tags: None,
             sheet_title: Box::default(),
             level_heads: BTreeMap::new(),
+            grid_ends: BTreeMap::new(),
             look: Default::default(),
+            site: Default::default(),
+            phase: None,
+            options: vec![],
+            ghost: vec![],
         }
     }
 
@@ -2019,7 +2904,12 @@ impl View {
             room_tags: None,
             sheet_title: Box::default(),
             level_heads: BTreeMap::new(),
+            grid_ends: BTreeMap::new(),
             look: Default::default(),
+            site: Default::default(),
+            phase: None,
+            options: vec![],
+            ghost: vec![],
         }
     }
 }
@@ -2042,7 +2932,39 @@ impl View {
             room_tags: None,
             sheet_title: Box::default(),
             level_heads: BTreeMap::new(),
+            grid_ends: BTreeMap::new(),
             look: Default::default(),
+            site: Default::default(),
+            phase: None,
+            options: vec![],
+            ghost: vec![],
+        }
+    }
+
+    /// The long section of drain `drain`, at 1:100.
+    pub fn long_section(drain: ElementId) -> Self {
+        Self {
+            kind: ViewKind::LongSection { drain },
+            scale: 200.0,
+            ..Self::schedule(ScheduleCategory::Drainage)
+        }
+    }
+
+    /// The log of investigation point `probe`, drawn at paper size.
+    pub fn borehole_log(probe: ElementId) -> Self {
+        Self {
+            kind: ViewKind::BoreholeLog { probe },
+            scale: 100.0,
+            ..Self::schedule(ScheduleCategory::Drainage)
+        }
+    }
+
+    /// The walk-line section of stair `stair`, at 1:50.
+    pub fn walk_section(stair: ElementId) -> Self {
+        Self {
+            kind: ViewKind::WalkSection { stair },
+            scale: 50.0,
+            ..Self::schedule(ScheduleCategory::Drainage)
         }
     }
 
@@ -2066,7 +2988,12 @@ impl View {
             room_tags: None,
             sheet_title: Box::default(),
             level_heads: BTreeMap::new(),
+            grid_ends: BTreeMap::new(),
             look: Default::default(),
+            site: Default::default(),
+            phase: None,
+            options: vec![],
+            ghost: vec![],
         }
     }
 
@@ -2095,7 +3022,12 @@ impl View {
             room_tags: None,
             sheet_title: Box::default(),
             level_heads: BTreeMap::new(),
+            grid_ends: BTreeMap::new(),
             look: Default::default(),
+            site: Default::default(),
+            phase: None,
+            options: vec![],
+            ghost: vec![],
         }
     }
 
@@ -2128,6 +3060,10 @@ pub struct Sheet {
     /// `false` for one across at that many mm up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guides: Vec<(bool, f64)>,
+    /// Whether it arranges its schedules in columns: none does so when the
+    /// sheet holds only schedules (MU131).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrange: Option<bool>,
 }
 
 impl Sheet {
@@ -2153,15 +3089,52 @@ impl Sheet {
             template: None,
             fields: Default::default(),
             guides: vec![],
+            arrange: None,
         }
     }
 
-    /// The paper size's name, if it is a standard one.
+    /// The paper size's name, if it is a standard one, either way up.
     pub fn size_name(&self) -> Option<&'static str> {
+        let (long, short) = (self.width.max(self.height), self.width.min(self.height));
         Self::SIZES
             .iter()
-            .find(|(_, w, h)| (w - self.width).abs() < 0.5 && (h - self.height).abs() < 0.5)
+            .find(|(_, w, h)| (w - long).abs() < 0.5 && (h - short).abs() < 0.5)
             .map(|(n, ..)| *n)
+    }
+
+    /// Taller than it is wide.
+    pub fn portrait(&self) -> bool {
+        self.height > self.width + 0.5
+    }
+
+    /// Make it the standard size `name`, keeping which way up it is.
+    pub fn set_size(&mut self, name: &str) {
+        if let Some((_, w, h)) = Self::SIZES.iter().find(|(n, ..)| *n == name) {
+            (self.width, self.height) = if self.portrait() { (*h, *w) } else { (*w, *h) };
+        }
+    }
+
+    /// A new sheet on paper `p` (landscape).
+    pub fn sized(number: impl Into<String>, p: &crate::standards::PaperSize) -> Self {
+        let mut s = Self::a(number, "A3");
+        (s.width, s.height) = (p.w, p.h);
+        s
+    }
+
+    /// Make it paper `p`, keeping which way up it is.
+    pub fn set_paper(&mut self, p: &crate::standards::PaperSize) {
+        (self.width, self.height) = if self.portrait() {
+            (p.h, p.w)
+        } else {
+            (p.w, p.h)
+        };
+    }
+
+    /// Turn it to `portrait` or landscape, the same paper.
+    pub fn set_portrait(&mut self, portrait: bool) {
+        if portrait != self.portrait() {
+            std::mem::swap(&mut self.width, &mut self.height);
+        }
     }
 }
 
@@ -2180,6 +3153,17 @@ pub struct Viewport {
     /// coordinates, lower-left and upper-right) is shown.
     #[serde(default)]
     pub crop: Option<[DVec2; 2]>,
+    /// The element the crop follows: the crop is then this element's
+    /// footprint with a margin round it, and the drawing stays centred on
+    /// it, as the element moves or grows (`crop` is kept for when it is
+    /// gone). Cropping by hand lets go of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<ElementId>,
+    /// Placed by hand: on a sheet that arranges its schedules, this one
+    /// stays where it was put and the others flow round it (owner,
+    /// MU131: arranging must never stop a schedule being moved).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A view's title on a sheet: shown or not, its scale shown or not, moved
@@ -2243,6 +3227,22 @@ pub const FREE_MESH_CLASSES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sheet_keeps_its_size_name_and_turns_either_way() {
+        let mut s = Sheet::a("A101", "A3");
+        assert_eq!((s.size_name(), s.portrait()), (Some("A3"), false));
+        s.set_portrait(true);
+        assert_eq!((s.width, s.height), (297.0, 420.0));
+        assert_eq!(s.size_name(), Some("A3"));
+        // a new size keeps it portrait
+        s.set_size("A1");
+        assert_eq!((s.width, s.height, s.portrait()), (594.0, 841.0, true));
+        s.set_portrait(false);
+        assert_eq!((s.width, s.height), (841.0, 594.0));
+        s.width = 500.0;
+        assert_eq!(s.size_name(), None);
+    }
 
     #[test]
     fn a_slab_layer_edge_moves_that_layer_only() {
@@ -2330,18 +3330,91 @@ mod tests {
             r#"{{"host":{host},"kind":"Window","offset":1.0,"sill":0.9,"width":1.2,"height":1.3}}"#
         );
         let o: Opening = serde_json::from_str(&old).unwrap();
-        assert_eq!(o.frame, OpeningFrame::default());
+        assert_eq!(o.frame, OpeningFrame::for_kind(OpeningKind::Window));
         // a default frame writes nothing; a changed one round-trips
         assert!(!serde_json::to_string(&o).unwrap().contains("frame"));
         let mut o = o;
-        o.frame.panes_across = 3;
+        o.frame.set_panes(3, 1);
         let text = serde_json::to_string(&o).unwrap();
         assert_eq!(serde_json::from_str::<Opening>(&text).unwrap(), o);
         // a frame missing some fields fills the rest in
         let partial = old.replace("}", r#","frame":{"width":0.08}}"#);
         let o: Opening = serde_json::from_str(&partial).unwrap();
         assert_eq!(o.frame.width, 0.08);
-        assert_eq!(o.frame.depth, OpeningFrame::default().depth);
+        assert_eq!(
+            o.frame.depth,
+            OpeningFrame::for_kind(OpeningKind::Window).depth
+        );
+    }
+
+    /// A door or window as files held it before cells, in every operation
+    /// parts 1 and 2 had, reads as the grid of cells that operation is,
+    /// and writes back as cells.
+    #[test]
+    fn openings_from_before_cells_convert_as_they_load() {
+        use crate::cells::Mechanism as M;
+        let host = serde_json::to_string(&ElementId::new()).unwrap();
+        let read = |kind: &str, frame: &str| -> Opening {
+            serde_json::from_str(&format!(
+                r#"{{"host":{host},"kind":"{kind}","offset":1.0,"sill":0.0,"width":1.6,"height":2.1,"frame":{frame}}}"#
+            ))
+            .unwrap()
+        };
+        let door = OpeningKind::Door;
+        for (frame, op, mechanisms) in [
+            (r#"{"width":0.06}"#, Operation::Standard, vec![M::Hinged]),
+            (
+                r#"{"operation":"DoubleSwing","active_share":0.67}"#,
+                Operation::DoubleSwing,
+                vec![M::Hinged, M::Hinged],
+            ),
+            (
+                r#"{"operation":"SurfaceSliding"}"#,
+                Operation::SurfaceSliding,
+                vec![M::SurfaceSliding],
+            ),
+            (
+                r#"{"operation":"SurfaceSlidingPair"}"#,
+                Operation::SurfaceSlidingPair,
+                vec![M::SurfaceSliding, M::SurfaceSliding],
+            ),
+            (
+                r#"{"operation":"Pocket"}"#,
+                Operation::Pocket,
+                vec![M::Pocket],
+            ),
+            (
+                r#"{"operation":"PocketPair"}"#,
+                Operation::PocketPair,
+                vec![M::Pocket, M::Pocket],
+            ),
+            (
+                r#"{"operation":"MultiSlide","panels":4,"fixed":9}"#,
+                Operation::MultiSlide,
+                vec![M::Fixed, M::Sliding, M::Sliding, M::Fixed],
+            ),
+        ] {
+            let o = read("Door", frame);
+            assert_eq!(o.frame.operation(door), op, "{frame}");
+            let got: Vec<M> = o.frame.grid.cells.iter().map(|c| c.mechanism).collect();
+            assert_eq!(got, mechanisms, "{frame}");
+            // written as cells, and read back the same
+            let text = serde_json::to_string(&o).unwrap();
+            assert!(!text.contains("operation"), "{text}");
+            assert_eq!(serde_json::from_str::<Opening>(&text).unwrap(), o);
+        }
+        let o = read("Door", r#"{"operation":"DoubleSwing","active_share":0.67}"#);
+        assert!((o.frame.active_share() - 0.67).abs() < 1e-12);
+        // a door with no frame is one hinged leaf, a window one fixed light
+        let o: Opening = serde_json::from_str(&format!(
+            r#"{{"host":{host},"kind":"Door","offset":1.0,"sill":0.0,"width":0.9,"height":2.1}}"#
+        ))
+        .unwrap();
+        assert_eq!(o.frame, OpeningFrame::for_kind(door));
+        assert_eq!(o.frame.grid.cells[0].mechanism, M::Hinged);
+        let o = read("Window", r#"{"panes_across":2,"panes_up":3}"#);
+        assert_eq!(o.frame.grid.cells[0].mechanism, M::Fixed);
+        assert_eq!(o.frame.panes(), [2, 3]);
     }
 
     #[test]

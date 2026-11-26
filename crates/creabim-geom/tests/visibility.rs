@@ -158,6 +158,18 @@ fn show_hidden(model: &mut Model, view: ElementId) {
 #[test]
 fn views_showing_hidden_elements_draw_a_beam_inside_a_wall_dashed() {
     let (mut m, beam, plan, elevation) = beam_in_a_wall();
+    // doors' own dashes (a leaf opening away from the viewer) before any
+    // hidden elements are shown
+    let openings = of_kind(&m, |k| matches!(k, ElementKind::Opening(_)));
+    let own: Vec<(usize, usize)> = openings
+        .iter()
+        .map(|o| {
+            (
+                hidden_lines_of(&m, elevation, *o),
+                hidden_lines_of(&m, plan, *o),
+            )
+        })
+        .collect();
     // as usual the wall covers the beam
     assert_eq!(hidden_lines_of(&m, plan, beam), 0);
     assert_eq!(hidden_lines_of(&m, elevation, beam), 0);
@@ -168,8 +180,8 @@ fn views_showing_hidden_elements_draw_a_beam_inside_a_wall_dashed() {
     show_hidden(&mut m, elevation);
     assert!(hidden_lines_of(&m, elevation, beam) > 0);
     // doors and windows in their holes are not drawn again
-    for o in of_kind(&m, |k| matches!(k, ElementKind::Opening(_))) {
-        assert_eq!(hidden_lines_of(&m, elevation, o), 0);
-        assert_eq!(hidden_lines_of(&m, plan, o), 0);
+    for (o, (elev, plan_dashes)) in openings.iter().zip(own) {
+        assert_eq!(hidden_lines_of(&m, elevation, *o), elev);
+        assert_eq!(hidden_lines_of(&m, plan, *o), plan_dashes);
     }
 }

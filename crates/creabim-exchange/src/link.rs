@@ -231,6 +231,7 @@ pub fn free_mesh(model: &Model, world: &EditMesh) -> FreeMesh {
     let mesh = EditMesh {
         vertices: world.vertices.iter().map(|v| *v - at).collect(),
         faces: world.faces.clone(),
+        edges: vec![],
     };
     FreeMesh::new(level, at - DVec3::Z * elev, mesh)
 }

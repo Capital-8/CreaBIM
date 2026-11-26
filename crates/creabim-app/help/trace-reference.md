@@ -4,13 +4,14 @@ A **reference** is something shown faintly under (or over) a plan or a section, 
 
 - **another view**: the floor below, under the floor you are drawing;
 - **a picture**: a scanned plan, a photo of a sketch (PNG or JPEG);
-- **a DXF drawing**: a survey or a consultant's plan. A DWG opens once saved as DXF: any CAD program, or the free ODA File Converter, does it offline.
+- **a DXF drawing**: a survey or a consultant's plan. A DWG opens once saved as DXF: any CAD program, or the free ODA File Converter, does it offline;
+- **map data**: boundaries, roads and the neighbours' buildings from a GeoJSON file, a shapefile or an OpenStreetMap export, or an aerial photo as a GeoTIFF. These are placed by where they are on the map (see *Site* in this help).
 
 A reference is saved with the project. One reference can show in **several views** (a site survey under every floor). Pictures and drawings stay where they are on disk, as links: *Reload* reads them again after they change.
 
 ## Adding one
 
-**Reference** on the *View* tab opens the **Trace and reference** tab of *Properties* for the view in the area you last used. Pick another view from *Add*, or click **Picture…** or **DXF drawing…**. It is added in place and selected. A picture or DXF file dropped on a plan or section becomes a reference too.
+**Reference** on the *View* tab opens the **Trace and reference** tab of *Properties* for the view in the area you last used. Pick another view from *Add*, or click **+ Picture**, **+ DXF** or **+ Map**. It is added in place and selected. A picture, DXF or map file dropped on a plan or section becomes a reference too.
 
 ## Placing it
 

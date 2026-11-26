@@ -61,7 +61,11 @@ fn object(scene: &BlendScene, o: &BlendObject) -> Option<Incoming> {
     Some(Incoming {
         object: o.name.clone(),
         name: o.name.clone(),
-        mesh: EditMesh { vertices, faces },
+        mesh: EditMesh {
+            vertices,
+            faces,
+            edges: vec![],
+        },
         hint,
         element,
         material,

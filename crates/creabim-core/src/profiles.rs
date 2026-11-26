@@ -270,7 +270,7 @@ pub fn preset(name: &str) -> Option<Vec<DVec2>> {
             v
         }
         "Handrail" => {
-            let mut v = circle(DVec2::new(0.0, 0.0225), 0.0225, 24, -PI / 2.0, 1.5 * PI);
+            let mut v = circle(DVec2::new(0.0, 0.02), 0.02, 24, -PI / 2.0, 1.5 * PI);
             v.pop();
             v
         }

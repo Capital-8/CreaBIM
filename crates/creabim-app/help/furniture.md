@@ -37,7 +37,7 @@ Plans draw each object's plan symbol. A wall cabinet above the cut height is dra
 
 Select it. In *Properties*:
 
-- **Above its level** raises it, for example a wall cabinet or a wall-hung basin. For something hung from the ceiling it reads **Below the ceiling**. **Rotation** turns it, and **↺ 90°** adds a quarter. In a plan, the round grip with a curved arrow in front of the object turns it with the pointer, in 5° steps (`Alt` for any angle).
+- **Height** raises it above its level, for example a wall cabinet or a wall-hung basin. For something hung from the ceiling it reads **Below** (below the ceiling). **Rotation** turns it, and **↺ 90°** adds a quarter. In a plan, the round grip with a curved arrow in front of the object turns it with the pointer, in 5° steps (`Alt` for any angle).
 - The **Type** picker swaps it for another object type, so a chair can become an armchair. An object always has a type.
 - Below them are its type's **category**, how it is **placed** (*Against a wall*, *Free-standing* or *From the ceiling*), the height **new ones** go in at, its **IFC class and predefined type**, and each **part's material**. Changing these changes every object of that type.
 

@@ -1,0 +1,25 @@
+3D Garden view | 8fe72e7c04a88b13 polyline=2115 rect=1 image=1
+3D Street view | 5bba9b29acddb303 polyline=1686 rect=1 image=1
+Column and beam Schedule | 6b7ed894d6d366ba polyline=36 rect=1 text=179
+Detail 1 Wall base | bfef0e1885b76c73 polyline=2685 polygon=17 rect=1 text=12
+Detail 2 Window | 3395f429fb9070c2 polyline=388 polygon=23 rect=1 text=7
+Detail 3 Eaves | bf7eacdd8c0c2e9d polyline=525 polygon=19 rect=1 text=8
+Door Schedule | a5f21dc0400c6455 polyline=30 rect=1 text=155
+East Elevation | 4ec4b28fbd79a12d polyline=683 polygon=27 rect=1 text=9 image=1
+First Floor ceiling plan | e7311168e30df53e polyline=1109 polygon=74 rect=1 text=34
+First Floor plan | 9fa2d45ca650abe8 polyline=2527 polygon=278 rect=1 text=89
+Fixture Schedule | a0d095ff4fddf8b3 polyline=79 rect=1 text=253
+Foundation plan | 8abdd77e9c284023 polyline=10172 polygon=40 rect=1 text=48
+Furniture Schedule | eb4fc8aef9385a73 polyline=56 rect=1 text=134
+Ground Floor ceiling plan | 893a8a6cdfe2a08d polyline=1297 polygon=122 rect=1 text=53
+Ground Floor plan | 3c141509a889f0a4 polyline=2848 polygon=381 rect=1 text=122
+North Elevation | 766cd77bdefe8691 polyline=517 polygon=29 rect=1 text=11 image=1
+Roof plan | fc2862e8b13b2582 polyline=102 polygon=28 rect=1 text=38
+Room Schedule | 496f14914e6211c2 polyline=35 rect=1 text=155
+Section A-A | 6a8bf86d1b92e5d0 polyline=8524 polygon=117 rect=1 text=12
+Section B-B | 17ca60cde5d685fa polyline=8183 polygon=140 rect=1 text=14
+Section C-C | bfbe93679d4c50ae polyline=2235 polygon=64 rect=1 text=13
+South Elevation | b8909d4a338fbded polyline=815 polygon=29 rect=1 text=11 image=1
+Wall Schedule | 5190bc5c60b23833 polyline=39 rect=1 text=238
+West Elevation | 2cdc51c9c296dc55 polyline=617 polygon=27 rect=1 text=9 image=1
+Window Schedule | 3dea6946a1a92afa polyline=33 rect=1 text=180

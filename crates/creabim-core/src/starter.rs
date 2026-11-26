@@ -138,9 +138,12 @@ fn opening(host: ElementId, kind: OpeningKind, offset: f64, width: f64) -> Openi
         width,
         height: 2.1,
         material: None,
-        frame: Default::default(),
+        frame: crate::OpeningFrame::for_kind(kind),
         flip_hand: false,
         flip_facing: false,
+        roof_at: None,
+        roof_build: Default::default(),
+        arrangement: None,
     }
 }
 
@@ -161,7 +164,29 @@ pub fn starter_house() -> Model {
     details(&mut b);
     annotate(&mut b, &views);
     sheets(&mut b, &views);
+    project(&mut b);
     b.doc.model().clone()
+}
+
+/// The project's information, filled in (MU50 decision 5): its name,
+/// client, status, site and building, so every title block is complete
+/// and the Project tab shows the house it is.
+fn project(b: &mut Builder) {
+    let info = crate::ProjectInfo {
+        name: PROJECT.into(),
+        client: CLIENT.into(),
+        status: "Planning application".into(),
+        address: ADDRESS.into(),
+        site_name: "Maple Lane".into(),
+        building_name: "House".into(),
+        building_use: "Dwelling".into(),
+        ..Default::default()
+    };
+    let mut tx = crate::set_project(b.doc.model(), info);
+    tx.label = "Starter house: project".into();
+    b.doc
+        .commit(tx)
+        .expect("the starter house's project information");
 }
 
 fn levels(b: &mut Builder) {
@@ -368,10 +393,8 @@ fn materials_and_types(b: &mut Builder) {
             height: h,
             sill,
             frame: OpeningFrame {
-                width: 0.06,
                 depth: 0.09,
-                panes_across: across,
-                panes_up: up,
+                ..OpeningFrame::for_kind(crate::OpeningKind::Window).with_panes(across, up)
             },
             material: frames,
         })
@@ -381,10 +404,7 @@ fn materials_and_types(b: &mut Builder) {
             width: w,
             height: h,
             sill: 0.0,
-            frame: OpeningFrame {
-                panes_across: across,
-                ..Default::default()
-            },
+            frame: OpeningFrame::for_kind(crate::OpeningKind::Door).with_panes(across, 1),
             material,
         })
     };
@@ -417,6 +437,9 @@ fn materials_and_types(b: &mut Builder) {
                 mullion_width: 0.07,
                 mullion_depth: 0.15,
                 panel: PanelKind::Glass,
+                // a built stick system, as the drawings detail it
+                profile: crate::curtain::MullionProfile::Stick,
+                transom_depth: Some(0.1),
                 ..Default::default()
             }),
             screen: None,
@@ -575,6 +598,7 @@ fn structure(b: &mut Builder) {
                 start: a,
                 end: bb,
                 group: None,
+                ..Grid::default()
             }),
         ));
     }
@@ -931,6 +955,10 @@ fn structure(b: &mut Builder) {
             v(corner.x, 5.6 + H),
             0.0,
         ),
+        // over the kitchen opening, where the old east wall was taken out:
+        // its underside at 2.4, under the 2.7 ceilings, so the ceiling
+        // plan shows it (MU94)
+        ("Kitchen opening beam", g, v(11.0, 5.6), v(11.0, 9.6), 0.3),
     ] {
         let mut bm = Beam::new(level, a, bb);
         bm.top_offset = top_offset;
@@ -1594,6 +1622,24 @@ fn rooms_and_ceilings(b: &mut Builder) {
         upstairs.push(e.id);
         tx = tx.insert(e);
     }
+    // plasterboard over the ground floor's other rooms, and a bulkhead
+    // over the kitchen's run of units: what a ceiling plan shows (#70)
+    for number in ["0.01", "0.02", "0.06", "0.07"] {
+        let room = b.id(&format!("Room {number}"));
+        let mut c = Ceiling::in_room(g, room, 2.7);
+        c.material = Some(board);
+        tx = tx.insert(Element::new(
+            "Plasterboard ceiling",
+            ElementKind::Ceiling(c),
+        ));
+    }
+    {
+        let mut c = Ceiling::in_room(g, b.id("Room 0.07"), 2.4);
+        c.room = None;
+        c.boundary = polygon::rectangle(v(15.0, 4.6 + H), v(15.6 - H, 9.6 - H));
+        c.material = Some(board);
+        tx = tx.insert(Element::new("Kitchen bulkhead", ElementKind::Ceiling(c)));
+    }
     for number in ["0.03", "0.04", "0.05"] {
         let room = b.id(&format!("Room {number}"));
         let mut c = Ceiling::in_room(g, room, 2.4);
@@ -1633,6 +1679,8 @@ struct Views {
     foundation: ElementId,
     roof: ElementId,
     sections: [ElementId; 2],
+    /// The ground and first floor's reflected ceiling plans (#70).
+    ceilings: [ElementId; 2],
     elevations: [ElementId; 4],
     street: ElementId,
     garden: ElementId,
@@ -1692,6 +1740,18 @@ fn views(b: &mut Builder) -> Views {
         "Roof plan",
         plan(b.id("First Floor"), 100.0, 3, 7.5, &below),
     );
+    // reflected ceiling plans: cut above the door heads, looking up (#70)
+    for (i, (name, level)) in [
+        ("Ground Floor ceiling plan", "Ground Floor"),
+        ("First Floor ceiling plan", "First Floor"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = plan(b.id(level), 100.0, i as u32, 2.3, &[]);
+        c.ceiling_plan = true;
+        tx = add(b, tx, name, c);
+    }
     for (name, a, bb, depth, cut, style) in [
         (
             "Section A-A",
@@ -1786,6 +1846,10 @@ fn views(b: &mut Builder) -> Views {
         foundation: b.id("Foundation plan"),
         roof: b.id("Roof plan"),
         sections: [b.id("Section A-A"), b.id("Section B-B")],
+        ceilings: [
+            b.id("Ground Floor ceiling plan"),
+            b.id("First Floor ceiling plan"),
+        ],
         elevations: [
             b.id("South Elevation"),
             b.id("East Elevation"),
@@ -1813,6 +1877,12 @@ fn details(b: &mut Builder) {
         rule.winner = JoinWinner::First;
         tx = tx.insert(Element::new("Junction", ElementKind::Join(rule)));
     }
+    // the steel over the kitchen opening carries the wall above it, so it
+    // cuts through the masonry in sections (MU95); a beam buried in a wall
+    // stays hidden by default everywhere else
+    let mut rule = JoinRule::new(b.id("Kitchen opening beam"), b.id("GF East"));
+    rule.winner = JoinWinner::First;
+    tx = tx.insert(Element::new("Junction", ElementKind::Join(rule)));
     b.commit(tx);
 
     // the wall section: north to south through the study window,
@@ -2033,6 +2103,10 @@ fn annotate(b: &mut Builder, views: &Views) {
         Element::new("Room name", ElementKind::TextStyle(room_style)),
         tx,
     );
+    // the styles every project starts with (MU85)
+    for (name, s) in crate::annotation::starter_text_styles() {
+        tx = b.keep(name, Element::new(name, ElementKind::TextStyle(s)), tx);
+    }
     b.commit(tx);
     let room = Some(b.id("Room name"));
 
@@ -2052,6 +2126,10 @@ fn annotate(b: &mut Builder, views: &Views) {
         let mut t = Tag::new(view, e.id, DVec2::ZERO);
         t.style = room;
         tx = tx.insert(Element::new("Room tag", ElementKind::Tag(t)));
+    }
+    // each ceiling's height, in the ceiling plans (MU142)
+    for t in crate::room::ceiling_tags_missing(&model, None, None) {
+        tx = tx.insert(t);
     }
     b.commit(tx);
 
@@ -2322,6 +2400,15 @@ fn sheets(b: &mut Builder, views: &Views) {
             )],
         ),
         (
+            "A105",
+            "Reflected Ceiling Plans",
+            "A2",
+            vec![
+                (views.ceilings[0], v(165.0, 250.0), v(7.8, 4.0), plan_crop),
+                (views.ceilings[1], v(425.0, 250.0), v(7.8, 4.0), plan_crop),
+            ],
+        ),
+        (
             "A201",
             "Section A-A",
             "A2",
@@ -2428,6 +2515,8 @@ fn sheets(b: &mut Builder, views: &Views) {
                     center,
                     target,
                     crop,
+                    fit: None,
+                    pinned: false,
                 }),
             ));
         }
@@ -2461,7 +2550,7 @@ fn sheets(b: &mut Builder, views: &Views) {
         (
             v(30.0, 84.0),
             "A000  Cover\nA101  Ground Floor Plan  1:50\nA102  First Floor Plan  1:50\n\
-             A103  Foundation Plan  1:50\nA104  Roof Plan  1:100\nA201  Section A-A  1:50\nA202  Section B-B  1:50\n\
+             A103  Foundation Plan  1:50\nA104  Roof Plan  1:100\nA105  Reflected Ceiling Plans  1:100\nA201  Section A-A  1:50\nA202  Section B-B  1:50\n\
              A301  Elevations  1:100\nA501  Details  1:25, 1:10\nA601  Door, Window and Structure Schedules\nA602  Furniture, Fixture and Wall Schedules\nA603  Room Schedule\nA901  3D Views"
                 .to_string(),
             None,
@@ -2502,6 +2591,8 @@ fn title_block() -> SheetTemplate {
         text: t.into(),
         align: TextAlign::Start,
         angle: 0.0,
+        colour: None,
+        font: None,
     };
     let mut items = vec![
         line(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], 0.5),
@@ -2557,6 +2648,7 @@ fn title_block() -> SheetTemplate {
         paper: None,
         guides: vec![],
         margins: None,
+        stock: Default::default(),
     }
 }
 
@@ -2571,6 +2663,16 @@ mod tests {
         for e in m.iter() {
             assert!(e.validate().is_ok(), "{}: {:?}", e.name, e.validate());
         }
+    }
+
+    #[test]
+    fn the_starter_house_arrives_with_its_project_filled_in() {
+        let m = starter_house();
+        let (_, p) = m.project_info().expect("project information");
+        assert_eq!(p.name, PROJECT);
+        assert_eq!(p.address, ADDRESS);
+        assert_eq!(p.client, CLIENT);
+        assert!(!p.status.is_empty() && !p.building_use.is_empty());
     }
 
     fn count(m: &Model, f: impl Fn(&ElementKind) -> bool) -> usize {
@@ -2605,7 +2707,7 @@ mod tests {
         assert_eq!(count(&m, |k| matches!(k, K::Shaft(_))), 1);
         assert_eq!(count(&m, |k| matches!(k, K::Railing(_))), 3);
         assert_eq!(count(&m, |k| matches!(k, K::Column(_))), 3);
-        assert_eq!(count(&m, |k| matches!(k, K::Beam(_))), 4);
+        assert_eq!(count(&m, |k| matches!(k, K::Beam(_))), 5);
         let footings =
             |kind: FootingKind| count(&m, |k| matches!(k, K::Footing(f) if f.kind == kind));
         assert_eq!(footings(FootingKind::Pad), 3);
@@ -2657,11 +2759,12 @@ mod tests {
         // the landing less the stair well
         let landing = (7.4 - HB - 4.0 - H) * (5.6 - 2.0 * H);
         assert!(area("Landing") < landing - 2.0);
-        // ceilings: over every room upstairs and the services rooms below,
-        // and the upstairs partitions stop at them
+        // ceilings: over every room upstairs, the services rooms below
+        // (tiles), the other ground floor rooms and the kitchen's bulkhead
+        // (#70); the upstairs partitions stop at them
         assert_eq!(
             count(&m, |k| matches!(k, ElementKind::Ceiling(_))),
-            9,
+            14,
             "ceilings"
         );
         let spine = m.iter().find(|e| e.name == "FF Spine").unwrap();

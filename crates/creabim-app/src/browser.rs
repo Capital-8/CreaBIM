@@ -9,6 +9,9 @@ use creabim_core::{levels, ElementId, ElementKind, Model, Transaction, ViewKind}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewGroup {
     Plans,
+    /// Plans that look up: reflected ceiling plans, apart from the floor
+    /// plans so they're found (issue #70).
+    CeilingPlans,
     Views3d,
     Sections,
     Elevations,
@@ -17,8 +20,9 @@ pub enum ViewGroup {
 }
 
 impl ViewGroup {
-    pub const ALL: [ViewGroup; 6] = [
+    pub const ALL: [ViewGroup; 7] = [
         ViewGroup::Plans,
+        ViewGroup::CeilingPlans,
         ViewGroup::Views3d,
         ViewGroup::Sections,
         ViewGroup::Elevations,
@@ -32,15 +36,19 @@ impl ViewGroup {
         if v.callout.is_some() {
             ViewGroup::Details
         } else {
-            Self::of(&v.kind)
+            Self::of_kind(v)
         }
     }
 
-    pub fn of(kind: &ViewKind) -> Self {
-        match kind {
+    fn of_kind(v: &creabim_core::View) -> Self {
+        match &v.kind {
+            ViewKind::Plan { .. } if v.ceiling_plan => ViewGroup::CeilingPlans,
             ViewKind::Plan { .. } => ViewGroup::Plans,
             ViewKind::Axonometric { .. } => ViewGroup::Views3d,
-            ViewKind::Section { cut: true, .. } => ViewGroup::Sections,
+            ViewKind::Section { cut: true, .. }
+            | ViewKind::LongSection { .. }
+            | ViewKind::BoreholeLog { .. }
+            | ViewKind::WalkSection { .. } => ViewGroup::Sections,
             ViewKind::Section { cut: false, .. } => ViewGroup::Elevations,
             ViewKind::Schedule { .. } => ViewGroup::Schedules,
         }
@@ -50,6 +58,7 @@ impl ViewGroup {
     pub fn key(self) -> &'static str {
         match self {
             ViewGroup::Plans => "views:plans",
+            ViewGroup::CeilingPlans => "views:ceilings",
             ViewGroup::Views3d => "views:3d",
             ViewGroup::Sections => "views:sections",
             ViewGroup::Elevations => "views:elevations",
@@ -65,6 +74,7 @@ impl ViewGroup {
     pub fn title(self) -> &'static str {
         match self {
             ViewGroup::Plans => "Floor plans",
+            ViewGroup::CeilingPlans => "Ceiling plans",
             ViewGroup::Views3d => "3D views",
             ViewGroup::Sections => "Sections",
             ViewGroup::Elevations => "Elevations",
@@ -76,7 +86,7 @@ impl ViewGroup {
     /// What the automatic order of the group is called.
     pub fn auto_label(self) -> &'static str {
         match self {
-            ViewGroup::Plans => "Sort by level",
+            ViewGroup::Plans | ViewGroup::CeilingPlans => "Sort by level",
             _ => "Sort automatically",
         }
     }

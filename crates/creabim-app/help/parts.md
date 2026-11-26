@@ -71,4 +71,4 @@ An extrusion, a void and a sweep through points have the same grips as a slab. D
 
 In IFC, an extrusion or a sweep is written as the class you picked, with its shape as built. A void is written as an *IfcOpeningElement* in each element it cuts. Those elements keep their uncut shape, so other tools see a proper opening. The IFCX format carries every part's own parameters, so CreaBIM reads it back as the same editable extrusion, sweep or void. See [IFC](ifc).
 
-Views can hide extrusions and sweeps through the *Extrusions and sweeps* category. Voids are in *Openings, shafts and void cutters* (see [Visibility](visibility)).
+Views can hide extrusions and sweeps through the *Extrusions and sweeps* category. Voids are in *Openings, shafts and cutting shapes* (see [Visibility](visibility)).

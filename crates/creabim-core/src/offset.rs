@@ -295,6 +295,34 @@ pub fn offset(e: &Element, by: f64, normal: DVec3) -> Option<Element> {
     (out != *e).then_some(out)
 }
 
+/// How far, and to which side, `p` is from the line through `pts`: out of
+/// a closed outline positive, into it negative; beside an open line, to
+/// its left positive. The sign Offset takes from the pointer.
+pub fn side_of(pts: &[DVec2], closed: bool, p: DVec2) -> f64 {
+    let n = pts.len();
+    let segs = if closed { n } else { n.saturating_sub(1) };
+    let mut best: Option<(f64, f64)> = None;
+    for k in 0..segs {
+        let (a, b) = (pts[k], pts[(k + 1) % n]);
+        let ab = b - a;
+        let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+        let d = (a + ab * t).distance(p);
+        if best.is_none_or(|b| d < b.0) {
+            best = Some((d, if ab.perp_dot(p - a) >= 0.0 { 1.0 } else { -1.0 }));
+        }
+    }
+    let Some((d, left)) = best else {
+        return 0.0;
+    };
+    if !closed {
+        d * left
+    } else if crate::polygon::contains(pts, p) {
+        -d
+    } else {
+        d
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

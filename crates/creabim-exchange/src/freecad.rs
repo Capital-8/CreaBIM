@@ -57,6 +57,7 @@ pub fn read_file(path: &Path) -> Result<Vec<Incoming>, ExchangeError> {
                         .map(|v| DVec3::from_array(*v) * 0.001)
                         .collect(),
                     faces: m.faces.clone(),
+                    edges: vec![],
                 },
                 hint,
                 element,
@@ -85,7 +86,18 @@ fn to_linear(c: f32) -> f32 {
 
 /// The model as a FreeCAD document.
 pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError> {
+    export_fcstd_with(model, label, &creabim_core::progress::quiet)
+}
+
+/// [`export_fcstd`], telling `tick` how far it has got, in parts drawn.
+pub fn export_fcstd_with(
+    model: &Model,
+    label: &str,
+    tick: creabim_core::progress::Tick,
+) -> Result<Vec<u8>, ExchangeError> {
+    tick(0, model.len(), "Preparing the shapes");
     let scene = creabim_geom::scene::drawn_elements(model);
+    let total = scene.len();
     // an element drawn in parts (a window's frame and glass, a wall's
     // layers) is one object
     let whole = creabim_geom::scene::element_meshes(&scene);
@@ -93,10 +105,13 @@ pub fn export_fcstd(model: &Model, label: &str) -> Result<Vec<u8>, ExchangeError
     let mut groups: Vec<FcExportGroup> = Vec::new();
     let mut group_of: HashMap<&'static str, usize> = HashMap::new();
     let mut objects = Vec::new();
-    for item in &scene {
+    for (i, item) in scene.iter().enumerate() {
         let Some(e) = model.get(item.id) else {
             continue;
         };
+        if i % 8 == 0 {
+            tick(i, total, creabim_core::progress::step_of(e.ifc_class()));
+        }
         if !seen.insert(item.id) {
             continue;
         }

@@ -41,13 +41,16 @@ fn rooms_export_as_spaces_with_boundaries_and_ceilings_as_coverings() {
     let text = export_ifc4(&m, &ExportOptions::default());
     let count = |what: &str| text.lines().filter(|l| l.contains(what)).count();
     assert_eq!(count("IFCSPACE("), 16);
-    assert_eq!(count("IFCCOVERING("), 9);
+    // nine upstairs and wet-room ceilings, the other ground floor rooms and
+    // the kitchen bulkhead (ceiling plans, #70)
+    assert_eq!(count("IFCCOVERING("), 14);
     assert!(text
         .lines()
         .all(|l| !l.contains("IFCCOVERING(") || l.contains(".CEILING.")));
     // the study has four walls round it
     assert!(count("IFCRELSPACEBOUNDARY(") >= 4 * 13);
-    assert_eq!(count("IFCRELCOVERSSPACES("), 9);
+    // one relation a room: the kitchen takes its ceiling and its bulkhead
+    assert_eq!(count("IFCRELCOVERSSPACES("), 13);
     assert!(text.contains("'Qto_SpaceBaseQuantities'"));
     assert!(text.contains("'Pset_SpaceCoveringRequirements'"));
     // the living room's LongName, its number as Name

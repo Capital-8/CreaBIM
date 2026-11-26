@@ -32,6 +32,13 @@ pub struct TextLook {
     /// tags, placed by estimated widths, read ragged; MU31: the style's
     /// Align).
     pub align: creabim_core::TextAlign,
+    /// A note's leader curves to its end.
+    pub curved: bool,
+    /// The CreaBIM symbol a tag or level mark is drawn with (its kind's
+    /// pick, Mockup_Symbols_REV00); none is the usual shape.
+    pub symbol: Option<&'static creabim_core::symbols::SymbolStyle>,
+    /// The symbol a leader ends in; none is `leader_end`.
+    pub leader_symbol: Option<&'static creabim_core::symbols::SymbolStyle>,
 }
 
 /// Size of dimension ticks and arrows, paper mm.
@@ -57,6 +64,9 @@ impl From<TextStyle> for TextLook {
             shape: s.tag_shape,
             breaks: s.break_at_tags,
             align: s.align,
+            curved: s.leader_shape == creabim_core::LeaderShape::Curved,
+            symbol: None,
+            leader_symbol: None,
         }
     }
 }
@@ -83,8 +93,77 @@ impl Ends {
 pub fn runs_past(t: Terminator) -> bool {
     matches!(
         t,
-        Terminator::Tick | Terminator::Slash | Terminator::TickDot
+        Terminator::Tick | Terminator::Slash | Terminator::TickDot | Terminator::Slug
     )
+}
+
+/// A slug: a thick stroke with round ends from `a` to `b`, `w` across,
+/// as one filled outline so it reads the same on screen, sheets and PDF.
+fn slug(a: DVec2, b: DVec2, w: f64) -> Vec<DVec2> {
+    let d = (b - a).normalize_or(DVec2::X);
+    let r = w / 2.0;
+    let base = d.perp().to_angle();
+    let mut out = Vec::with_capacity(20);
+    for i in 0..=9 {
+        // round end at b, then round end at a
+        out.push(b + DVec2::from_angle(base - std::f64::consts::PI * i as f64 / 9.0) * r);
+    }
+    for i in 0..=9 {
+        out.push(
+            a + DVec2::from_angle(
+                base + std::f64::consts::PI - std::f64::consts::PI * i as f64 / 9.0,
+            ) * r,
+        );
+    }
+    out
+}
+
+/// The end of a leader at `tip`, arriving along `dir`: as [`end_marks`],
+/// but a slug lies along the leader rather than across it.
+pub fn leader_marks(t: Terminator, tip: DVec2, dir: DVec2, size: f64, mm: f64) -> Ends {
+    if t == Terminator::Slug {
+        let d = dir.normalize_or(DVec2::X);
+        let s = size * mm;
+        let mut out = Ends::default();
+        out.fills.push(slug(tip - d * s * 0.75, tip, s * 0.24));
+        return out;
+    }
+    end_marks(t, tip, dir, size, mm)
+}
+
+/// A leader made a smooth curve: its shoulder kept, then one sweep to the
+/// end, leaving the shoulder along it (so the line flows out of the text)
+/// and bending through the elbow when it has one.
+pub fn curve_leader(pts: &[DVec2]) -> Vec<DVec2> {
+    if pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let n = pts.len();
+    let end = pts[n - 1];
+    let (keep, from, control) = match n {
+        2 => {
+            let (a, b) = (pts[0], pts[1]);
+            let mid = (a + b) / 2.0;
+            // a gentle bow to one side
+            let bow = (b - a).perp() * 0.2;
+            (vec![a], a, mid + bow)
+        }
+        3 => {
+            let (a, s) = (pts[0], pts[1]);
+            let along = (s - a).normalize_or(DVec2::X);
+            let reach = s.distance(end) * 0.55;
+            (vec![a, s], s, s + along * reach)
+        }
+        _ => (pts[..n - 2].to_vec(), pts[n - 3], pts[n - 2]),
+    };
+    let mut out = keep;
+    for i in 1..=24 {
+        let t = i as f64 / 24.0;
+        let u = 1.0 - t;
+        out.push(from * (u * u) + control * (2.0 * u * t) + end * (t * t));
+    }
+    out.dedup_by(|a, b| a.distance(*b) < 1e-12);
+    out
 }
 
 fn circle_pts(c: DVec2, r: f64, n: usize) -> Vec<DVec2> {
@@ -134,6 +213,10 @@ pub fn end_marks(t: Terminator, tip: DVec2, dir: DVec2, size: f64, mm: f64) -> E
             out.heavy.push(vec![tip - tick, tip + tick]);
             out.fills.push(circle_pts(tip, s * 0.13, 12));
         }
+        // across a dimension line at 45°, as a tick drawn with a full pen
+        Terminator::Slug => out
+            .fills
+            .push(slug(tip - tick * 0.85, tip + tick * 0.85, s * 0.2)),
         Terminator::None => {}
     }
     out
@@ -141,6 +224,115 @@ pub fn end_marks(t: Terminator, tip: DVec2, dir: DVec2, size: f64, mm: f64) -> E
 
 /// A line [`lay_out_note`] wants underlined starts with this.
 pub const UNDERLINE: char = '\u{1}';
+
+/// Switches bold on or off within a note's line (from `**bold**`).
+pub const BOLD: char = '\u{2}';
+/// Switches italic on or off within a note's line (from `*italic*`).
+pub const ITALIC: char = '\u{3}';
+
+/// `**bold**` and `*italic*` turned into the switches above, the marks
+/// themselves gone; backticks dropped.
+fn inline_marks(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if (c == '*' && next == Some('*')) || (c == '_' && next == Some('_')) {
+            out.push(BOLD);
+            i += 2;
+            continue;
+        }
+        if c == '*' {
+            // a lone star round a word: italic; a star alone ("5 * 3") stays
+            let before = i.checked_sub(1).and_then(|j| chars.get(j)).copied();
+            let opens = next.is_some_and(|n| !n.is_whitespace());
+            let closes = before.is_some_and(|b| !b.is_whitespace());
+            if opens || closes {
+                out.push(ITALIC);
+                i += 1;
+                continue;
+            }
+        }
+        if c != '`' {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A line wrapped onto several carries its open bold and italic on: each
+/// line after the first starts with the switches still on.
+fn carry_marks(lines: &mut [String]) {
+    let (mut bold, mut italic) = (false, false);
+    for line in lines.iter_mut() {
+        let mut head = String::new();
+        if bold {
+            head.push(BOLD);
+        }
+        if italic {
+            head.push(ITALIC);
+        }
+        for c in line.chars() {
+            match c {
+                BOLD => bold = !bold,
+                ITALIC => italic = !italic,
+                _ => {}
+            }
+        }
+        if !head.is_empty() {
+            let under = line.starts_with(UNDERLINE);
+            let rest: String = line.chars().filter(|c| *c != UNDERLINE).collect();
+            *line = format!(
+                "{}{head}{rest}",
+                if under {
+                    UNDERLINE.to_string()
+                } else {
+                    String::new()
+                }
+            );
+        }
+    }
+}
+
+/// A line's runs: how far each starts from the line's start (paper mm at
+/// the look's size), its text and its look, bold and italic switched as
+/// the line says. One run when the line has no switches.
+pub fn text_runs(text: &str, look: &TextLook) -> Vec<(f64, String, TextLook)> {
+    let mut out = vec![];
+    let mut cur = *look;
+    let mut run = String::new();
+    let mut at = 0.0;
+    for c in text.chars() {
+        if c == BOLD || c == ITALIC {
+            if !run.is_empty() {
+                let w = cur.width(&run);
+                out.push((at, std::mem::take(&mut run), cur));
+                at += w;
+            }
+            if c == BOLD {
+                cur.bold = !cur.bold;
+            } else {
+                cur.italic = !cur.italic;
+            }
+            continue;
+        }
+        run.push(c);
+    }
+    if !run.is_empty() || out.is_empty() {
+        out.push((at, run, cur));
+    }
+    out
+}
+
+/// The whole width of a line with switches in it, paper mm.
+pub fn runs_width(text: &str, look: &TextLook) -> f64 {
+    text_runs(text, look)
+        .last()
+        .map_or(0.0, |(at, t, l)| at + l.width(t))
+}
 
 /// A note's text as the lines it draws (MU26): read as markdown when
 /// `markdown` (`#` headings in capitals and underlined, `-` and `*`
@@ -154,7 +346,7 @@ pub fn lay_out_note(text: &str, look: &TextLook, width: Option<f64>, markdown: b
         if markdown {
             let t = raw.trim_start();
             let indent = " ".repeat((raw.len() - t.len()).min(8));
-            let strip = |s: &str| s.replace("**", "").replace("__", "").replace('`', "");
+            let strip = |s: &str| inline_marks(s);
             if let Some(h) = t
                 .strip_prefix("### ")
                 .or(t.strip_prefix("## "))
@@ -183,8 +375,6 @@ pub fn lay_out_note(text: &str, look: &TextLook, width: Option<f64>, markdown: b
                 (head, body) = (format!("{indent}{n}. "), strip(r));
             } else {
                 body = strip(t);
-                // a single * or _ round a word: italic, kept as the word
-                body = body.replace(" *", " ").replace("* ", " ");
             }
         }
         let Some(w) = width.filter(|w| *w > 1.0) else {
@@ -239,16 +429,30 @@ pub fn lay_out_note(text: &str, look: &TextLook, width: Option<f64>, markdown: b
             }
         ));
     }
+    carry_marks(&mut out);
     out.join("\n")
 }
 
 impl TextLook {
-    /// Rough width of `text` on paper, mm.
+    /// Width of `text` on paper, mm: a shipped font's own widths, else
+    /// close to Helvetica's, Times' or Courier's.
     pub fn width(&self, text: &str) -> f64 {
+        let clean: String;
+        let text = if text.contains([BOLD, ITALIC, UNDERLINE]) {
+            clean = text
+                .chars()
+                .filter(|c| !matches!(*c, BOLD | ITALIC | UNDERLINE))
+                .collect();
+            clean.as_str()
+        } else {
+            text
+        };
         let w = match self.font {
             Font::Mono => text.chars().count() as f64 * 0.6 * self.size,
             Font::Serif => text_width(text, self.size) * 0.95,
             Font::Sans => text_width(text, self.size),
+            f => crate::fonts::width(f, text, self.size)
+                .unwrap_or_else(|| text_width(text, self.size)),
         };
         if self.bold {
             w * 1.08
@@ -454,7 +658,9 @@ impl Marks {
             Terminator::Arrow => self
                 .arrows
                 .push(arrow(tip, dir, mm * look.end_size / END_SIZE)),
-            t => self.ends.extend(end_marks(t, tip, dir, look.end_size, mm)),
+            t => self
+                .ends
+                .extend(leader_marks(t, tip, dir, look.end_size, mm)),
         }
     }
 }
@@ -662,9 +868,35 @@ impl Annotation {
                         at - x * r,
                     ]);
                 }
-                // a target: two opposite quarters filled in
-                target(&mut out, at, r);
-                let x = at.x + r + TEXT_GAP * mm;
+                // a target: two opposite quarters filled in, or the
+                // level symbol picked
+                let x = match look.symbol {
+                    Some(s) => {
+                        let sh = crate::symbol::level_shapes(s, at, r);
+                        // the text clear of the mark itself (its datum
+                        // line aside)
+                        let body = sh
+                            .lines
+                            .iter()
+                            .filter(|(l, _)| {
+                                let (lo, hi) = l.iter().fold((f64::MAX, f64::MIN), |(a, b), p| {
+                                    (a.min(p.y), b.max(p.y))
+                                });
+                                hi - lo > 1e-9
+                            })
+                            .flat_map(|(l, _)| l.iter())
+                            .chain(sh.fills.iter().flatten())
+                            .map(|p| p.x)
+                            .fold(at.x, f64::max);
+                        let x = body + TEXT_GAP * mm;
+                        out.ends.extend(sh.into_ends());
+                        x
+                    }
+                    None => {
+                        target(&mut out, at, r);
+                        at.x + r + TEXT_GAP * mm
+                    }
+                };
                 let dy = (look.size * 0.5 + 0.8) * mm;
                 for (y, text) in [(dy, self.text.clone()), (-dy, elevation.clone())] {
                     out.texts.push(MarkText {
@@ -712,13 +944,30 @@ impl Annotation {
                     });
                 }
                 if let Some(target) = leader {
-                    out.lines.extend(note_leader(at, width, target, elbow, mm));
+                    // the block's foot, under its last line
+                    let below = step * (lines.len() - 1) as f64 + look.size * 0.75 * mm;
+                    let mut lines = note_leader_from(at, width, below, target, elbow, mm);
+                    if look.curved {
+                        for l in &mut lines {
+                            *l = curve_leader(l);
+                        }
+                    }
+                    out.lines.extend(lines);
                     let from = out
                         .lines
                         .last()
                         .and_then(|l| l.iter().rev().nth(1).copied());
                     if let Some(from) = from {
-                        out.end(look.leader_end, target, target - from, look, mm);
+                        match look.leader_symbol {
+                            Some(s) => out.ends.extend(crate::symbol::leader_end(
+                                s,
+                                target,
+                                target - from,
+                                look.end_size,
+                                mm,
+                            )),
+                            None => out.end(look.leader_end, target, target - from, look, mm),
+                        }
                     }
                 }
             }
@@ -833,6 +1082,30 @@ fn text_box(t: &MarkText, look: &TextLook, mm: f64) -> [DVec2; 4] {
         o + dir * w + up * h,
         o + up * h,
     ]
+}
+
+/// [`note_leader`] for a block of text reaching `below` under its first
+/// line: when the target (or the elbow) lies under the block, within its
+/// width, the leader drops plumb from under the block to it, as a level
+/// is tagged over the ground (Mockup_Tags_And_Splay_REV00, MU142: from
+/// beside the text it ran out along a shoulder and back).
+pub fn note_leader_from(
+    at: DVec2,
+    width: f64,
+    below: f64,
+    target: DVec2,
+    elbow: Option<DVec2>,
+    mm: f64,
+) -> Vec<Vec<DVec2>> {
+    let toward = elbow.unwrap_or(target);
+    let foot = DVec2::new(toward.x, at.y - below - mm);
+    if toward.y < foot.y - mm && toward.x >= at.x && toward.x <= at.x + width {
+        return vec![match elbow {
+            Some(e) => vec![foot, e, target],
+            None => vec![foot, target],
+        }];
+    }
+    note_leader(at, width, target, elbow, mm)
 }
 
 /// A note's leader: from beside its first line (left or right, whichever
@@ -963,7 +1236,11 @@ mod tests {
         let flat = lay_out_note(t, &look, None, true);
         let lines: Vec<&str> = flat.split('\n').collect();
         assert_eq!(lines[0], format!("{UNDERLINE}NOTES"));
-        assert_eq!(lines[1], "\u{2022} one two three four five six seven");
+        // **two** is bold on paper: its stars become the bold switch
+        assert_eq!(
+            lines[1],
+            "\u{2022} one \u{2}two\u{2} three four five six seven"
+        );
         assert_eq!(lines[2], "[x] done");
         assert_eq!(lines[3], "2. next");
         // 30 mm wide: the bullet wraps, its later lines set in
@@ -979,6 +1256,28 @@ mod tests {
         }
         // plain text, no box: as it was
         assert_eq!(lay_out_note("a\n- b", &look, None, false), "a\n- b");
+    }
+
+    /// MU142 (Mockup_Tags_And_Splay_REV00): a target under the text,
+    /// within its width, takes a leader dropped plumb from under the text,
+    /// not one out from its end along a shoulder; a target off to the side
+    /// keeps the shoulder.
+    #[test]
+    fn a_leader_to_a_point_under_the_text_drops_plumb_to_it() {
+        let w = TextLook::default().width("Note") * 0.1;
+        let under = DVec2::new(10.0 + w * 0.3, 2.0);
+        let m = note("Note", Some(under)).marks(0.1);
+        let leader = &m.lines[0];
+        assert_eq!(leader.len(), 2, "{leader:?}");
+        assert!(
+            (leader[0].x - under.x).abs() < 1e-9,
+            "plumb over it: {leader:?}"
+        );
+        assert!(leader[0].y < 5.0, "from under the text: {leader:?}");
+        assert_eq!(leader[1], under);
+        // off to the side: from its end, with a shoulder, as before
+        let m = note("Note", Some(DVec2::new(7.0, 3.0))).marks(0.1);
+        assert_eq!(m.lines[0].len(), 3);
     }
 
     #[test]
@@ -1056,5 +1355,45 @@ mod tests {
             assert!(a > -FRAC_PI_2 - 1e-6 && a <= FRAC_PI_2 + 1e-6, "{deg}");
             assert!(up.y >= -1e-6, "{deg}");
         }
+    }
+
+    #[test]
+    fn a_slug_lies_across_a_dimension_and_along_a_leader() {
+        let dim = end_marks(Terminator::Slug, DVec2::ZERO, DVec2::X, 2.5, 1.0);
+        let leader = leader_marks(Terminator::Slug, DVec2::ZERO, DVec2::X, 2.5, 1.0);
+        assert_eq!((dim.fills.len(), leader.fills.len()), (1, 1));
+        let span = |pts: &Vec<DVec2>| {
+            let (lo, hi) = pts
+                .iter()
+                .fold((DVec2::MAX, DVec2::MIN), |(l, h), p| (l.min(*p), h.max(*p)));
+            hi - lo
+        };
+        // across: as tall as it is long; along: long in x, thin in y
+        let d = span(&dim.fills[0]);
+        assert!((d.x - d.y).abs() < 0.05, "{d}");
+        let l = span(&leader.fills[0]);
+        assert!(l.x > 3.0 * l.y, "{l}");
+        // it ends on the leader's point, from behind it
+        assert!(leader.fills[0].iter().all(|p| p.x <= 0.31));
+        assert!(runs_past(Terminator::Slug));
+    }
+
+    #[test]
+    fn a_curved_leader_keeps_its_ends_and_leaves_the_shoulder_smoothly() {
+        let (start, shoulder, target) =
+            (DVec2::ZERO, DVec2::new(-2.5, 0.0), DVec2::new(-20.0, -15.0));
+        let c = curve_leader(&[start, shoulder, target]);
+        assert_eq!(c[0], start);
+        assert_eq!(c[1], shoulder);
+        assert!(c.last().unwrap().distance(target) < 1e-9);
+        assert!(c.len() > 10);
+        // the first step off the shoulder still runs along it (left)
+        let first = (c[2] - c[1]).normalize();
+        assert!(first.x < -0.9, "{first}");
+        // through an elbow: it bends toward it, ends on the target
+        let elbow = DVec2::new(-10.0, 0.0);
+        let c = curve_leader(&[start, shoulder, elbow, target]);
+        assert!(c.last().unwrap().distance(target) < 1e-9);
+        assert!(c.iter().any(|p| p.x < -6.0 && p.y > -3.0));
     }
 }

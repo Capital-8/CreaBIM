@@ -199,6 +199,25 @@ pub fn rectangle(a: DVec2, b: DVec2) -> Vec<DVec2> {
     vec![lo, DVec2::new(hi.x, lo.y), hi, DVec2::new(lo.x, hi.y)]
 }
 
+/// Whether two convex outlines overlap (touching doesn't count).
+pub fn convex_overlap(a: &[DVec2], b: &[DVec2]) -> bool {
+    for poly in [a, b] {
+        for i in 0..poly.len() {
+            let n = (poly[(i + 1) % poly.len()] - poly[i]).perp();
+            let span = |p: &[DVec2]| {
+                p.iter()
+                    .map(|q| q.dot(n))
+                    .fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)))
+            };
+            let ((a0, a1), (b0, b1)) = (span(a), span(b));
+            if a1 <= b0 + 1e-9 || b1 <= a0 + 1e-9 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod hole_tests {
     use super::*;

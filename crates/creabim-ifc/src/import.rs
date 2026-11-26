@@ -21,11 +21,17 @@ use glam::{DMat4, DVec2, DVec3};
 use std::collections::{HashMap, HashSet};
 
 mod brep;
+pub(crate) mod ifcdata;
+pub(crate) mod kept;
 mod members;
 mod objects;
 mod spaces;
 
 pub(crate) use members::MEMBER_PSET;
+
+/// CreaBIM's property set on a door or window whose grid of cells IFC's
+/// own operation types can't say.
+pub(crate) const OPENING_PSET: &str = "CreaBIM_Opening";
 
 /// Classes (as STEP writes them) the import may make native elements of.
 pub(crate) fn could_be_native(class: &str) -> bool {
@@ -52,8 +58,15 @@ pub struct ImportResult {
     /// class, name and GlobalId and saying why, e.g. "IfcWall 'Wall-Ext'
     /// (2XcU...) is a brep whose top is sloped; imported as a mesh".
     pub details: Vec<String>,
+    /// For each of `details`, the index of its note in `warnings`, so the
+    /// list can be shown under the notes it explains.
+    pub detail_notes: Vec<usize>,
     /// The schema named in the file, e.g. `IFC4` or `ifcx_alpha`.
     pub schema: String,
+    /// How faithfully the file came in, in a few lines for the Activity
+    /// log: objects in and left out, boolean cuts made and not, and the
+    /// data CreaBIM does not read yet ([`fidelity`]).
+    pub fidelity: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +83,16 @@ pub enum ImportError {
 
 /// Read an IFC STEP file into a CreaBIM model.
 pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
+    import_ifc_with(text, &creabim_core::progress::quiet)
+}
+
+/// [`import_ifc`], telling `tick` how far it has got: the file's elements
+/// read so far, of all it has.
+pub fn import_ifc_with(
+    text: &str,
+    tick: creabim_core::progress::Tick,
+) -> Result<ImportResult, ImportError> {
+    tick(0, 0, "Reading the file");
     let file = parse(text)?;
     let schema = file.schemas.first().cloned().unwrap_or_default();
     let by_class = file.by_class();
@@ -78,6 +101,12 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
         return Err(ImportError::NotIfc(schema));
     }
     let mut imp = Importer::new(&file, &by_class);
+    imp.tick = tick;
+    imp.total = file
+        .entities
+        .values()
+        .filter(|e| !e.arg(6).is_null() && product_class(&e.class).is_some())
+        .count();
     if !file.errors.is_empty() {
         imp.g.warnings.add(format!(
             "{} damaged records were skipped; first: {}",
@@ -86,17 +115,269 @@ pub fn import_ifc(text: &str) -> Result<ImportResult, ImportError> {
         ));
     }
     imp.run();
+    tick(imp.total, imp.total, "Making the project");
     let mut elements = std::mem::take(&mut imp.out);
     read_tags(&file, &mut elements);
+    read_phases(&file, &mut elements);
+    read_groups(&file, &mut elements);
+    // the common properties CreaBIM keeps as its own fields: a door's or
+    // window's declared ones are in its construction already; External and
+    // Load-bearing, and all of a wall's, slab's, roof's, column's and
+    // beam's, become the element's own
+    let commons = ifcdata::common_ratings(&file);
+    if !commons.is_empty() {
+        for e in elements
+            .iter_mut()
+            .filter(|e| creabim_core::common::rated(&e.kind))
+        {
+            let Some(r) = commons.get(&e.id.ifc_guid()) else {
+                continue;
+            };
+            let mut r = r.clone();
+            if matches!(e.kind, ElementKind::Opening(_)) {
+                r = creabim_core::construction::Ratings {
+                    external: r.external,
+                    load_bearing: r.load_bearing,
+                    ..Default::default()
+                };
+            }
+            if !r.is_none() {
+                e.ratings = Some(Box::new(r));
+            }
+        }
+    }
     let mut warnings = std::mem::take(&mut imp.g.warnings);
-    let model = build_model(elements, &mut warnings)?;
-    let (warnings, details) = warnings.into_parts();
+    let mut model = build_model(elements, &mut warnings)?;
+    let (warnings, details, detail_notes) = warnings.into_grouped();
+    // what CreaBIM doesn't model, kept beside it for the export
+    let (mut data, kept) = ifcdata::read(&file, &model);
+    // what the elements now hold as their own goes out from the model only
+    for (guid, rec) in data.by_guid.iter_mut() {
+        let rated = ElementId::from_ifc_guid(guid)
+            .and_then(|id| model.get(id))
+            .is_some_and(|e| creabim_core::common::rated(&e.kind));
+        if !rated {
+            continue;
+        }
+        for s in rec
+            .psets
+            .iter_mut()
+            .filter(|s| ifcdata::is_common_set(&s.name))
+        {
+            s.props
+                .retain(|p| !ifcdata::COMMON_PROPS.contains(&p.name.as_str()));
+        }
+        rec.psets.retain(|s| !s.props.is_empty());
+    }
+    data.by_guid.retain(|_, r| !r.is_empty());
+    // the relationships and objects CreaBIM doesn't model, kept with it
+    let in_model: HashSet<String> = model.iter().map(|e| e.id.ifc_guid()).collect();
+    let own_groups: HashSet<String> = creabim_core::groups::groups(&model)
+        .iter()
+        .filter_map(|g| g.ifc.as_ref().map(|i| i.guid.clone()))
+        .collect();
+    let (entities, rels, structure) = kept::read(&file, &in_model, &own_groups);
+    data.kept = entities;
+    data.rels = rels;
+    for (class, key) in [
+        ("IFCPROJECT", "project"),
+        ("IFCSITE", "site"),
+        ("IFCBUILDING", "building"),
+    ] {
+        let mut of: Vec<(&u64, &Entity)> =
+            file.entities.iter().filter(|(_, e)| e.is(class)).collect();
+        of.sort_by_key(|(id, _)| **id);
+        if let Some(g) = of.first().and_then(|(_, e)| e.arg(0).as_str()) {
+            data.anchors.insert(key.to_string(), g.to_string());
+        }
+    }
+    model.set_ifc_data(data);
+    let mut fidelity = fidelity(&file, &model, imp.g.cuts);
+    fidelity.insert(1.min(fidelity.len()), kept_line(&kept));
+    if structure.rels > 0 {
+        fidelity.insert(2.min(fidelity.len()), structure_line(&structure));
+    }
     Ok(ImportResult {
         model,
         warnings,
         details,
+        detail_notes,
         schema,
+        fidelity,
     })
+}
+
+/// The fidelity line of the property sets and classifications kept.
+fn kept_line(k: &ifcdata::Kept) -> String {
+    let mut s = format!(
+        "kept to go back out: {} of {} property sets ({} values), {} of {} classification references",
+        k.sets, k.sets_in_file, k.props, k.classes, k.classes_in_file
+    );
+    if k.sets < k.sets_in_file || k.classes < k.classes_in_file {
+        s.push_str(" (the rest are on what did not come in, or CreaBIM's own)");
+    }
+    if k.skipped_props > 0 {
+        s.push_str(&format!(
+            "; {} bounded, list or table properties not kept",
+            k.skipped_props
+        ));
+    }
+    s
+}
+
+/// The fidelity line of the relationships and objects kept.
+fn structure_line(k: &kept::Counts) -> String {
+    let parts: Vec<String> = [
+        (k.types, "type", "types"),
+        (k.assemblies, "assembly", "assemblies"),
+        (k.openings, "opening", "openings"),
+        (k.drawings, "drawing", "drawings"),
+        (k.documents, "document", "documents"),
+    ]
+    .into_iter()
+    .filter(|(n, _, _)| *n > 0)
+    .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+    .collect();
+    let mut s = format!(
+        "kept to go back out: {} relationships CreaBIM doesn't model",
+        k.rels
+    );
+    if !parts.is_empty() {
+        s.push_str(&format!(", with {} that did not come in", parts.join(", ")));
+    }
+    s
+}
+
+/// How faithfully `file` came in as `model`, as lines for the Activity log
+/// (owner 2026-11-23: "a fidelity check in the activity log"). What the
+/// importer knows it did: the objects that came in, native or as meshes,
+/// and those left out by class; the boolean cuts made and the ones that
+/// failed; and what the file carries that CreaBIM does not read yet. Whether
+/// a shape is right is not known here: the bench compares each one with
+/// IfcOpenShell's (`creabim ifc-check`).
+pub fn fidelity(file: &StepFile, model: &Model, cuts: [usize; 2]) -> Vec<String> {
+    let census = crate::census::Census::of(file);
+    let n = |v: usize| {
+        let s = v.to_string();
+        let mut out = String::new();
+        for (i, ch) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i) % 3 == 0 {
+                out.push(',');
+            }
+            out.push(ch);
+        }
+        out
+    };
+    // the objects: what has a GlobalId and is not a type or a container
+    let skip = |c: &str| {
+        c.ends_with("TYPE")
+            || c.starts_with("IFCTYPE")
+            || c.ends_with("STYLE")
+            // the holes doors and windows fill: cuts, not objects
+            || c == "IFCOPENINGELEMENT"
+            || c == "IFCZONE"
+            || matches!(c, "IFCPROJECT" | "IFCSITE" | "IFCBUILDING" | "IFCBUILDINGSTOREY")
+            || c.starts_with("IFCREL")
+            || c.starts_with("IFCPROPERTY")
+            || c.starts_with("IFCELEMENTQUANTITY")
+            || c == "IFCGROUP"
+            || c.starts_with("IFCDOCUMENT")
+    };
+    let (mut native, mut meshes, mut total) = (0, 0, 0);
+    let mut left: HashMap<String, usize> = HashMap::new();
+    for (guid, (class, _)) in &census.objects {
+        if skip(class) {
+            continue;
+        }
+        total += 1;
+        match ElementId::from_ifc_guid(guid).and_then(|id| model.get(id)) {
+            Some(e) if matches!(e.kind, ElementKind::FreeMesh(_)) => meshes += 1,
+            Some(_) => native += 1,
+            None => *left.entry(class.clone()).or_default() += 1,
+        }
+    }
+    let mut left: Vec<(String, usize)> = left.into_iter().collect();
+    left.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let gone: usize = left.iter().map(|l| l.1).sum();
+    // IFCELEMENTASSEMBLY -> IfcElementAssembly, as the classes read
+    let class = |c: &str| product_class(c).map_or_else(|| c.to_string(), str::to_string);
+    let mut lines = vec![format!(
+        "{} of {} objects came in: {} as CreaBIM elements, {} as meshes{}",
+        n(native + meshes),
+        n(total),
+        n(native),
+        n(meshes),
+        if gone == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {} left out ({})",
+                n(gone),
+                left.iter()
+                    .take(5)
+                    .map(|(c, k)| format!("{} {}", n(*k), class(c)))
+                    .chain((left.len() > 5).then(|| "and others".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    )];
+    if cuts[0] + cuts[1] > 0 {
+        lines.push(format!(
+            "boolean cuts: {} made{}",
+            n(cuts[0]),
+            if cuts[1] > 0 {
+                format!(", {} could not be (those pieces are uncut)", n(cuts[1]))
+            } else {
+                String::new()
+            }
+        ));
+    }
+    // groups: kept when they hold something that came in (or nothing at all)
+    let in_file = file.entities.values().filter(|e| e.is("IFCGROUP")).count();
+    let kept = creabim_core::groups::groups(model);
+    if in_file > 0 {
+        let searches = kept.iter().filter(|g| g.is_search()).count();
+        let offer: Vec<String> = creabim_core::groups::option_candidates(model)
+            .iter()
+            .map(|set| {
+                set.iter()
+                    .filter_map(|id| kept.iter().find(|g| g.id == *id))
+                    .map(|g| g.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .collect();
+        let left = in_file.saturating_sub(kept.len());
+        lines.push(format!(
+            "groups: {} of {} kept{}{}{}",
+            n(kept.len()),
+            n(in_file),
+            if searches > 0 {
+                format!(
+                    " ({} Bonsai saved searches, with the members they found)",
+                    n(searches)
+                )
+            } else {
+                String::new()
+            },
+            if left > 0 {
+                format!(
+                    "; {} {} only what did not come in (drawings and the like)",
+                    n(left),
+                    if left == 1 { "holds" } else { "hold" }
+                )
+            } else {
+                String::new()
+            },
+            if offer.is_empty() {
+                String::new()
+            } else {
+                format!("; look like design options: {}", offer.join(" | "))
+            },
+        ));
+    }
+    lines
 }
 
 /// Read only the materials of an IFC STEP file: every IfcMaterial, with
@@ -153,6 +434,306 @@ pub(crate) fn build_model(
     doc.commit(tx)
         .map_err(|e| ImportError::Model(e.to_string()))?;
     Ok(doc.model().clone())
+}
+
+/// Give elements the phases their IFC entities carry, and the project its
+/// list of phases. Read, in this order of trust: CreaBIM's own set
+/// (`CreaBIM_Phasing`: the phases by name, and the whole list in order);
+/// the phase names other programs write ("Phase Created" and "Phase
+/// Demolished"); the standard `Status` of the common property sets
+/// (EXISTING, DEMOLISH, NEW), which gives Existing, Demolition and
+/// Proposed. A file that says nothing of the kind is left unphased.
+fn read_phases(f: &StepFile, elements: &mut Vec<Element>) {
+    use creabim_core::phases::{self, PhaseDef, Phasing};
+    #[derive(Default)]
+    struct Said {
+        built: Option<String>,
+        gone: Option<String>,
+        status: Option<String>,
+    }
+    let mut said: HashMap<ElementId, Said> = HashMap::new();
+    let mut listed: Option<String> = None;
+    let text = |v: &Value| -> Option<String> {
+        let s = match v.as_str() {
+            Some(s) => Some(s.to_string()),
+            None => v
+                .as_list()
+                .first()
+                .and_then(|x| x.as_str())
+                .map(str::to_string),
+        }?;
+        let s = s.trim().to_string();
+        (!s.is_empty()).then_some(s)
+    };
+    for r in f
+        .entities
+        .values()
+        .filter(|e| e.is("IFCRELDEFINESBYPROPERTIES"))
+    {
+        let Some(set) = r
+            .arg(5)
+            .as_ref()
+            .and_then(|s| f.get(s))
+            .filter(|s| s.is("IFCPROPERTYSET"))
+        else {
+            continue;
+        };
+        let ours = set.arg(2).as_str() == Some("CreaBIM_Phasing");
+        let (mut built, mut gone, mut status) = (None, None, None);
+        for p in set.arg(4).refs().filter_map(|p| f.get(p)) {
+            if !p.is("IFCPROPERTYSINGLEVALUE") && !p.is("IFCPROPERTYENUMERATEDVALUE") {
+                continue;
+            }
+            let Some(key) = p.arg(0).as_str() else {
+                continue;
+            };
+            let value = text(p.arg(2));
+            match key {
+                "BuiltIn" if ours => built = value,
+                "TakenDownIn" if ours => gone = value,
+                "Phases" if ours => listed = listed.or(value),
+                "Phase Created" => built = value,
+                "Phase Demolished" => gone = value.filter(|v| !v.eq_ignore_ascii_case("none")),
+                // a list, as Bonsai writes it: EXISTING and DEMOLISH is
+                // there now and comes down (Highland Haven: read as its
+                // first value, 6 elements never came down)
+                "Status" => {
+                    let all: Vec<String> = match p.arg(2).as_list() {
+                        [] => value.into_iter().collect(),
+                        l => l
+                            .iter()
+                            .filter_map(|x| x.as_str())
+                            .map(str::to_string)
+                            .collect(),
+                    };
+                    let all: Vec<String> =
+                        all.iter().map(|v| v.trim().to_ascii_uppercase()).collect();
+                    status = ["DEMOLISH", "NEW", "TEMPORARY", "EXISTING"]
+                        .into_iter()
+                        .find(|k| all.iter().any(|v| v == k))
+                        .map(str::to_string)
+                        .or_else(|| all.first().cloned());
+                }
+                _ => {}
+            }
+        }
+        if built.is_none() && gone.is_none() && status.is_none() {
+            continue;
+        }
+        for o in r.arg(4).refs() {
+            let Some(id) = f
+                .get(o)
+                .and_then(|e| e.arg(0).as_str())
+                .and_then(ElementId::from_ifc_guid)
+            else {
+                continue;
+            };
+            let s = said.entry(id).or_default();
+            s.built = built.clone().or(s.built.take());
+            s.gone = gone.clone().or(s.gone.take());
+            s.status = status.clone().or(s.status.take());
+        }
+    }
+    said.retain(|id, _| elements.iter().any(|e| e.id == *id && phases::phased(e)));
+    if said.is_empty() {
+        return;
+    }
+    let named = said.values().any(|s| s.built.is_some() || s.gone.is_some());
+    // the project's phases: as CreaBIM listed them, else from the names
+    // used (existing first, what only takes down before what builds),
+    // else the usual three
+    let mut list: Vec<PhaseDef> = vec![];
+    let add = |list: &mut Vec<PhaseDef>, name: &str, demolition: bool| {
+        if !list.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
+            let id = list.len() as u32 + 1;
+            list.push(PhaseDef {
+                id,
+                name: name.to_string(),
+                demolition,
+            });
+        }
+    };
+    if let Some(l) = &listed {
+        for n in l.split('|').map(str::trim).filter(|n| !n.is_empty()) {
+            add(&mut list, n.trim_end_matches('*'), n.ends_with('*'));
+        }
+    }
+    if list.is_empty() && named {
+        let mut builds: Vec<&str> = vec![];
+        let mut downs: Vec<&str> = vec![];
+        let mut ids: Vec<&ElementId> = said.keys().collect();
+        ids.sort();
+        for id in ids {
+            let s = &said[id];
+            if let Some(b) = s.built.as_deref() {
+                if !builds.iter().any(|x| x.eq_ignore_ascii_case(b)) {
+                    builds.push(b);
+                }
+            }
+            if let Some(g) = s.gone.as_deref() {
+                if !downs.iter().any(|x| x.eq_ignore_ascii_case(g)) {
+                    downs.push(g);
+                }
+            }
+        }
+        builds.sort_by_key(|n| !n.to_ascii_lowercase().contains("exist"));
+        let first = builds.first().copied();
+        if let Some(n) = first {
+            add(&mut list, n, false);
+        }
+        for d in &downs {
+            if !builds.iter().any(|b| b.eq_ignore_ascii_case(d)) {
+                add(&mut list, d, true);
+            }
+        }
+        for b in builds.iter().skip(1) {
+            add(&mut list, b, false);
+        }
+    }
+    if list.is_empty() {
+        list = phases::standard();
+    }
+    // what says nothing, in a file that marks other things: a phase of its
+    // own, first, until it is understood what it is (owner 2026-11-23:
+    // Highland Haven marks 240 objects; the rest of the house, read as
+    // Existing, looked like an old building)
+    let first = list.first().map(|p| p.id);
+    let unmarked = listed.is_none()
+        && elements
+            .iter()
+            .any(|e| phases::phased(e) && !said.contains_key(&e.id));
+    if unmarked {
+        let id = list.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+        list.insert(
+            0,
+            PhaseDef {
+                id,
+                name: "Not marked (IFC)".into(),
+                demolition: false,
+            },
+        );
+    }
+    let id_of = |name: &str| {
+        list.iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
+            .map(|p| p.id)
+    };
+    let last = list.last().map(|p| p.id);
+    let demolition = list.iter().find(|p| p.demolition).map(|p| p.id);
+    for e in elements.iter_mut() {
+        let Some(s) = said.get(&e.id) else { continue };
+        let mut p = Phasing::default();
+        if s.built.is_some() || s.gone.is_some() {
+            p.built = s.built.as_deref().and_then(id_of);
+            p.gone = s.gone.as_deref().and_then(id_of);
+        } else {
+            match s.status.as_deref() {
+                Some("NEW") | Some("TEMPORARY") => p.built = last,
+                Some("DEMOLISH") => p.gone = demolition.or(last),
+                _ => {}
+            }
+        }
+        // marked, it is built in the phase it says, not the unmarked one
+        if unmarked && p.built.is_none() {
+            p.built = first;
+        }
+        // built in the first phase is the default; gone before built is no phasing at all
+        let place = |id: Option<u32>| id.and_then(|id| phases::position(&list, id));
+        if place(p.built) == Some(0) {
+            p.built = None;
+        }
+        if place(p.gone).is_some_and(|g| g < place(p.built).unwrap_or(0)) {
+            p.gone = None;
+        }
+        e.phase = p;
+    }
+    // nothing actually phased: leave the project as it was
+    if !named && !elements.iter().any(|e| !e.phase.is_default()) {
+        return;
+    }
+    match elements.iter_mut().find_map(|e| match &mut e.kind {
+        ElementKind::Project(p) => Some(p),
+        _ => None,
+    }) {
+        Some(p) => p.phases = list,
+        None => {
+            let info = creabim_core::project::ProjectInfo {
+                phases: list,
+                ..Default::default()
+            };
+            elements.push(Element::new("Project", ElementKind::Project(info)));
+        }
+    }
+}
+
+/// Keep the file's groups (IfcGroup, not its kinds such as systems and
+/// zones) on the project, each with the members that came in. A group
+/// whose members all stayed out (a Bonsai drawing's annotations) is left
+/// out; an empty one is kept, as the file has it.
+fn read_groups(f: &StepFile, elements: &mut Vec<Element>) {
+    use creabim_core::groups::{GroupDef, IfcGroupSource};
+    let have: HashSet<ElementId> = elements.iter().map(|e| e.id).collect();
+    let mut members: HashMap<u64, (usize, Vec<ElementId>)> = HashMap::new();
+    for r in f.entities.values().filter(|e| e.is("IFCRELASSIGNSTOGROUP")) {
+        let Some(g) = r.arg(6).as_ref() else { continue };
+        let slot = members.entry(g).or_default();
+        for o in r.arg(4).refs().filter_map(|o| f.get(o)) {
+            slot.0 += 1;
+            if let Some(id) = o
+                .arg(0)
+                .as_str()
+                .and_then(ElementId::from_ifc_guid)
+                .filter(|id| have.contains(id))
+            {
+                if !slot.1.contains(&id) {
+                    slot.1.push(id);
+                }
+            }
+        }
+    }
+    let mut ids: Vec<u64> = f
+        .entities
+        .iter()
+        .filter(|(_, e)| e.is("IFCGROUP"))
+        .map(|(k, _)| *k)
+        .collect();
+    ids.sort();
+    let text = |v: &Value| v.as_str().map(str::to_string).filter(|s| !s.is_empty());
+    let mut groups = vec![];
+    for k in ids {
+        let g = &f.entities[&k];
+        let (listed, held) = members.remove(&k).unwrap_or_default();
+        if listed > 0 && held.is_empty() {
+            continue;
+        }
+        groups.push(GroupDef {
+            id: groups.len() as u32 + 1,
+            name: text(g.arg(2)).unwrap_or_else(|| "Group".into()),
+            members: held,
+            ifc: Some(IfcGroupSource {
+                guid: text(g.arg(0)).unwrap_or_default(),
+                description: text(g.arg(3)),
+                object_type: text(g.arg(4)),
+            }),
+            option: None,
+        });
+    }
+    if groups.is_empty() {
+        return;
+    }
+    match elements.iter_mut().find_map(|e| match &mut e.kind {
+        ElementKind::Project(p) => Some(p),
+        _ => None,
+    }) {
+        Some(p) => p.groups = groups,
+        None => {
+            let info = creabim_core::project::ProjectInfo {
+                groups,
+                ..Default::default()
+            };
+            elements.push(Element::new("Project", ElementKind::Project(info)));
+        }
+    }
 }
 
 /// Give elements the marks their IFC entities carry as their Tag (the
@@ -311,6 +892,9 @@ struct Importer<'a> {
     wall_elems: Vec<Element>,
     other_elems: Vec<Element>,
     opening_elems: Vec<Element>,
+    /// Told how far the import has got, of `total` elements in the file.
+    tick: creabim_core::progress::Tick<'a>,
+    total: usize,
 }
 
 impl<'a> Importer<'a> {
@@ -357,7 +941,14 @@ impl<'a> Importer<'a> {
             wall_elems: vec![],
             other_elems: vec![],
             opening_elems: vec![],
+            tick: &creabim_core::progress::quiet,
+            total: 0,
         }
+    }
+
+    /// Tell the watcher how far the import has got.
+    fn ping(&self, step: &str) {
+        (self.tick)(self.done.len().min(self.total), self.total, step);
     }
 
     fn ids(&self, class: &str) -> &'a [u64] {
@@ -370,19 +961,23 @@ impl<'a> Importer<'a> {
         self.read_grids();
         self.read_types();
         self.read_object_types();
+        self.ping("Levels and types");
         for &id in self.ids("IFCCURTAINWALL") {
             self.import_curtain_wall(id);
         }
         for class in ["IFCWALL", "IFCWALLSTANDARDCASE", "IFCWALLELEMENTEDCASE"] {
             for &id in self.ids(class) {
+                self.ping("Walls");
                 self.import_wall(id);
             }
         }
         for class in ["IFCSLAB", "IFCSLABSTANDARDCASE", "IFCSLABELEMENTEDCASE"] {
             for &id in self.ids(class) {
+                self.ping("Slabs and roofs");
                 self.import_slab(id);
             }
         }
+        self.ping("Beams and columns");
         self.import_members();
         for class in [
             "IFCDOOR",
@@ -391,15 +986,18 @@ impl<'a> Importer<'a> {
             "IFCWINDOWSTANDARDCASE",
         ] {
             for &id in self.ids(class) {
+                self.ping("Doors and windows");
                 self.import_filling(id);
             }
         }
         self.import_bare_openings();
         self.import_wall_voids();
+        self.ping("Furniture");
         self.import_objects();
         for &id in self.ids("IFCFOOTING") {
             self.import_footing(id);
         }
+        self.ping("Rooms");
         self.import_spaces();
         let mut rest: Vec<u64> = self
             .f
@@ -419,6 +1017,7 @@ impl<'a> Importer<'a> {
             .collect();
         rest.sort_unstable();
         for id in rest {
+            self.ping("Other elements");
             self.import_free_mesh(id);
         }
         // the rest of the file's layer sets (a roof's, unused ones) come
@@ -477,7 +1076,7 @@ impl<'a> Importer<'a> {
                         ElementKind::Opening(o),
                     ) = (p, &mut e.kind)
                     {
-                        o.frame = t.frame;
+                        o.frame = t.frame.clone();
                     }
                     r.overrides = creabim_core::types::differences(p, &e.kind);
                 }
@@ -508,7 +1107,13 @@ impl<'a> Importer<'a> {
                 };
                 let v = p.arg(2);
                 let number = match v {
-                    Value::Typed(t, _) if t.contains("MEASURE") => self.g.length(v),
+                    Value::Typed(t, _) if t.contains("MEASURE") && !t.contains("THERMAL") => {
+                        self.g.length(v)
+                    }
+                    // a boolean as 1 or 0
+                    Value::Typed(_, inner) if inner.as_bool().is_some() => {
+                        inner.as_bool().map(|b| b as i64 as f64)
+                    }
                     _ => v.as_f64(),
                 };
                 out.insert(key.to_string(), (number, v.as_str().map(str::to_string)));
@@ -560,6 +1165,10 @@ impl<'a> Importer<'a> {
             let eid = self.new_id(e);
             let name = Self::name(e, "Type");
             self.type_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 id: eid,
                 name,
@@ -626,6 +1235,10 @@ impl<'a> Importer<'a> {
             top_z: z + height,
         });
         self.wall_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),
@@ -651,6 +1264,10 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         let name = Self::name(e, f.kind.label());
         self.opening_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),
@@ -689,6 +1306,10 @@ impl<'a> Importer<'a> {
                 let (offset, sill, width, height) = self.snap_to_void(&wall, r);
                 let eid = self.new_id(o);
                 self.opening_elems.push(Element {
+                    ratings: None,
+                    documents: Vec::new(),
+                    phase: Default::default(),
+                    on_site: false,
                     mark: None,
                     source: None,
                     of_type: None,
@@ -702,9 +1323,12 @@ impl<'a> Importer<'a> {
                         width,
                         height,
                         material: None,
-                        frame: Default::default(),
+                        frame: creabim_core::OpeningFrame::for_kind(OpeningKind::Hole),
                         flip_hand: false,
                         flip_facing: false,
+                        roof_at: None,
+                        roof_build: Default::default(),
+                        arrangement: None,
                     }),
                 });
             } else if let Some(&i) = self.slabs.get(&host) {
@@ -872,6 +1496,10 @@ impl<'a> Importer<'a> {
                     .unwrap_or_else(|| format!("Level {i}"));
             }
             self.level_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 id: lid,
@@ -927,6 +1555,7 @@ impl<'a> Importer<'a> {
                             start: p.truncate(),
                             end: q.truncate(),
                             group,
+                            ..Default::default()
                         }),
                     ));
                 }
@@ -1450,6 +2079,10 @@ impl<'a> Importer<'a> {
                 .insert(eid, voids.into_iter().map(|v| (v, false)).collect());
         }
         self.wall_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),
@@ -1522,9 +2155,16 @@ impl<'a> Importer<'a> {
         world: &DMat4,
     ) -> Result<(Wall, Vec<brep::Void>), String> {
         let axis = self.axis(e, world);
+        // a clipped wall stays native, its clip left out, only when it is
+        // one of CreaBIM's own (its top attached to its roof, which it
+        // makes again); from another tool the clip is applied, and the
+        // wall is native only if what is left is still an upright prism
+        // (owner 2026-11-23: the right shape, as a mesh, over a native
+        // wall poking through the roof)
+        let own = self.f.from_creabim();
         let extruded = self
             .prism(e, world)
-            .filter(|p| p.holes.is_empty())
+            .filter(|p| p.holes.is_empty() && (own || !p.clipped))
             .and_then(|p| {
                 let w = match wall_from_footprint(&p.footprint, axis) {
                     Some(w) => w,
@@ -1657,6 +2297,10 @@ impl<'a> Importer<'a> {
         let eid = self.new_id(e);
         self.slabs.insert(id, self.wall_elems.len());
         self.wall_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),
@@ -1731,9 +2375,12 @@ impl<'a> Importer<'a> {
                         width: v.u1 - v.u0,
                         height: v.z1 - v.z0,
                         material: None,
-                        frame: Default::default(),
+                        frame: creabim_core::OpeningFrame::for_kind(OpeningKind::Hole),
                         flip_hand: false,
                         flip_facing: false,
+                        roof_at: None,
+                        roof_build: Default::default(),
+                        arrangement: None,
                     }),
                 ));
             }
@@ -1781,65 +2428,95 @@ impl<'a> Importer<'a> {
         if mesh.faces.is_empty() {
             mesh = self.g.product_mesh(e, &world);
         }
-        let filled = match host.map(|h| (h, self.host_wall(h, &mesh))) {
-            Some((_, Some(wall))) => {
-                let r = opening_in_wall(&wall, &mesh, None);
-                if r.is_none() {
-                    why = Some("could not be measured in its wall".to_string());
-                }
-                r.map(|r| (wall, r))
-            }
-            Some((h, None)) => {
-                why = Some(format!(
-                    "fills an opening in {}, which is not a native wall",
-                    self.label(h)
-                ));
-                None
-            }
-            None => None,
-        };
-        let placed = filled.or_else(|| {
-            if why.is_some() {
-                return None;
-            }
-            // no opening relationship: find a wall the door's body sits in
-            let mesh = self.g.product_mesh(e, &world);
-            let overall = (self.g.length(e.arg(9)), self.g.length(e.arg(8)));
-            let Some(wall) = self.wall_around(&mesh) else {
-                why = Some("has no opening relationship and sits in no native wall".into());
-                return None;
-            };
-            let r = opening_in_wall(&wall, &mesh, Some(overall))?;
-            Some((wall, r))
+        // a roof window CreaBIM wrote: set in the roof it voids, where it
+        // says it was
+        let roof_at = crate::params::label(&self.props(id, OPENING_PSET), "RoofAt").and_then(|t| {
+            let mut v = t.split_whitespace().filter_map(|x| x.parse::<f64>().ok());
+            Some(glam::DVec2::new(v.next()?, v.next()?))
         });
-        let Some((wall, r)) = placed else {
-            let why = why.unwrap_or_else(|| "could not be measured in its wall".into());
-            self.mesh_reason
-                .insert(id, format!("{why}; imported as a mesh"));
-            self.import_free_mesh(id);
-            return;
+        let roof = host
+            .and_then(|h| self.f.get(h))
+            .filter(|h| h.class.starts_with("IFCROOF") || h.class.starts_with("IFCSLAB"))
+            .and_then(|h| h.arg(0).as_str().and_then(ElementId::from_ifc_guid))
+            .filter(|rid| {
+                self.other_elems
+                    .iter()
+                    .chain(&self.wall_elems)
+                    .any(|x| x.id == *rid && matches!(x.kind, ElementKind::Roof(_)))
+            });
+        let placed = match (roof_at, roof) {
+            (Some(at), Some(rid)) => match (self.g.length(e.arg(9)), self.g.length(e.arg(8))) {
+                (Some(w), Some(h)) => Some((rid, 0.0, 0.0, w, h, Some(at))),
+                _ => None,
+            },
+            _ => None,
         };
-        if opening.is_none() {
-            let wall_ifc = self
-                .walls
-                .iter()
-                .find(|(_, w)| w.iter().any(|w| w.id == wall.id))
-                .map(|(i, _)| *i);
-            let host = wall_ifc.map_or_else(|| "a wall".into(), |w| self.label(w));
-            self.note(
+        let placed = match placed {
+            Some(p) => p,
+            None => {
+                let filled = match host.map(|h| (h, self.host_wall(h, &mesh))) {
+                    Some((_, Some(wall))) => {
+                        let r = opening_in_wall(&wall, &mesh, None);
+                        if r.is_none() {
+                            why = Some("could not be measured in its wall".to_string());
+                        }
+                        r.map(|r| (wall, r))
+                    }
+                    Some((h, None)) => {
+                        why = Some(format!(
+                            "fills an opening in {}, which is not a native wall",
+                            self.label(h)
+                        ));
+                        None
+                    }
+                    None => None,
+                };
+                let placed = filled.or_else(|| {
+                    if why.is_some() {
+                        return None;
+                    }
+                    // no opening relationship: find a wall the door's body sits in
+                    let mesh = self.g.product_mesh(e, &world);
+                    let overall = (self.g.length(e.arg(9)), self.g.length(e.arg(8)));
+                    let Some(wall) = self.wall_around(&mesh) else {
+                        why = Some("has no opening relationship and sits in no native wall".into());
+                        return None;
+                    };
+                    let r = opening_in_wall(&wall, &mesh, Some(overall))?;
+                    Some((wall, r))
+                });
+                let Some((wall, r)) = placed else {
+                    let why = why.unwrap_or_else(|| "could not be measured in its wall".into());
+                    self.mesh_reason
+                        .insert(id, format!("{why}; imported as a mesh"));
+                    self.import_free_mesh(id);
+                    return;
+                };
+                if opening.is_none() {
+                    let wall_ifc = self
+                        .walls
+                        .iter()
+                        .find(|(_, w)| w.iter().any(|w| w.id == wall.id))
+                        .map(|(i, _)| *i);
+                    let host = wall_ifc.map_or_else(|| "a wall".into(), |w| self.label(w));
+                    self.note(
                 id,
                 "doors and windows with no opening relationship were placed in the wall they sit in",
                 format!("has no IfcRelFillsElement; placed in {host}"),
             );
-        }
-        let (offset, sill, width, height) = self.snap_to_void(&wall, r);
-        if offset < -0.01 || sill < -0.01 {
-            self.note(
+                }
+                let (offset, sill, width, height) = self.snap_to_void(&wall, r);
+                if offset < -0.01 || sill < -0.01 {
+                    self.note(
                 id,
                 "doors and windows reaching past their wall's start or base were clipped to it",
                 "reaches past its wall's start or base; clipped to it",
             );
-        }
+                }
+                (wall.id, offset.max(0.0), sill.max(0.0), width, height, None)
+            }
+        };
+        let (host_id, offset, sill, width, height, roof_at) = placed;
         self.done.insert(id);
         let material = self.material_for(id);
         let e = self.f.get(id).expect("checked above");
@@ -1849,23 +2526,71 @@ impl<'a> Importer<'a> {
         } else {
             "Window"
         };
+        // a pair of leaves, from the door's operation type (IFC4 names
+        // DOUBLE_DOOR_*, IFC4.3 DOUBLE_PANEL_*)
+        let mut frame = creabim_core::OpeningFrame::for_kind(kind);
+        if kind == OpeningKind::Door {
+            frame.set_operation(
+                kind,
+                door_operation(e.arg(11).as_enum(), e.arg(12).as_str()),
+            );
+        }
+        // its whole grid, when it went out from CreaBIM
+        if let Some(g) = crate::params::label(&self.props(id, OPENING_PSET), "CellGrid")
+            .and_then(|s| serde_json::from_str::<creabim_core::cells::Grid>(s).ok())
+        {
+            frame.grid = g.fitted();
+        }
+        // how it is made, likewise; or what another program declared
+        let own = self.props(id, OPENING_PSET);
+        if let Some(c) = crate::params::label(&own, "Construction")
+            .and_then(|s| serde_json::from_str::<creabim_core::construction::Construction>(s).ok())
+        {
+            frame.construction = c;
+        } else {
+            let pset = if kind == OpeningKind::Door {
+                "Pset_DoorCommon"
+            } else {
+                "Pset_WindowCommon"
+            };
+            let p = self.props(id, pset);
+            let text = |k: &str| crate::params::label(&p, k).unwrap_or("").to_string();
+            let r = &mut frame.construction.ratings;
+            r.fire = text("FireRating");
+            r.acoustic = text("AcousticRating");
+            r.security = text("SecurityRating");
+            r.u_value = p
+                .get("ThermalTransmittance")
+                .and_then(|v| v.0)
+                .filter(|v| v.is_finite() && *v > 0.0);
+            r.accessible = p.get("HandicapAccessible").and_then(|v| v.0) == Some(1.0);
+        }
         self.opening_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),
             id: eid,
             name: Self::name(e, fallback),
             kind: ElementKind::Opening(Opening {
-                host: wall.id,
+                host: host_id,
                 kind,
-                offset: offset.max(0.0),
-                sill: sill.max(0.0),
+                offset,
+                sill,
                 width,
                 height,
                 material,
-                frame: Default::default(),
+                frame,
                 flip_hand: false,
                 flip_facing: false,
+                roof_at,
+                roof_build: Default::default(),
+                // the ribbon or corner it was in, when CreaBIM wrote it
+                arrangement: crate::params::label(&self.props(id, OPENING_PSET), "ArrangementData")
+                    .and_then(|s| serde_json::from_str::<creabim_core::Arrangement>(s).ok()),
             }),
         });
     }
@@ -1918,6 +2643,10 @@ impl<'a> Importer<'a> {
         let material = self.material_for(id);
         let eid = self.new_id(e);
         self.other_elems.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             id: eid,
@@ -1931,6 +2660,7 @@ impl<'a> Importer<'a> {
                     EditMesh {
                         vertices: mesh.vertices,
                         faces: mesh.faces,
+                        edges: vec![],
                     },
                 )
             }),
@@ -2438,6 +3168,52 @@ pub(crate) fn hatch_for(name: &str, description: &str, category: &str) -> Hatch 
         Hatch::Cross
     } else {
         Hatch::Solid
+    }
+}
+
+/// A door's operation from its IFC operation type and user-defined
+/// operation (IFC4 names DOUBLE_DOOR_*, IFC4.3 DOUBLE_PANEL_*).
+fn door_operation(op: Option<&str>, user: Option<&str>) -> creabim_core::Operation {
+    use creabim_core::Operation as O;
+    let Some(op) = op else {
+        return O::Standard;
+    };
+    if op.starts_with("DOUBLE_DOOR_SINGLE_SWING") || op.starts_with("DOUBLE_PANEL_SINGLE_SWING") {
+        O::DoubleSwing
+    } else if op.starts_with("SLIDING_TO_") {
+        O::SurfaceSliding
+    } else if op == "DOUBLE_DOOR_SLIDING" || op == "DOUBLE_PANEL_SLIDING" {
+        O::SurfaceSlidingPair
+    } else if op.starts_with("DOUBLE_SWING_") {
+        O::DoubleAction
+    } else if op == "DOUBLE_DOOR_DOUBLE_SWING" || op == "DOUBLE_PANEL_DOUBLE_SWING" {
+        O::DoubleActionPair
+    } else if op.starts_with("FOLDING_TO_") {
+        O::Bifold
+    } else if op == "DOUBLE_DOOR_FOLDING" || op == "DOUBLE_PANEL_FOLDING" {
+        O::BifoldPair
+    } else if op == "ROLLINGUP" {
+        O::Roller
+    } else if op.starts_with("REVOLVING") {
+        O::Revolving
+    } else if op.starts_with("LIFTING_") || op.starts_with("DOUBLE_PANEL_LIFTING") {
+        // IFC4.3's lifting doors
+        O::Sectional
+    } else if op == "USERDEFINED" {
+        let is = |name: &str| user.is_some_and(|u| u.eq_ignore_ascii_case(name));
+        if is("MULTI_PANEL_SLIDING") {
+            O::MultiSlide
+        } else if is("OFFSET_PIVOT") {
+            O::Pivot
+        } else if is("CENTRE_PIVOT") || is("CENTER_PIVOT") {
+            O::CentrePivot
+        } else if is("SECTIONAL_OVERHEAD") || is("SECTIONAL") {
+            O::Sectional
+        } else {
+            O::Standard
+        }
+    } else {
+        O::Standard
     }
 }
 

@@ -288,6 +288,7 @@ pub(super) fn from_selection(
                 .map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
                 .collect(),
             faces: item.mesh.indices.chunks(3).map(|t| t.to_vec()).collect(),
+            edges: vec![],
         };
         let [r, g, b] = item.color.map(|c| (c * 255.0) as u8);
         let look = item
@@ -322,6 +323,7 @@ pub(super) fn from_selection(
             parts,
             symbol: vec![],
             catalogue: Some(key.to_string()),
+            light: None,
         },
         materials,
     })
@@ -367,17 +369,23 @@ fn part_material(
 pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) -> &'static str {
     let mut label = "";
     let s = o.size();
-    ui.label(format!(
-        "{} wide, {} deep, {} high",
-        crate::units::len(s.x),
-        crate::units::len(s.y),
-        crate::units::len(s.z)
-    ));
+    crate::props::worked_out(
+        ui,
+        "object-type",
+        &[
+            crate::props::Worked::new("Width", crate::units::len(s.x)),
+            crate::props::Worked::new("Depth", crate::units::len(s.y)),
+            crate::props::Worked::new("Height", crate::units::len(s.z)),
+        ],
+    );
     // one setting a row, as the rest of Properties (MU23)
     crate::props::row(ui, "Category", |ui| {
-        ui.spacing_mut().combo_width = ui.available_width();
         egui::ComboBox::from_id_salt("object_category")
             .icon(crate::props::combo_icon)
+            // as wide as the row and no wider: at its text's width it ran
+            // past the panel's edge (MU119)
+            .width(ui.available_width())
+            .truncate()
             .selected_text(o.category.label())
             .show_ui(ui, |ui| {
                 for c in ObjectCategory::ALL {
@@ -388,9 +396,12 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
             });
     });
     crate::props::row(ui, "Placed", |ui| {
-        ui.spacing_mut().combo_width = ui.available_width();
         egui::ComboBox::from_id_salt("object_mount")
             .icon(crate::props::combo_icon)
+            // as wide as the row and no wider: at its text's width it ran
+            // past the panel's edge (MU119)
+            .width(ui.available_width())
+            .truncate()
             .selected_text(mount_label(o.mount))
             .show_ui(ui, |ui| {
                 for m in Mount::ALL {
@@ -408,27 +419,29 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
                  From the ceiling: it hangs below the ceiling over it, centred where clicked",
             );
     });
+    // a label short enough to read whole; which way it measures is said
+    // in the hover (MU119: "New ones below the ceiling" was cut to "New on…")
     let new_at = if o.mount == Mount::Ceiling {
-        "New ones below the ceiling"
+        "New ones below the ceiling: how far under the ceiling the Object tool hangs new ones of this type, to their top"
     } else {
-        "New ones above the floor"
+        "New ones above the floor: how high the Object tool places new ones of this type, to their underside"
     };
-    crate::props::row(ui, new_at, |ui| {
+    crate::props::row(ui, "New ones", |ui| {
         if crate::props::fill(ui, crate::units::drag(&mut o.offset).range(-10.0..=100.0))
-            .on_hover_text(
-                "The height the Object tool places new ones at: to their underside, \
-                 or from the ceiling down to their top",
-            )
+            .on_hover_text(new_at)
             .changed()
         {
             label = "Object mounting height";
         }
     });
     crate::props::row(ui, "IFC class", |ui| {
-        ui.spacing_mut().combo_width = ui.available_width();
         let mut class = o.ifc.class.clone();
         egui::ComboBox::from_id_salt("object_class")
             .icon(crate::props::combo_icon)
+            // as wide as the row and no wider: at its text's width it ran
+            // past the panel's edge (MU119)
+            .width(ui.available_width())
+            .truncate()
             .selected_text(&class)
             .show_ui(ui, |ui| {
                 for (c, _, _) in IFC_CLASSES {
@@ -441,10 +454,13 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
         }
     });
     crate::props::row(ui, "IFC type", |ui| {
-        ui.spacing_mut().combo_width = ui.available_width();
         let mut pre = o.ifc.predefined.clone();
         egui::ComboBox::from_id_salt("object_predefined")
             .icon(crate::props::combo_icon)
+            // as wide as the row and no wider: at its text's width it ran
+            // past the panel's edge (MU119)
+            .width(ui.available_width())
+            .truncate()
             .selected_text(&pre)
             .show_ui(ui, |ui| {
                 for p in objects::predefined_types(&o.ifc.class) {
@@ -457,69 +473,234 @@ pub(super) fn type_fields(ui: &mut egui::Ui, model: &Model, o: &mut ObjectType) 
         }
     });
     if let Some(k) = &o.catalogue {
-        ui.label(egui::RichText::new(format!("From the catalogue: {k}")).weak());
+        crate::props::row(ui, "Catalogue", |ui| {
+            ui.add(egui::Label::new(k.as_str()).truncate())
+                .on_hover_text(format!("It came from the catalogue: {k}"))
+        });
     }
     if !o.parts.is_empty() {
-        crate::props::subsection(ui, "object.parts", "Parts", true).then(|| {
-            for (i, p) in o.parts.iter_mut().enumerate() {
-                let name = if p.name.is_empty() {
-                    format!("Part {}", i + 1)
-                } else {
-                    p.name.clone()
-                };
-                crate::props::row(ui, &name, |ui| {
-                    ui.spacing_mut().combo_width = ui.available_width();
-                    if part_material(ui, model, i, &mut p.material) {
-                        label = "Part material";
-                    }
-                });
-            }
-        });
+        crate::props::sub_box(
+            ui,
+            "object.parts",
+            "Parts",
+            Some(o.parts.len()),
+            true,
+            |ui| {
+                for (i, p) in o.parts.iter_mut().enumerate() {
+                    let name = if p.name.is_empty() {
+                        format!("Part {}", i + 1)
+                    } else {
+                        p.name.clone()
+                    };
+                    crate::props::row(ui, &name, |ui| {
+                        ui.spacing_mut().combo_width = ui.available_width();
+                        if part_material(ui, model, i, &mut p.material) {
+                            label = "Part material";
+                        }
+                    });
+                }
+            },
+        );
     }
     label
 }
 
+/// The Light block of an object type (Visuals REV02): shown for a light
+/// fitting, and for any type given a light. Returns the undo label, or "".
+pub(super) fn light_fields(ui: &mut egui::Ui, o: &mut objects::ObjectType) -> &'static str {
+    let fitting = o.is_light_fitting();
+    let mut label = "";
+    let Some(mut l) = o.light_given() else {
+        // not a fitting: it can be made to give light (a screen, a sign)
+        let mut on = false;
+        if crate::props::check(ui, "On", &mut on, "Gives light").changed() && on {
+            o.light = Some(objects::Light::typical(o.mount, false));
+            label = "Object light";
+        }
+        return label;
+    };
+    let was = l.clone();
+    crate::props::check(ui, "On", &mut l.on, "Gives light")
+        .on_hover_text("Unticked, it is drawn and gives no light in a render");
+    ui.add_enabled_ui(l.on, |ui| {
+        crate::props::row(ui, "Output", |ui| {
+            crate::props::fill(
+                ui,
+                egui::DragValue::new(&mut l.lumens).range(10.0..=50_000.0).speed(10.0).suffix(" lm"),
+            )
+            .on_hover_text("How much light it gives, in lumens, as a lamp's box says: about 800 for a 60 W bulb of old, 1500 for a bright ceiling light")
+        });
+        crate::props::row(ui, "Colour", |ui| {
+            crate::props::fill(
+                ui,
+                egui::DragValue::new(&mut l.kelvin).range(1800.0..=8000.0).speed(25.0).suffix(" K"),
+            )
+            .on_hover_text("Its light's colour, in kelvin: 2700 warm white, 4000 neutral, 6500 daylight")
+        });
+        crate::props::row(ui, "Beam", |ui| {
+            egui::ComboBox::from_id_salt("object.light.beam")
+                .icon(crate::props::combo_icon)
+                .selected_text(l.beam.label())
+                .width(ui.available_width())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for (b, tip) in [
+                        (objects::Spread::Narrow, "A spot or a downlight: a tight cone"),
+                        (objects::Spread::Medium, "A wider cone, as over a worktop"),
+                        (objects::Spread::Wide, "A pendant or a ceiling light: across the room, with a glow round it"),
+                        (objects::Spread::AllRound, "A bare bulb or a globe: the same every way"),
+                    ] {
+                        ui.selectable_value(&mut l.beam, b, b.label()).on_hover_text(tip);
+                    }
+                });
+        });
+        crate::props::row(ui, "Group", |ui| {
+            crate::props::text_field(
+                ui,
+                egui::TextEdit::singleline(&mut l.group).hint_text("its type's name"),
+                f32::INFINITY,
+            )
+            .on_hover_text("The group it is dimmed with in Visuals, Light: \"Kitchen downlights\". Give several types the same group to dim them together. Empty: its type's name")
+        });
+    });
+    if l != was {
+        // a fitting set back to exactly what its kind gives keeps none of
+        // its own, so its file reads as before
+        let usual = objects::Light::typical(o.mount, o.ifc.predefined == "DIRECTIONSOURCE");
+        o.light = (!(fitting && l == usual)).then_some(l);
+        label = "Object light";
+    }
+    label
+}
+
+/// Turn `o` by `by` degrees (anticlockwise) about its footprint's middle
+/// `mid` (in its own axes), so it turns in place (MU142: the quarter turn
+/// was about its back corner, and the object moved as it turned).
+pub(crate) fn turn_about_centre(o: &mut objects::Object, mid: glam::DVec2, by: f64) {
+    let c = o.to_plan(mid);
+    o.rotation = (o.rotation + by).rem_euclid(360.0);
+    let now = o.to_plan(mid);
+    o.position += c - now;
+}
+
 /// A placed object's own fields; `hung` when its type hangs from the
-/// ceiling. Returns the undo label, or "".
+/// ceiling; `mid` its footprint's middle in its own axes, what it turns
+/// about. Returns the undo label, or "".
 pub(super) fn object_fields(
     ui: &mut egui::Ui,
     o: &mut objects::Object,
     hung: bool,
+    mid: glam::DVec2,
 ) -> &'static str {
     let mut label = "";
-    let height = if hung {
-        "Below the ceiling"
+    // short labels, the whole meaning in the hover (MU119: "Below the
+    // ceiling" was cut to "Below t…")
+    let (height, tip) = if hung {
+        (
+            "Below",
+            "Below the ceiling: how far its top hangs under the ceiling over it",
+        )
     } else {
-        "Above its level"
+        (
+            "Height",
+            "Above its level: how high its underside is over its level's floor",
+        )
     };
     crate::props::row(ui, height, |ui| {
-        if crate::props::fill(ui, crate::units::drag(&mut o.offset).range(-10.0..=100.0)).changed()
+        if crate::props::fill(ui, crate::units::drag(&mut o.offset).range(-10.0..=100.0))
+            .on_hover_text(tip)
+            .changed()
         {
             label = "Object height";
         }
     });
+    // the angle in its field, whole; every turn about its middle, so it
+    // turns in place (MU142)
+    let was = o.rotation;
+    let mut angle = o.rotation;
     crate::props::row(ui, "Rotation", |ui| {
-        if ui
-            .add(
-                egui::DragValue::new(&mut o.rotation)
-                    .speed(1.0)
-                    .suffix("°")
-                    .range(-360.0..=720.0),
-            )
-            .changed()
+        if crate::props::fill(
+            ui,
+            egui::DragValue::new(&mut angle)
+                .speed(1.0)
+                .suffix("°")
+                .range(-360.0..=720.0)
+                // typed, it turns the object once the number is whole
+                // (Enter or leaving the field): turned at every key, the
+                // panel was drawn again under the cursor and typing 140
+                // took 1, then 14 (MU141)
+                .update_while_editing(false),
+        )
+        .changed()
         {
-            o.rotation = o.rotation.rem_euclid(360.0);
-            label = "Turn object";
-        }
-        if ui
-            .small_button("↺ 90°")
-            .on_hover_text("A quarter turn anticlockwise about its back edge")
-            .clicked()
-        {
-            o.rotation = (o.rotation + 90.0).rem_euclid(360.0);
             label = "Turn object";
         }
     });
+    if label == "Turn object" {
+        turn_about_centre(o, mid, angle - was);
+    }
+    // the turns, a row of their own: three buttons and the angle did not
+    // fit the panel at its narrowest (MU142 mock-up, part 2)
+    let mut by = None;
+    crate::props::row(ui, "Turn", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            let h = ui.spacing().interact_size.y;
+            let w = ((ui.available_width() - 2.0) / 3.0).floor().max(26.0);
+            // drawn by hand: egui's buttons cut their text to "…" in a
+            // narrow panel (MU142: "…", "1…", "…")
+            // plain angles, no arrows (MU142: they "don't belong"); + is
+            // anticlockwise, as Rotation counts
+            let none: Option<&str> = None;
+            for (icon, text, deg, tip) in [
+                (
+                    none,
+                    "−90°",
+                    -90.0,
+                    "A quarter turn clockwise, about its middle",
+                ),
+                (none, "180°", 180.0, "A half turn, about its middle"),
+                (
+                    none,
+                    "+90°",
+                    90.0,
+                    "A quarter turn anticlockwise, about its middle",
+                ),
+            ] {
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+                let v = ui.style().interact(&resp);
+                ui.painter().rect(
+                    r,
+                    v.corner_radius,
+                    v.weak_bg_fill,
+                    v.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+                let font = egui::FontId::proportional(12.0);
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(text.into(), font, v.text_color());
+                let icon_w = if icon.is_some() { 13.0 } else { 0.0 };
+                let x = r.center().x - (icon_w + galley.size().x) / 2.0;
+                if let Some(name) = icon {
+                    let ir = egui::Rect::from_min_size(
+                        egui::pos2(x, r.center().y - 6.5),
+                        egui::vec2(13.0, 13.0),
+                    );
+                    crate::svgicon::paint(ui.painter(), ir, name, v.text_color());
+                }
+                let at = egui::pos2(x + icon_w, r.center().y - galley.size().y / 2.0);
+                ui.painter().galley(at, galley, v.text_color());
+                if resp.on_hover_text(tip).clicked() {
+                    by = Some(deg);
+                }
+            }
+        });
+    });
+    if let Some(deg) = by {
+        turn_about_centre(o, mid, deg);
+        label = "Turn object";
+    }
     label
 }
 
@@ -564,14 +745,37 @@ impl CreaBimApp {
         let creabim_core::TypeParams::Object(o) = &mut ty.params else {
             return;
         };
-        ui.separator();
-        ui.label(egui::RichText::new(format!("Its type, {tname}")).strong());
-        let label = type_fields(ui, model, o);
-        if ui
-            .small_button("Save to catalogue")
-            .on_hover_text("Keep this object in your own catalogue, for every project")
-            .clicked()
-        {
+        // a block of its own, as every other part of Properties is: loose
+        // under the last block its rows ran wider than the panel and lined
+        // up with nothing (owner, MU119)
+        let open = self.prop_header(ui, "object-its-type", "Its type", true, None);
+        let model = self.doc.model();
+        let mut label = "";
+        let mut save = false;
+        crate::props::fold(ui, open, |ui| {
+            ui.vertical(|ui| {
+                crate::props::row(ui, "Type", |ui| {
+                    ui.add(egui::Label::new(tname.as_str()).truncate())
+                        .on_hover_text(format!("{tname}: what every object of this type shares. A change here changes them all"))
+                });
+                label = type_fields(ui, model, o);
+                // what it gives as light, on the fitting itself
+                let lit = crate::props::sub_box(ui, "object.light", "Light", None, true, |ui| light_fields(ui, o))
+                    .unwrap_or("");
+                if !lit.is_empty() {
+                    label = lit;
+                }
+                save = crate::props::action(
+                    ui,
+                    "",
+                    "To catalogue",
+                    "Keep this object in your own catalogue, for every project",
+                    true,
+                )
+                .clicked();
+            });
+        });
+        if save {
             self.catalogue.save_name = tname.clone();
             self.run_catalogue(CatAsk::SaveSelection);
         }
@@ -630,11 +834,11 @@ impl CreaBimApp {
         let thumb = THUMB as f32 + 26.0;
         let (width, pos) = match other {
             Some(r) if r.width() > 3.0 * thumb => {
-                let w = (r.width() - 24.0).min(5.0 * thumb);
+                let w = (r.width() - 24.0).min(5.0 * thumb + 170.0);
                 (w, egui::pos2(r.max.x - w - 12.0, r.min.y + 12.0))
             }
             _ => {
-                let w = 3.0 * thumb + 24.0;
+                let w = 3.0 * thumb + 194.0;
                 (w, egui::pos2(area.max.x - w - 16.0, area.min.y + 64.0))
             }
         };
@@ -647,83 +851,118 @@ impl CreaBimApp {
             .collapsible(false)
             .show(ctx, |ui| {
                 let cat = &mut self.catalogue;
-                ui.horizontal_wrapped(|ui| {
-                    ui.selectable_value(&mut cat.category, None, "All");
-                    for c in ObjectCategory::ALL {
-                        ui.selectable_value(&mut cat.category, Some(c), c.label());
-                    }
+                // the search at the top right, as the other library windows
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::props::text_field(ui, egui::TextEdit::singleline(&mut cat.filter)
+                            .hint_text("Find an object"), 200.0);
                 });
-                ui.add(
-                    egui::TextEdit::singleline(&mut cat.filter).vertical_align(egui::Align::Center)
-                        .hint_text("Search")
-                        .desired_width(220.0),
-                );
-                ui.separator();
                 let filter = cat.filter.to_lowercase();
-                let wanted = |c: &CatalogueObject| {
-                    cat.category.is_none_or(|k| k == c.object.category)
-                        && (filter.is_empty()
-                            || c.name.to_lowercase().contains(&filter)
-                            || c.description.to_lowercase().contains(&filter))
+                let matches = |c: &CatalogueObject| {
+                    filter.is_empty()
+                        || c.name.to_lowercase().contains(&filter)
+                        || c.description.to_lowercase().contains(&filter)
                 };
-                let tile = |ui: &mut egui::Ui,
-                            c: &CatalogueObject,
-                            own: Option<ElementId>,
-                            user: bool,
-                            asks: &mut Vec<CatAsk>| {
-                    let key = match own {
-                        Some(_) => format!("{}@{rev}", c.key),
-                        None => c.key.clone(),
-                    };
-                    let tex = cat.thumbs.get(&key);
-                    let picked = current.as_deref() == Some(c.key.as_str());
-                    let s = c.object.size();
-                    ui.vertical(|ui| {
-                        ui.set_width(THUMB as f32 + 16.0);
-                        let r = match tex {
-                            Some(t) => ui.add(
-                                egui::Button::image(
-                                    egui::Image::new(t)
-                                        .fit_to_exact_size(Vec2::splat(THUMB as f32)),
-                                )
-                                .selected(picked),
-                            ),
-                            None => ui.add(egui::Button::new(&c.name).selected(picked)),
-                        };
-                        let r = r.on_hover_text(format!(
-                            "{}\n{} × {} × {}\n{} {}\n{}",
-                            c.name,
-                            crate::units::len(s.x),
-                            crate::units::len(s.y),
-                            crate::units::len(s.z),
-                            c.object.ifc.class,
-                            c.object.ifc.predefined,
-                            if c.description.is_empty() {
-                                "Click to place it"
-                            } else {
-                                &c.description
+                let all: Vec<&(CatalogueObject, Option<ElementId>, bool)> =
+                    shown.iter().chain(&project).filter(|r| matches(&r.0)).collect();
+                let count = |k: Option<ObjectCategory>| {
+                    all.iter()
+                        .filter(|r| k.is_none_or(|k| k == r.0.object.category))
+                        .count()
+                };
+                let mut state = (cat, &mut asks);
+                crate::library::frame(
+                    ui,
+                    "catalogue",
+                    150.0,
+                    &mut state,
+                    |ui, (cat, _)| {
+                        // categories as a list, with how many each holds
+                        let mut pick = |ui: &mut egui::Ui, k: Option<ObjectCategory>, label: &str| {
+                            let n = count(k);
+                            if crate::library::item(ui, cat.category == k, label, &n.to_string(), None)
+                                .clicked()
+                            {
+                                cat.category = k;
                             }
-                        ));
-                        if r.clicked() {
-                            asks.push(CatAsk::Place(Box::new(c.clone()), own));
+                        };
+                        pick(ui, None, "All");
+                        for c in ObjectCategory::ALL {
+                            pick(ui, Some(c), c.label());
                         }
-                        if user {
-                            r.context_menu(|ui| {
-                                if ui.button("Delete from the catalogue").clicked() {
-                                    asks.push(CatAsk::Delete(c.key.clone()));
-                                    ui.close();
+                    },
+                    |ui, (_, asks)| {
+                        if ui
+                            .button("Import…")
+                            .on_hover_text("A .blend, .FCStd, .gltf or .glb file becomes one object of your catalogue, each mesh a part in its material")
+                            .clicked()
+                        {
+                            asks.push(CatAsk::Import);
+                        }
+                        if ui
+                            .button("Folder")
+                            .on_hover_text("Where your catalogue is kept: one .json file per object")
+                            .clicked()
+                        {
+                            asks.push(CatAsk::Reveal);
+                        }
+                    },
+                    |ui, (cat, asks)| {
+                        let wanted = |c: &CatalogueObject| {
+                            cat.category.is_none_or(|k| k == c.object.category) && matches(c)
+                        };
+                        let tile = |ui: &mut egui::Ui,
+                                    cat: &CatalogueUi,
+                                    c: &CatalogueObject,
+                                    own: Option<ElementId>,
+                                    user: bool,
+                                    asks: &mut Vec<CatAsk>| {
+                            let key = match own {
+                                Some(_) => format!("{}@{rev}", c.key),
+                                None => c.key.clone(),
+                            };
+                            let tex = cat.thumbs.get(&key);
+                            let picked = current.as_deref() == Some(c.key.as_str());
+                            let s = c.object.size();
+                            ui.vertical(|ui| {
+                                ui.set_width(THUMB as f32 + 16.0);
+                                let r = match tex {
+                                    Some(t) => ui.add(
+                                        egui::Button::image(
+                                            egui::Image::new(t)
+                                                .fit_to_exact_size(Vec2::splat(THUMB as f32)),
+                                        )
+                                        .selected(picked),
+                                    ),
+                                    None => ui.add(egui::Button::new(&c.name).selected(picked)),
+                                };
+                                let r = r.on_hover_text(format!(
+                                    "{}\n{} × {} × {}\n{} {}\n{}",
+                                    c.name,
+                                    crate::units::len(s.x),
+                                    crate::units::len(s.y),
+                                    crate::units::len(s.z),
+                                    c.object.ifc.class,
+                                    c.object.ifc.predefined,
+                                    if c.description.is_empty() {
+                                        "Click to place it"
+                                    } else {
+                                        &c.description
+                                    }
+                                ));
+                                if r.clicked() {
+                                    asks.push(CatAsk::Place(Box::new(c.clone()), own));
                                 }
+                                if user {
+                                    r.context_menu(|ui| {
+                                        if ui.button("Delete from the catalogue").clicked() {
+                                            asks.push(CatAsk::Delete(c.key.clone()));
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                                ui.add(egui::Label::new(egui::RichText::new(&c.name).size(11.5)).wrap());
                             });
-                        }
-                        ui.add(egui::Label::new(egui::RichText::new(&c.name).size(11.5)).wrap());
-                    });
-                };
-                let bottom = 118.0;
-                egui::ScrollArea::vertical()
-                    .id_salt("catalogue_items")
-                    .max_height((ui.available_height() - bottom).max(160.0))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
+                        };
                         for (heading, rows) in [
                             ("Starters", shown.iter().filter(|r| !r.2).collect::<Vec<_>>()),
                             ("Yours", shown.iter().filter(|r| r.2).collect()),
@@ -731,75 +970,41 @@ impl CreaBimApp {
                         ] {
                             let rows: Vec<_> = rows.into_iter().filter(|r| wanted(&r.0)).collect();
                             if rows.is_empty() {
-                                if heading == "Yours" && cat.category.is_none() && filter.is_empty()
-                                {
-                                    ui.label(
-                                        egui::RichText::new(
-                                            "YOURS: nothing yet. Import one from Blender, FreeCAD or glTF, or save a selection.",
-                                        )
-                                        .size(10.5)
-                                        .color(ui.visuals().weak_text_color()),
-                                    );
+                                if heading == "Yours" && cat.category.is_none() && filter.is_empty() {
+                                    crate::props::empty(ui, "Yours: nothing yet. Import one from Blender, FreeCAD or glTF, or save a selection.");
                                 }
                                 continue;
                             }
-                            ui.label(
-                                egui::RichText::new(heading.to_uppercase())
-                                    .size(10.5)
-                                    .strong()
-                                    .color(ui.visuals().weak_text_color()),
-                            );
+                            let open = crate::library::group(ui, "catalogue", heading, rows.len());
+                            // the rows fold smoothly (AMD-017)
+                            crate::props::fold(ui, open, |ui| {
                             // rows of as many pictures as fit across
                             let per = ((ui.available_width() / (THUMB as f32 + 26.0)) as usize).max(1);
                             for chunk in rows.chunks(per) {
                                 ui.horizontal_top(|ui| {
                                     for (c, own, user) in chunk {
-                                        tile(ui, c, *own, *user, &mut asks);
+                                        tile(ui, cat, c, *own, *user, asks);
                                     }
                                 });
                             }
-                            ui.add_space(6.0);
+                            });
                         }
-                    });
-                ui.separator();
-                crate::props::flow(ui, |ui| {
-                    if ui
-                        .button("Import from Blender, FreeCAD or glTF…")
-                        .on_hover_text("A .blend, .FCStd, .gltf or .glb file becomes one object of your catalogue, each mesh a part in its material")
-                        .clicked()
-                    {
-                        asks.push(CatAsk::Import);
-                    }
-                    if ui
-                        .small_button("Open folder")
-                        .on_hover_text("Where your catalogue is kept: one .json file per object")
-                        .clicked()
-                    {
-                        asks.push(CatAsk::Reveal);
-                    }
-                });
-                crate::props::flow(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut cat.save_name).vertical_align(egui::Align::Center)
-                            .hint_text("Name")
-                            .desired_width(200.0),
-                    );
-                    let r = ui.add_enabled(
-                        !selected.is_empty(),
-                        egui::Button::new("Save selection to catalogue"),
-                    );
-                    if r.on_hover_text("An object's type, or masses and other elements as one new object, kept for every project")
-                        .on_disabled_hover_text("Select an object, masses or other elements first")
-                        .clicked()
-                    {
-                        asks.push(CatAsk::SaveSelection);
-                    }
-                });
-                ui.label(
-                    egui::RichText::new(
-                        "Click an object, then click in a plan or the 3D view to place it. Space turns it.",
-                    )
-                    .weak(),
+                        crate::library::foot(
+                            ui,
+                            "Click an object, then click in a view. Space turns it.",
+                            |ui| {
+                                let r = ui.add_enabled(!selected.is_empty(), egui::Button::new("Save selection"));
+                                if r.on_hover_text("An object's type, or masses and other elements as one new object, kept for every project")
+                                    .on_disabled_hover_text("Select an object, masses or other elements first")
+                                    .clicked()
+                                {
+                                    asks.push(CatAsk::SaveSelection);
+                                }
+                                crate::props::text_field(ui, egui::TextEdit::singleline(&mut cat.save_name)
+                                        .hint_text("Its name"), 140.0);
+                            },
+                        );
+                    },
                 );
             });
         self.catalogue.open = open;
@@ -924,6 +1129,123 @@ impl CreaBimApp {
             },
             Err(e) => self.status = format!("Couldn't read it: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::*;
+
+    /// A turn from Properties is about the object's middle: its middle
+    /// stays where it was, whatever its first angle (MU142: the quarter
+    /// turn was about its back corner, and the object moved).
+    #[test]
+    fn a_turn_keeps_the_objects_middle_in_place() {
+        let mid = glam::DVec2::new(0.4, -0.35);
+        for start in [0.0, 35.0, 147.0] {
+            let mut o = objects::Object::new(ElementId::NIL, glam::DVec2::new(3.0, 2.0), start);
+            let c = o.to_plan(mid);
+            for by in [90.0, 180.0, -90.0] {
+                turn_about_centre(&mut o, mid, by);
+                assert!(
+                    o.to_plan(mid).distance(c) < 1e-9,
+                    "moved by turning {by} from {start}"
+                );
+            }
+            // 90 + 180 - 90: a half turn on from where it started
+            assert!(
+                (o.rotation - (start + 180.0).rem_euclid(360.0)).abs() < 1e-9,
+                "{}",
+                o.rotation
+            );
+        }
+    }
+
+    /// Typing 140 into an object's Rotation turns it once, when Enter is
+    /// pressed, and the field keeps every key typed (MU141: each key turned
+    /// the object and the panel threw the cursor out: 1, then 14).
+    #[test]
+    fn a_rotation_is_typed_whole_and_taken_on_enter() {
+        let ctx = egui::Context::default();
+        let mut o = objects::Object::new(ElementId::NIL, glam::DVec2::ZERO, 0.0);
+        let taken = std::cell::RefCell::new(vec![]);
+        let mut t = 0.0;
+        let mut frame = |o: &mut objects::Object, events: Vec<egui::Event>| -> Option<egui::Rect> {
+            t += 0.1;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 200.0),
+                )),
+                events,
+                time: Some(t),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                ui.set_max_width(232.0);
+                if !object_fields(ui, o, false, glam::DVec2::ZERO).is_empty() {
+                    taken.borrow_mut().push(o.rotation);
+                }
+            });
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(s)
+                    if s.galley.text().ends_with('°') && !s.galley.text().contains('9') =>
+                {
+                    Some(c.shape.visual_bounding_rect())
+                }
+                _ => None,
+            })
+        };
+        let rect = frame(&mut o, vec![]).expect("the rotation field");
+        let at = rect.center();
+        let press = |down| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: down,
+            modifiers: Default::default(),
+        };
+        frame(&mut o, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut o, vec![press(true)]);
+        frame(&mut o, vec![press(false)]);
+        // select what is there and type over it, key by key
+        frame(
+            &mut o,
+            vec![egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+        );
+        for k in ["1", "4", "0"] {
+            frame(&mut o, vec![egui::Event::Text(k.into())]);
+            assert_eq!(
+                o.rotation,
+                0.0,
+                "turned before Enter, at {k}: {:?}",
+                taken.borrow()
+            );
+        }
+        frame(
+            &mut o,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        frame(&mut o, vec![]);
+        assert_eq!(o.rotation, 140.0, "taken: {:?}", taken.borrow());
+        // turned once, to 140: no 1 or 14 on the way
+        assert!(
+            taken.borrow().iter().all(|r| *r == 0.0 || *r == 140.0),
+            "turned on the way: {:?}",
+            taken.borrow()
+        );
     }
 }
 

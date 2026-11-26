@@ -219,16 +219,49 @@ pub struct WallType {
 }
 
 /// What doors or windows of a type share.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OpeningType {
     pub width: f64,
     pub height: f64,
     #[serde(default)]
     pub sill: f64,
-    #[serde(default)]
     pub frame: OpeningFrame,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<ElementId>,
+}
+
+/// An [`OpeningType`] as files hold it, its frame read knowing whether
+/// it is a door's or a window's.
+#[derive(Deserialize)]
+struct OpeningTypeFile {
+    width: f64,
+    height: f64,
+    #[serde(default)]
+    sill: f64,
+    #[serde(default)]
+    frame: Option<crate::element::FrameFile>,
+    #[serde(default)]
+    material: Option<ElementId>,
+}
+
+impl OpeningTypeFile {
+    fn into_type(self, kind: crate::OpeningKind) -> OpeningType {
+        OpeningType {
+            width: self.width,
+            height: self.height,
+            sill: self.sill,
+            frame: self.frame.unwrap_or_default().into_frame(kind),
+            material: self.material,
+        }
+    }
+}
+
+fn door_type<'de, D: serde::Deserializer<'de>>(d: D) -> Result<OpeningType, D::Error> {
+    Ok(OpeningTypeFile::deserialize(d)?.into_type(crate::OpeningKind::Door))
+}
+
+fn window_type<'de, D: serde::Deserializer<'de>>(d: D) -> Result<OpeningType, D::Error> {
+    Ok(OpeningTypeFile::deserialize(d)?.into_type(crate::OpeningKind::Window))
 }
 
 /// What slabs or roofs of a type share.
@@ -272,7 +305,9 @@ pub struct FootingType {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TypeParams {
     Wall(WallType),
+    #[serde(deserialize_with = "door_type")]
     Door(OpeningType),
+    #[serde(deserialize_with = "window_type")]
     Window(OpeningType),
     Slab(SlabType),
     Roof(SlabType),
@@ -288,6 +323,10 @@ pub struct ElementType {
     pub params: TypeParams,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// What every instance declares (fire, acoustic, U-value,
+    /// load-bearing), unless it sets its own: see [`crate::common`].
+    #[serde(default, skip_serializing_if = "crate::construction::Ratings::is_none")]
+    pub ratings: crate::construction::Ratings,
 }
 
 impl ElementType {
@@ -295,6 +334,7 @@ impl ElementType {
         Self {
             params,
             description: String::new(),
+            ratings: Default::default(),
         }
     }
 
@@ -463,6 +503,7 @@ fn rule_text(u: &crate::Units, r: GridRule) -> String {
     match r {
         GridRule::Spacing(s) => u.dimension(s),
         GridRule::Count(n) => format!("{n} bays"),
+        GridRule::Fit(m) => format!("bays up to {}", u.dimension(m)),
     }
 }
 
@@ -516,7 +557,7 @@ pub fn from_instance(e: &Element) -> Option<TypeParams> {
                 width: o.width,
                 height: o.height,
                 sill: o.sill,
-                frame: o.frame,
+                frame: o.frame.clone(),
                 material: o.material,
             };
             match o.kind {
@@ -667,7 +708,7 @@ pub fn apply(model: &Model, params: &TypeParams, e: &mut Element, keep: &[Param]
                 o.sill = t.sill;
             }
             if set(Param::Frame) {
-                o.frame = t.frame;
+                o.frame = t.frame.clone();
             }
             if set(Param::Material) {
                 o.material = t.material;
@@ -1036,15 +1077,16 @@ fn curtain(vertical: GridRule, horizontal: GridRule, panel: PanelKind) -> TypePa
 }
 
 fn opening(width: f64, height: f64, sill: f64, across: u32, up: u32) -> OpeningType {
+    let kind = if sill == 0.0 {
+        crate::OpeningKind::Door
+    } else {
+        crate::OpeningKind::Window
+    };
     OpeningType {
         width,
         height,
         sill,
-        frame: OpeningFrame {
-            panes_across: across,
-            panes_up: up,
-            ..Default::default()
-        },
+        frame: OpeningFrame::for_kind(kind).with_panes(across, up),
         material: None,
     }
 }

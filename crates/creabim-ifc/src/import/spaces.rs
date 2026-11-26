@@ -73,6 +73,10 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 of_type: None,
@@ -98,6 +102,10 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 of_type: None,
@@ -137,6 +145,10 @@ impl Importer<'_> {
             self.done.insert(id);
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 of_type: None,

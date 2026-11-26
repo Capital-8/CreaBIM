@@ -263,13 +263,18 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
         }
         ElementKind::Opening(o) => {
             let Xform::Move(d) = t else { return None };
-            let ElementKind::Wall(w) = &model.get(o.host)?.kind else {
-                return None;
-            };
-            let max = (w.length() - o.width).max(0.0);
-            o.offset = (o.offset + d.truncate().dot(w.direction())).clamp(0.0, max);
-            o.sill = (o.sill + d.z).max(0.0);
-            crate::walls::clamp_opening(model, o);
+            // a roof window moves over its roof, in plan
+            if let Some(at) = &mut o.roof_at {
+                *at += d.truncate();
+            } else {
+                let ElementKind::Wall(w) = &model.get(o.host)?.kind else {
+                    return None;
+                };
+                let max = (w.length() - o.width).max(0.0);
+                o.offset = (o.offset + d.truncate().dot(w.direction())).clamp(0.0, max);
+                o.sill = (o.sill + d.z).max(0.0);
+                crate::walls::clamp_opening(model, o);
+            }
         }
         ElementKind::FreeMesh(m) => {
             let z = DVec3::Z * elevation(m.level);
@@ -423,6 +428,12 @@ pub fn transformed(model: &Model, e: &Element, t: &Xform) -> Option<Element> {
                 o.position = t.point2(o.position);
                 o.rotation = mirrored_angle(o.rotation, *factor)?;
             }
+            // scaled, it takes a size of its own; its type stays as it was
+            // (MU142, decision 6)
+            Xform::Scale { factor, .. } if *factor > 0.0 => {
+                o.position = t.point2(o.position);
+                o.scale *= factor;
+            }
             _ => return None,
         },
         ElementKind::Column(_)
@@ -513,10 +524,13 @@ pub fn mirrored_angle(degrees: f64, factor: DVec3) -> Option<f64> {
     if (factor.abs() - DVec3::ONE).abs().max_element() > 1e-9 || factor.z < 0.0 {
         return None;
     }
+    // the angle turns the object's own axes; its back (its own +y) is what
+    // must land mirrored, so a thing against a wall stays against the
+    // mirrored wall (MU142: it came out facing away)
     let a = match (factor.x < 0.0, factor.y < 0.0) {
         (false, false) => degrees,
-        (true, false) => 180.0 - degrees,
-        (false, true) => -degrees,
+        (true, false) => -degrees,
+        (false, true) => 180.0 - degrees,
         (true, true) => degrees + 180.0,
     };
     Some(a.rem_euclid(360.0))
@@ -570,6 +584,101 @@ pub fn mirrored(model: &Model, e: &Element, at: DVec3, normal: DVec3) -> Option<
     Some(out)
 }
 
+/// What goes along when `ids` move though it is not among them: what is
+/// written about them on the drawings, which a selection made in 3D can't
+/// reach, and which was left behind where the building had been.
+///
+/// - A room closed off by walls, when every wall round it moves; a room
+///   with an outline of its own, when it lies on a slab of its level that
+///   moves. Its tags are placed from the room, so they follow it.
+/// - A dimension with a loose end (one on no element), when everything
+///   its other ends sit on moves; a dimension with only loose ends, in a
+///   plan, when both lie within the walls and slabs that move.
+///
+/// Dimensions between two elements, and tags, are placed from what they
+/// are on and need no help. Levels, grids and section lines stay.
+pub fn carried_along(model: &Model, ids: &[ElementId]) -> Vec<ElementId> {
+    use std::collections::HashSet;
+    let moving: HashSet<ElementId> = ids.iter().copied().collect();
+    // doors and windows go with their wall
+    let goes = |id: ElementId| {
+        moving.contains(&id)
+            || matches!(
+                model.get(id).map(|e| &e.kind),
+                Some(ElementKind::Opening(o)) if moving.contains(&o.host)
+            )
+    };
+    let slabs: Vec<(ElementId, &Vec<DVec2>)> = ids
+        .iter()
+        .filter_map(|id| match &model.get(*id)?.kind {
+            ElementKind::Slab(s) => Some((s.level, &s.boundary)),
+            _ => None,
+        })
+        .collect();
+    // the box round the walls and slabs that move, in plan
+    let corners = ids.iter().filter_map(|id| model.get(*id)).flat_map(|e| {
+        let pts: Vec<DVec2> = match &e.kind {
+            ElementKind::Wall(w) => vec![w.start, w.end],
+            ElementKind::Slab(s) => s.boundary.clone(),
+            _ => vec![],
+        };
+        pts
+    });
+    let reach = corners.fold(None, |b: Option<(DVec2, DVec2)>, p| match b {
+        Some((lo, hi)) => Some((lo.min(p), hi.max(p))),
+        None => Some((p, p)),
+    });
+    let within =
+        |p: DVec2| reach.is_some_and(|(lo, hi)| p.cmpge(lo - 1.0).all() && p.cmple(hi + 1.0).all());
+    let mut out = vec![];
+    for e in model.iter().filter(|e| !moving.contains(&e.id)) {
+        let along = match &e.kind {
+            ElementKind::Room(r) if r.boundary.is_empty() => crate::room::shape_of(model, r)
+                .is_some_and(|s| {
+                    !s.bounded_by.is_empty()
+                        && s.bounded_by
+                            .iter()
+                            .all(|b| b.is_some_and(|w| moving.contains(&w)))
+                }),
+            ElementKind::Room(r) => slabs.iter().any(|(level, outline)| {
+                *level == r.level && crate::polygon::contains(outline, r.at)
+            }),
+            ElementKind::Dimension(d) => {
+                let ends: Vec<&crate::HostPoint> = [Some(&d.a), Some(&d.b), d.center.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let hosts: Vec<ElementId> = ends.iter().filter_map(|p| p.host).collect();
+                let loose: Vec<DVec2> = ends
+                    .iter()
+                    .filter(|p| p.host.is_none())
+                    .map(|p| p.local)
+                    .collect();
+                let in_plan = matches!(
+                    model.get(d.view).map(|v| &v.kind),
+                    Some(ElementKind::View(v)) if matches!(v.kind, ViewKind::Plan { .. })
+                );
+                match (hosts.is_empty(), loose.is_empty()) {
+                    // on elements at every end: it follows them already
+                    (_, true) => false,
+                    (false, false) => hosts.iter().all(|h| goes(*h)),
+                    (true, false) => {
+                        in_plan
+                            && crate::DrawingFrame::of(model, d.view).is_some_and(|f| {
+                                loose.iter().all(|p| within(f.to_model(*p).truncate()))
+                            })
+                    }
+                }
+            }
+            _ => false,
+        };
+        if along {
+            out.push(e.id);
+        }
+    }
+    out
+}
+
 /// Where an element is, for turning and scaling it about itself.
 pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
     let e = model.get(id)?;
@@ -587,6 +696,9 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
         }
         ElementKind::Slab(s) => mean(&s.boundary).extend(s.top(elevation(Some(s.level)))),
         ElementKind::Opening(o) => {
+            if let Some(s) = crate::roofwindow::seat(model, o) {
+                return Some(s.at(glam::DVec3::new(o.width / 2.0, 0.0, o.height / 2.0)));
+            }
             let ElementKind::Wall(w) = &model.get(o.host)?.kind else {
                 return None;
             };
@@ -608,6 +720,17 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
             _ => return None,
         },
         ElementKind::Guide(g) => (g.a + g.b) / 2.0 + DVec3::Z * elevation(g.level),
+        // a room is where its point is (its tag sits there): without
+        // this, Move and Rotate skipped rooms though they can take both
+        ElementKind::Room(r) => r.at.extend(elevation(Some(r.level))),
+        // a ceiling is at the middle of its outline, its own or its
+        // room's: without this a selected ceiling was counted as one that
+        // "can't take this", and one with an outline of its own stayed
+        // where the building had been
+        ElementKind::Ceiling(c) => {
+            let outline = c.outline(model).filter(|o| !o.is_empty())?;
+            mean(&outline).extend(elevation(Some(c.level)) + c.height)
+        }
         ElementKind::CropBox(c) => c.center(),
         // (MU23) a reference turns and scales about its middle; a paper
         // mark and a note are where they are written
@@ -621,9 +744,17 @@ pub fn pivot(model: &Model, id: ElementId) -> Option<DVec3> {
             None => n.at.extend(0.0),
         },
         ElementKind::Shaft(s) => mean(&s.boundary).extend(s.span(model).0),
-        ElementKind::Object(o) => o.position.extend(
-            crate::objects::base_z(model, e).unwrap_or(elevation(Some(o.level)) + o.offset),
-        ),
+        // its middle (a chair's seat, a bed's middle), which it turns and
+        // is picked up about (MU142), not its origin at its back edge
+        ElementKind::Object(o) => {
+            let mid = crate::objects::type_of(model, e).map_or(DVec2::ZERO, |t| {
+                let (lo, hi) = t.bounds();
+                (lo.truncate() + hi.truncate()) / 2.0
+            });
+            o.to_plan(mid).extend(
+                crate::objects::base_z(model, e).unwrap_or(elevation(Some(o.level)) + o.offset),
+            )
+        }
         ElementKind::Detail(d) => {
             let frame = crate::DrawingFrame::of(model, d.view)?;
             frame.to_model(mean(&d.points))
@@ -932,6 +1063,61 @@ mod tests {
     use crate::{sample::sample_house, Wall};
 
     #[test]
+    fn a_moved_building_takes_its_rooms_and_loose_dimensions_along() {
+        let model = crate::starter::starter_house();
+        let count = |ids: &[ElementId], f: fn(&ElementKind) -> bool| {
+            ids.iter()
+                .filter(|id| f(&model.get(**id).unwrap().kind))
+                .count()
+        };
+        let is_room = |k: &ElementKind| matches!(k, ElementKind::Room(_));
+        let is_dim = |k: &ElementKind| matches!(k, ElementKind::Dimension(_));
+        // what a box select in 3D reaches: the walls and slabs (and more)
+        let building: Vec<ElementId> = model
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Wall(_) | ElementKind::Slab(_)))
+            .map(|e| e.id)
+            .collect();
+        let along = carried_along(&model, &building);
+        let rooms = model.iter().filter(|e| is_room(&e.kind)).count();
+        assert!(rooms >= 10);
+        assert_eq!(count(&along, is_room), rooms, "every room goes along");
+        // the dimensions with a loose end; those between two walls or
+        // openings follow by themselves and are not listed
+        let loose = model
+            .iter()
+            .filter(|e| match &e.kind {
+                ElementKind::Dimension(d) => {
+                    let plan = matches!(
+                        model.get(d.view).map(|v| &v.kind),
+                        Some(ElementKind::View(v)) if matches!(v.kind, ViewKind::Plan { .. })
+                    );
+                    plan && (d.a.host.is_none() || d.b.host.is_none())
+                }
+                _ => false,
+            })
+            .count();
+        assert!(loose >= 3);
+        assert_eq!(count(&along, is_dim), loose);
+        assert_eq!(along.len(), rooms + loose, "and nothing else");
+        // each of them can take the move, and a room's point goes by it
+        let by = DVec3::new(3.0, -2.0, 0.0);
+        for id in &along {
+            let e = model.get(*id).unwrap();
+            let moved = transformed(&model, e, &Xform::Move(by)).expect("it moves");
+            if let (ElementKind::Room(a), ElementKind::Room(b)) = (&e.kind, &moved.kind) {
+                assert!((b.at - a.at - by.truncate()).length() < 1e-9);
+            }
+        }
+        // one wall on its own takes no room with it, and nothing twice
+        let one = [building[0]];
+        assert_eq!(count(&carried_along(&model, &one), is_room), 0);
+        let mut all = building.clone();
+        all.extend(&along);
+        assert!(carried_along(&model, &all).is_empty());
+    }
+
+    #[test]
     fn a_flipped_section_looks_the_other_way_and_keeps_its_notes_in_place() {
         let mut doc = crate::Document::from_model(sample_house());
         let sec = Element::new(
@@ -1165,6 +1351,45 @@ mod tests {
         let (c, dropped) = fresh_copies(&empty, &[door]);
         assert!(c.is_empty());
         assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn a_mirrored_object_keeps_its_back_to_the_mirrored_wall() {
+        // MU142: a chair with its back to a wall, mirrored, still has its
+        // back to the mirrored wall (it was turned to face away from it)
+        let m = sample_house();
+        let level = m
+            .iter()
+            .find(|e| matches!(e.kind, ElementKind::Level(_)))
+            .unwrap()
+            .id;
+        let back = |o: &crate::objects::Object| o.to_plan(DVec2::Y) - o.position;
+        for (rot, n) in [
+            (0.0, DVec3::X),
+            (30.0, DVec3::X),
+            (30.0, DVec3::Y),
+            (110.0, DVec3::new(1.0, -1.0, 0.0)),
+        ] {
+            let o0 = crate::objects::Object::new(level, DVec2::new(2.0, 1.0), rot);
+            let e = Element::new("Chair", ElementKind::Object(o0.clone()));
+            let at = DVec3::new(5.0, 3.0, 0.0);
+            let ElementKind::Object(o) = mirrored(&m, &e, at, n).unwrap().kind else {
+                panic!()
+            };
+            let k = n.truncate().normalize();
+            let flip = |v: DVec2| v - 2.0 * v.dot(k) * k;
+            let want_at = at.truncate() + flip(o0.position - at.truncate());
+            assert!(
+                o.position.distance(want_at) < 1e-9,
+                "{rot}° {n:?}: at {:?}",
+                o.position
+            );
+            let (b, want) = (back(&o), flip(back(&o0)));
+            assert!(
+                b.distance(want) < 1e-9,
+                "{rot}° {n:?}: back {b:?}, want {want:?}"
+            );
+        }
     }
 
     #[test]

@@ -83,6 +83,15 @@ pub enum TitleItem {
         /// Radians counter-clockwise.
         #[serde(default)]
         angle: f64,
+
+        /// Its own colour, sRGB 0..1; none is the sheet's ink (template
+        /// sets: a number in white on a coloured plate).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        colour: Option<[f32; 3]>,
+        /// Its own typeface; none is the usual one (template sets: a
+        /// title in one face, its labels in another).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font: Option<crate::Font>,
     },
     /// A drawn shape in colour (MU40): an outline, a filled face, or both,
     /// see-through by `opacity`.
@@ -214,6 +223,119 @@ pub struct SheetTemplate {
     /// the border could not be picked or stretched).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margins: Option<[f64; 4]>,
+    /// The paper its sheets are drawn on: a colour and a texture (pens
+    /// stage 7, decision 3 A). White and plain unless set.
+    #[serde(default, skip_serializing_if = "PaperLook::is_plain")]
+    pub stock: PaperLook,
+}
+
+/// The colour of a master's paper.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperColour {
+    #[default]
+    White,
+    /// The project's palette's paper, its ink on the frame.
+    Palette,
+    /// A colour of its own, sRGB 0..1.
+    Own([f32; 3]),
+}
+
+/// A texture printed over a master's paper.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaperTexture {
+    #[default]
+    None,
+    /// A fine speckle, like drawing paper.
+    Grain,
+    /// Close horizontal lines, like laid paper.
+    Laid,
+    /// A 5 mm squared grid.
+    Grid,
+    /// Soft rounded bumps, like cold-press watercolour paper (owner's
+    /// textures, 2026-11-18).
+    ColdPress,
+    /// Fine fibres and a few flecks, like kraft paper.
+    Kraft,
+    /// A very fine weave, like tracing linen.
+    Linen,
+    /// A smooth sheet with sparse flecks, like recycled paper.
+    Recycled,
+}
+
+impl PaperTexture {
+    pub const ALL: [PaperTexture; 8] = [
+        Self::None,
+        Self::Grain,
+        Self::Laid,
+        Self::Grid,
+        Self::ColdPress,
+        Self::Kraft,
+        Self::Linen,
+        Self::Recycled,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Grain => "Grain",
+            Self::Laid => "Laid",
+            Self::Grid => "Grid",
+            Self::ColdPress => "Cold-press",
+            Self::Kraft => "Kraft",
+            Self::Linen => "Linen",
+            Self::Recycled => "Recycled",
+        }
+    }
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::None => "Plain paper",
+            Self::Grain => "A fine speckle, like drawing paper",
+            Self::Laid => "Close horizontal lines, like laid paper",
+            Self::Grid => "A 5 mm squared grid",
+            Self::ColdPress => "Soft rounded bumps, like watercolour paper",
+            Self::Kraft => "Fine fibres and a few darker flecks, like kraft paper",
+            Self::Linen => "A very fine weave, like tracing linen",
+            Self::Recycled => "A smooth sheet with sparse flecks, like recycled paper",
+        }
+    }
+}
+
+/// A master's paper: its colour and texture.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PaperLook {
+    #[serde(default)]
+    pub colour: PaperColour,
+    #[serde(default)]
+    pub texture: PaperTexture,
+    /// How strongly the texture shows: 1 as shipped, 0.25 to 2.
+    #[serde(default = "full_strength", skip_serializing_if = "is_full_strength")]
+    pub strength: f32,
+}
+
+fn full_strength() -> f32 {
+    1.0
+}
+
+fn is_full_strength(v: &f32) -> bool {
+    (*v - 1.0).abs() < 1e-6
+}
+
+impl Default for PaperLook {
+    fn default() -> Self {
+        Self {
+            colour: PaperColour::White,
+            texture: PaperTexture::None,
+            strength: 1.0,
+        }
+    }
+}
+
+impl PaperLook {
+    /// White and plain, as every sheet was.
+    pub fn is_plain(&self) -> bool {
+        self.colour == PaperColour::White && self.texture == PaperTexture::None
+    }
 }
 
 /// The usual margins: left (binding), bottom, right, top, mm.
@@ -382,6 +504,8 @@ fn text(at: DVec2, size: f64, t: &str, align: TextAlign) -> TitleItem {
         text: t.to_string(),
         align,
         angle: 0.0,
+        colour: None,
+        font: None,
     }
 }
 
@@ -468,6 +592,7 @@ pub fn standard_strip() -> SheetTemplate {
         paper: Some(DVec2::new(420.0, 297.0)),
         guides: vec![],
         margins: None,
+        stock: Default::default(),
     }
 }
 
@@ -495,6 +620,7 @@ pub fn minimal_band() -> SheetTemplate {
         paper: Some(DVec2::new(420.0, 297.0)),
         guides: vec![],
         margins: None,
+        stock: Default::default(),
     }
 }
 
@@ -569,6 +695,8 @@ mod tests {
                     text: "{sheet} for {client}".into(),
                     align: TextAlign::Start,
                     angle: 0.0,
+                    colour: None,
+                    font: None,
                 },
             ],
             border: true,
@@ -576,6 +704,7 @@ mod tests {
             paper: None,
             guides: vec![],
             margins: None,
+            stock: Default::default(),
         }
     }
 
@@ -656,7 +785,37 @@ mod tests {
             text: "x".into(),
             align: TextAlign::Start,
             angle: 0.0,
+            colour: None,
+            font: None,
         });
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn text_keeps_its_own_colour_and_font_and_older_text_reads_without() {
+        // text from before template sets: neither, and it writes neither
+        let old: TitleItem =
+            serde_json::from_str(r#"{"Text":{"at":[0.0,0.0],"size":3.0,"text":"a"}}"#).unwrap();
+        assert!(matches!(
+            old,
+            TitleItem::Text {
+                colour: None,
+                font: None,
+                ..
+            }
+        ));
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("colour") && !text.contains("font"), "{text}");
+        let own: TitleItem = serde_json::from_str(
+            r#"{"Text":{"at":[0.0,0.0],"size":3.0,"text":"a","colour":[1.0,1.0,1.0],"font":"Jost"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            own,
+            TitleItem::Text { colour: Some(c), font: Some(crate::Font::Jost), .. } if c == [1.0; 3]
+        ));
+        let back: TitleItem = serde_json::from_str(&serde_json::to_string(&own).unwrap()).unwrap();
+        assert_eq!(back, own);
+        assert!(own.is_valid());
     }
 }

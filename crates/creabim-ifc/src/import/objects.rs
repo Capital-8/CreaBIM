@@ -126,6 +126,10 @@ impl Importer<'_> {
             ty.description = e.arg(3).as_str().unwrap_or("").trim().to_string();
             let eid = self.new_id(e);
             self.type_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 id: eid,
                 name: Self::name(e, "Object type"),
@@ -196,6 +200,10 @@ impl Importer<'_> {
             }
             let eid = self.new_id(e);
             self.other_elems.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 id: eid,
                 name: Self::name(e, "Object"),

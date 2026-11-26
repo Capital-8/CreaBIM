@@ -1,30 +1,7 @@
 {
   "name": "Light linework",
   "description": "A lighter, presentation look: fine pens, pale blue-grey poch\u00e9 instead of hatching, furniture and fittings in grey, doors and windows in blue-grey, sections and elevations in hidden line fading with depth, and roof and site plans with roofing lines and sun shadows.",
-  "pens": [
-    {
-      "up_to": 75.0,
-      "weights": {
-        "cut": 0.5,
-        "projection": 0.18,
-        "symbol": 0.13,
-        "fine": 0.1,
-        "hatch": 0.08,
-        "hidden": 0.13
-      }
-    },
-    {
-      "up_to": 100000.0,
-      "weights": {
-        "cut": 0.35,
-        "projection": 0.13,
-        "symbol": 0.1,
-        "fine": 0.08,
-        "hatch": 0.06,
-        "hidden": 0.1
-      }
-    }
-  ],
+  "pen_set": "Fine line",
   "objects": [
     {
       "category": "Walls",

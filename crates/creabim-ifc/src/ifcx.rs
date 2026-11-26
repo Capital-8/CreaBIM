@@ -49,6 +49,13 @@ const CLASS_URI: &str = "https://identifier.buildingsmart.org/uri/buildingsmart/
 /// building → storeys → elements, each with its class, mesh, transform,
 /// name and a few properties.
 pub fn export_ifcx(model: &Model) -> String {
+    export_ifcx_with(model, &creabim_core::progress::quiet)
+}
+
+/// [`export_ifcx`], telling `tick` how far it has got.
+pub fn export_ifcx_with(model: &Model, tick: creabim_core::progress::Tick) -> String {
+    let total = model.len();
+    tick(0, total, "Preparing the shapes");
     let scene: HashMap<ElementId, creabim_geom::TriMesh> =
         creabim_geom::scene::element_meshes(&creabim_geom::scene::build_scene_for_exchange(model));
     let mut nodes: Vec<J> = Vec::new();
@@ -68,7 +75,10 @@ pub fn export_ifcx(model: &Model) -> String {
             .map_or(0.0, |l| l.elevation)
     };
 
-    for e in model.iter() {
+    for (i, e) in model.iter().enumerate() {
+        if i % 8 == 0 {
+            tick(i, total, creabim_core::progress::step_of(e.ifc_class()));
+        }
         let path = path_of(e.id);
         let mut attrs = Map::new();
         let mut children = Names::default();
@@ -258,6 +268,7 @@ pub fn export_ifcx(model: &Model) -> String {
             CREABIM: { "value": { "dataType": "Object" } },
         },
     });
+    tick(total, total, "Writing the file");
     // one node per line keeps big files diffable and still valid JSON
     let mut out = header.to_string();
     out.pop(); // the closing brace
@@ -680,6 +691,7 @@ fn usd_mesh(m: &J, world: &DMat4, warnings: &mut Warnings) -> EditMesh {
     let mut mesh = EditMesh {
         vertices: points,
         faces: vec![],
+        edges: vec![],
     };
     let mut at = 0;
     for n in counts {
@@ -801,6 +813,10 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
             _ => &mut shafts,
         };
         list.push(Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             id,
             name,
@@ -823,12 +839,14 @@ pub fn import_ifcx(json: &str) -> Result<ImportResult, ImportError> {
     ]
     .concat();
     let model = build_model(elements, &mut warnings)?;
-    let (warnings, details) = warnings.into_parts();
+    let (warnings, details, detail_notes) = warnings.into_grouped();
     Ok(ImportResult {
         model,
         warnings,
         details,
+        detail_notes,
         schema,
+        fidelity: vec![],
     })
 }
 
@@ -860,6 +878,10 @@ impl Builder {
         let id = self.id(path);
         let element = match ours {
             Some((name, kind @ ElementKind::Material(_))) => Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 id,
                 name,
@@ -885,6 +907,10 @@ impl Builder {
                     })
                     .unwrap_or([0.75; 3]);
                 Element {
+                    ratings: None,
+                    documents: Vec::new(),
+                    phase: Default::default(),
+                    on_site: false,
                     mark: None,
                     source: None,
                     id,
@@ -938,6 +964,10 @@ impl Builder {
                 ),
             };
             self.levels.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 id,
@@ -1000,6 +1030,10 @@ impl Builder {
             if let Some((name, kind)) = creabim_element(&o.attributes) {
                 let id = self.id(&o.path.clone());
                 let e = Element {
+                    ratings: None,
+                    documents: Vec::new(),
+                    phase: Default::default(),
+                    on_site: false,
                     mark: None,
                     id,
                     name,
@@ -1068,6 +1102,10 @@ impl Builder {
                         r.height = Some(p.z1 - elev).filter(|h| *h > 0.1);
                         let id = self.id(&o.path.clone());
                         self.main.push(Element {
+                            ratings: None,
+                            documents: Vec::new(),
+                            phase: Default::default(),
+                            on_site: false,
                             mark: None,
                             source: None,
                             id,
@@ -1099,6 +1137,10 @@ impl Builder {
                         },
                     );
                     self.main.push(Element {
+                        ratings: None,
+                        documents: Vec::new(),
+                        phase: Default::default(),
+                        on_site: false,
                         mark: None,
                         source: None,
                         id,
@@ -1132,6 +1174,10 @@ impl Builder {
                     if let Some(&(_, level)) = top {
                         let id = self.id(&o.path.clone());
                         self.main.push(Element {
+                            ratings: None,
+                            documents: Vec::new(),
+                            phase: Default::default(),
+                            on_site: false,
                             mark: None,
                             source: None,
                             id,
@@ -1170,6 +1216,10 @@ impl Builder {
                         OpeningKind::Window
                     };
                     self.openings.push(Element {
+                        ratings: None,
+                        documents: Vec::new(),
+                        phase: Default::default(),
+                        on_site: false,
                         mark: None,
                         source: None,
                         id,
@@ -1182,9 +1232,12 @@ impl Builder {
                             width,
                             height,
                             material,
-                            frame: Default::default(),
+                            frame: creabim_core::OpeningFrame::for_kind(kind),
                             flip_hand: false,
                             flip_facing: false,
+                            roof_at: None,
+                            roof_build: Default::default(),
+                            arrangement: None,
                         }),
                         of_type: None,
                     });
@@ -1202,6 +1255,10 @@ impl Builder {
             }
             let id = self.id(&o.path.clone());
             self.main.push(Element {
+                ratings: None,
+                documents: Vec::new(),
+                phase: Default::default(),
+                on_site: false,
                 mark: None,
                 source: None,
                 id,
@@ -1352,6 +1409,7 @@ mod tests {
         let mesh = EditMesh {
             vertices,
             faces: vec![vec![0, 1, 2]],
+            edges: vec![],
         };
         let (a, b, t, z0, z1) = wall_from_mesh(&mesh, DVec2::ZERO, DVec2::new(4.0, 0.0)).unwrap();
         assert!(a.distance(DVec2::new(0.0, 0.1)) < 1e-9 && b.distance(DVec2::new(4.0, 0.1)) < 1e-9);

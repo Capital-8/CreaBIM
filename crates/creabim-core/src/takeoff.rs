@@ -280,22 +280,17 @@ pub fn lines(model: &Model) -> Vec<Line> {
                 },
                 0.0,
             ),
-            // a stair: its run along the flights and its concrete, the waist
-            // slab plus the steps' triangles (an estimate, as a builder's)
+            // a stair: its structure, by how it is built, and its run;
+            // its finishes are lines of their own (below)
             ElementKind::Stair(st) => {
-                let rise = st.rise(model);
-                let layout = st.layout(rise);
-                let n = layout.risers as f64;
-                let going = (n - 1.0).max(0.0) * st.tread;
-                let slope = (going * going + rise * rise).sqrt();
-                let volume = st.width * (st.waist * slope + 0.5 * layout.riser * st.tread * n);
+                let q = st.quantities(st.rise(model));
                 (
                     "Stairs",
                     st.level,
                     Quantity {
-                        area: st.width * going,
-                        volume,
-                        length: going,
+                        area: q.treads,
+                        volume: q.structure,
+                        length: q.run,
                         count: 1,
                     },
                     st.waist,
@@ -304,7 +299,15 @@ pub fn lines(model: &Model) -> Vec<Line> {
             // a railing: its length
             ElementKind::Railing(r) => {
                 let path = r.path_in(model);
-                let length: f64 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+                let mut length: f64 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+                // up both arms of a split stair
+                if let Some(ElementKind::Stair(st)) =
+                    r.stair.and_then(|sd| model.get(sd.stair)).map(|e| &e.kind)
+                {
+                    if st.mirror(st.rise(model)).is_some() {
+                        length *= 2.0;
+                    }
+                }
                 (
                     "Railings",
                     r.level,
@@ -369,6 +372,33 @@ pub fn lines(model: &Model) -> Vec<Line> {
                 thickness,
                 quantity: whole,
             });
+        }
+        // a stair's finishes: the treads' (landings and winders too) and
+        // the risers', each in its own material
+        if let ElementKind::Stair(st) = &e.kind {
+            let f = st.finish;
+            let q = st.quantities(st.rise(model));
+            let finishes = [
+                (1, f.tread(), f.tread_material, q.treads),
+                (2, f.riser(st.build), f.riser_material, q.risers),
+            ];
+            for (i, t, material, area) in finishes {
+                if t > 1e-9 && area > 1e-9 {
+                    out.push(Line {
+                        element: e.id,
+                        category,
+                        level: Some(level),
+                        material,
+                        layer: Some((i, LayerFunction::Finish)),
+                        thickness: t,
+                        quantity: Quantity {
+                            area,
+                            volume: area * t,
+                            ..Default::default()
+                        },
+                    });
+                }
+            }
         }
     }
     out
@@ -589,6 +619,53 @@ mod tests {
 
     /// Doors, windows, objects, the stair and the railings are in the
     /// take-off now, each element once (A7-13).
+    #[test]
+    fn a_stair_takes_off_its_structure_and_each_finish() {
+        use crate::members::{StairBuild, StairFinish};
+        let lv = crate::Element::new(
+            "L0",
+            ElementKind::Level(crate::Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let mut s = crate::Stair::new(lv.id, glam::DVec2::ZERO, 0.0);
+        s.finish = StairFinish {
+            tread: 0.02,
+            riser: 0.01,
+            ..Default::default()
+        };
+        let lines_of = |s: &crate::Stair| {
+            let m = Model::from_elements([
+                lv.clone(),
+                crate::Element::new("S", ElementKind::Stair(s.clone())),
+            ])
+            .unwrap();
+            lines(&m)
+        };
+        let l = lines_of(&s);
+        assert_eq!(l.len(), 3, "{l:?}");
+        // 16 treads of 280 by 1 m, each running 10 mm out over the riser
+        // finish; 17 risers of (176 - 20) mm by 1 m
+        let r = 3.0 / 17.0;
+        assert!((l[1].quantity.area - 16.0 * 0.29).abs() < 1e-6);
+        assert!((l[2].quantity.area - 17.0 * (r - 0.02)).abs() < 1e-6);
+        assert_eq!(l[1].layer, Some((1, LayerFunction::Finish)));
+        // concrete: the waist and the steps' triangles
+        let slope = (4.48f64.powi(2) + (16.0 * r).powi(2)).sqrt();
+        let want = 0.15 * slope + 16.0 * 0.28 * r / 2.0;
+        assert!(
+            (l[0].quantity.volume - want).abs() < 1e-6,
+            "{}",
+            l[0].quantity.volume
+        );
+        // on stringers: far less, and no risers to finish
+        s.build = StairBuild::Stringers;
+        let l = lines_of(&s);
+        assert_eq!(l.len(), 2);
+        assert!(l[0].quantity.volume < 0.4 * want);
+    }
+
     #[test]
     fn the_starter_house_counts_its_openings_objects_stair_and_railings() {
         let model = crate::starter::starter_house();

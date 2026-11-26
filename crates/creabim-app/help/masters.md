@@ -33,6 +33,7 @@ With the Masters view in front, *Properties* shows the master:
 
 - **Paper**, and **Measured from**: the corner the title block is measured from;
 - the **border** and its **margins** (left, bottom, right, top);
+- the paper's **Colour** and **Texture**: white, the project palette's paper, or a colour of its own, with no texture, Grain, Laid lines, a 5 mm Grid, Cold-press, Kraft, Linen or Recycled, and how strongly it shows (Strength). Every sheet on the master takes it, on screen, in PDF and in SVG. On the palette's paper the frame, titles and notes take the palette's ink;
 - **its own fields**, named here and filled in per sheet;
 - **Guides**: how many, show or hide them, draw one, clear them all. Guides are kept with the master and never printed;
 - **Pictures and logos**, with each one's size, opacity and, for a logo, one colour;
@@ -40,6 +41,8 @@ With the Masters view in front, *Properties* shows the master:
 
 **New sheet on it** makes a sheet using this master; **Use on every sheet** gives it to every sheet of the project in one undo step. Deleting a master sends its sheets back to the built-in block.
 
-Masters print on sheets, in PDF and in SVG export exactly as drawn. On dark paper black lines show light while you work, and still print black.
+Masters print on sheets, in PDF and in SVG export exactly as drawn. On dark paper black lines show light while you work, and still print black. A master with paper of its own shows that paper, dark paper or not.
+
+When any master has a coloured or textured paper, *Export sheets* asks about the **Paper**: *As the master*, or *Print on white*, for white stock. Print on white leaves the tint and texture off and keeps the drawing's colours. A palette with dark paper keeps it, since its light lines would not show on white.
 
 See also [Sheets and title blocks](sheets).

@@ -20,7 +20,7 @@ Walls, slabs, roofs, ceilings, columns, beams and footings each give one line fo
 
 Walls and strip footings are measured on their joined outline, so a corner where two walls meet is counted once, and a wall stopping at another's face isn't counted into it.
 
-The take-off also lists, each under its own category: **doors** and **windows** (one piece each, with their size as area), **objects** (one piece each), **stairs** (the run as length, its plan area, and the concrete as a builder estimates it), **railings** (their length) and **masses** (their volume as modelled, modifiers and scale included).
+The take-off also lists, each under its own category: **doors** and **windows** (one piece each, with their size as area), **objects** (one piece each), **stairs** (the run as length, the plan area of its treads and landings, and its structure as a builder estimates it from how it is built: concrete, plate, or boards and members; each tread or riser finish is a line of its own, in its material, measured by area), **railings** (their length) and **masses** (their volume as modelled, modifiers and scale included).
 
 Quantities are in metres, square metres and cubic metres.
 

@@ -290,6 +290,7 @@ fn level_of(model: &Model, e: &Element) -> Option<ElementId> {
     match &e.kind {
         ElementKind::Opening(o) => match &model.get(o.host)?.kind {
             ElementKind::Wall(w) => Some(w.level),
+            ElementKind::Roof(r) => Some(r.level),
             _ => None,
         },
         ElementKind::Wall(w) => Some(w.level),
@@ -306,6 +307,7 @@ fn plan_position(model: &Model, e: &Element) -> Option<DVec2> {
     match &e.kind {
         ElementKind::Opening(o) => match &model.get(o.host)?.kind {
             ElementKind::Wall(w) => Some(w.start + w.direction() * (o.offset + o.width / 2.0)),
+            ElementKind::Roof(_) => o.roof_at,
             _ => None,
         },
         ElementKind::Wall(w) => Some((w.start + w.end) / 2.0),

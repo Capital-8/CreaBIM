@@ -220,6 +220,10 @@ pub fn export(model: &Model) -> Exported {
         version: f::VERSION,
         units: f::LengthIn::Metres,
         display_units: None,
+        datum: model
+            .project_info()
+            .map(|(_, p)| p.elevation)
+            .filter(|z| *z != 0.0),
         materials: vec![],
         assemblies: vec![],
         types: vec![],
@@ -427,6 +431,85 @@ pub fn export(model: &Model) -> Exported {
                     },
                 }),
                 material: ids.of(s.material),
+                line: if s.line.len() >= 2 {
+                    s.line.iter().map(|p| s.to_plan(*p)).collect()
+                } else {
+                    vec![]
+                },
+                bends: s.bends.clone(),
+                drawn: match s.drawn {
+                    core::members::StairLine::Walk => f::StairLine::Walk,
+                    core::members::StairLine::Left => f::StairLine::Left,
+                    core::members::StairLine::Right => f::StairLine::Right,
+                },
+                flights: s
+                    .pieces
+                    .flights
+                    .iter()
+                    .map(|f| f::StairFlight {
+                        straight: f.straight,
+                        treads: f.treads,
+                    })
+                    .collect(),
+                landings: s
+                    .pieces
+                    .landings
+                    .iter()
+                    .map(|l| f::StairLanding {
+                        turn: l.turn,
+                        deeper: l.deeper,
+                    })
+                    .collect(),
+                build: {
+                    use core::members::StairBuild as B;
+                    match s.build {
+                        B::Concrete => f::StairBuild::Concrete,
+                        B::Stepped => f::StairBuild::Stepped,
+                        B::FoldedPlate => f::StairBuild::FoldedPlate,
+                        B::Stringers => f::StairBuild::Stringers,
+                        B::CutStringers => f::StairBuild::CutStringers,
+                        B::Spine => f::StairBuild::Spine,
+                        B::Cantilever => f::StairBuild::Cantilever,
+                        B::Post => f::StairBuild::Post,
+                    }
+                },
+                rules: s.rules.key(),
+                ramp: s.ramp,
+                typical: ids.of(s.typical),
+                split: s.split,
+                up_label: s.up_offset,
+                finish: (!s.finish.is_none()).then(|| f::StairFinish {
+                    tread: s.finish.tread,
+                    tread_material: ids.of(s.finish.tread_material),
+                    riser: s.finish.riser,
+                    riser_material: ids.of(s.finish.riser_material),
+                    nosing: s.finish.nosing,
+                }),
+                turns: match s.at_turns {
+                    core::members::TurnKind::Landing => f::StairTurnKind::Landing,
+                    core::members::TurnKind::Winders(_) => f::StairTurnKind::Winders,
+                },
+                winders: match s.at_turns {
+                    core::members::TurnKind::Winders(n) => n,
+                    _ => 0,
+                },
+                turn_kinds: s
+                    .pieces
+                    .turns
+                    .iter()
+                    .map(|t| match t.kind {
+                        core::members::TurnKind::Landing => f::StairTurn {
+                            turn: t.turn,
+                            kind: f::StairTurnKind::Landing,
+                            winders: 0,
+                        },
+                        core::members::TurnKind::Winders(n) => f::StairTurn {
+                            turn: t.turn,
+                            kind: f::StairTurnKind::Winders,
+                            winders: n,
+                        },
+                    })
+                    .collect(),
             }),
             ElementKind::Railing(r) => spec.railings.push(f::Railing {
                 name: name(e, &id),
@@ -448,6 +531,19 @@ pub fn export(model: &Model) -> Exported {
                     }
                 }),
                 material: ids.of(r.material),
+                extend: r.extend.map(|e| f::RailExtend {
+                    bottom: e.bottom,
+                    top: e.top,
+                    slope_bottom: e.slope_bottom,
+                }),
+                on_wall: r.on_wall,
+                infill: match r.infill {
+                    core::members::RailInfill::Rail => f::RailInfill::Rail,
+                    core::members::RailInfill::Balusters => f::RailInfill::Balusters,
+                    core::members::RailInfill::Glass => f::RailInfill::Glass,
+                },
+                guard_height: r.guard_height,
+                newels: r.newels,
             }),
             ElementKind::Part(p) => spec.parts.push(part(e, &id, p, &ids)),
             ElementKind::Site(s) => spec.site.push(site_element(e, &id, s, &ids)),
@@ -472,6 +568,21 @@ pub fn export(model: &Model) -> Exported {
                     anchor: f::Anchor::Origin,
                     rotation: o.rotation,
                     offset: (Some(o.offset) != base).then_some(o.offset),
+                    // its type's own light, when it has one
+                    light: core::objects::type_of(model, e)
+                        .and_then(|t| t.light.as_ref())
+                        .map(|l| f::ObjectLight {
+                            on: l.on,
+                            lumens: l.lumens,
+                            kelvin: l.kelvin,
+                            beam: match l.beam {
+                                core::Spread::Narrow => f::LightBeam::Narrow,
+                                core::Spread::Medium => f::LightBeam::Medium,
+                                core::Spread::Wide => f::LightBeam::Wide,
+                                core::Spread::AllRound => f::LightBeam::AllRound,
+                            },
+                            group: Some(l.group.clone()).filter(|g| !g.is_empty()),
+                        }),
                 })
             }
             ElementKind::Room(r) => spec.rooms.push(f::Room {
@@ -518,6 +629,7 @@ pub fn export(model: &Model) -> Exported {
                             at: vp.center,
                             target: Some(vp.target),
                             crop: vp.crop.map(|[min, max]| f::Rect { min, max }),
+                            fit: vp.fit.and_then(|s| ids.get(s)),
                         }),
                         _ => None,
                     })
@@ -547,10 +659,27 @@ pub fn export(model: &Model) -> Exported {
                 spec.notes.push(f::Note {
                     view: ids.get(n.view).unwrap_or_default(),
                     at: n.at,
-                    text: n.text.clone(),
+                    // a note showing a notes section carries its text; a
+                    // block of a long note, its own share of it
+                    text: creabim_geom::annotate::chain_share(model, e.id)
+                        .map(|(l, _)| {
+                            l.join("\n")
+                                .replace(creabim_geom::annotation::UNDERLINE, "")
+                        })
+                        .or_else(|| {
+                            n.section
+                                .as_deref()
+                                .and_then(|k| creabim_core::project::linked_text(model, k))
+                        })
+                        .unwrap_or_else(|| n.text.clone()),
                     leader: n.leader.map(|l| l.local),
                     elbow: n.elbow,
                     colour: n.color.map(Colour),
+                    symbol: n.symbol.as_ref().map(|s| f::NoteSymbol {
+                        kind: s.kind.clone(),
+                        style: s.style.clone(),
+                        angle: s.angle,
+                    }),
                 })
             }
             ElementKind::Viewport(_) => {}
@@ -645,11 +774,112 @@ fn boundary(l: core::LocationLine) -> Option<u32> {
 }
 
 fn frame(fr: &core::OpeningFrame) -> f::Frame {
+    use core::cells as k;
+    let g = &fr.grid;
+    // one column or row says nothing worth writing
+    let tracks = |t: &[k::Track]| -> Vec<f::Track> {
+        if t.len() == 1 && !t[0].bar && t[0].share == 1.0 {
+            return vec![];
+        }
+        t.iter()
+            .map(|t| f::Track {
+                share: t.share,
+                bar: t.bar,
+            })
+            .collect()
+    };
     f::Frame {
         width: fr.width,
         depth: fr.depth,
-        panes_across: fr.panes_across,
-        panes_up: fr.panes_up,
+        outline: match g.outline {
+            k::Outline::Rectangle => f::Outline::Rectangle,
+            k::Outline::Segmental { .. } => f::Outline::Segmental,
+            k::Outline::Round => f::Outline::Round,
+            k::Outline::Raked { .. } => f::Outline::Raked,
+        },
+        rise: match g.outline {
+            k::Outline::Segmental { rise } => rise,
+            k::Outline::Raked { drop } => drop,
+            _ => 0.0,
+        },
+        leaf: {
+            use core::construction::LeafStyle as L;
+            match fr.construction.leaf {
+                L::Flush => f::LeafStyle::Flush,
+                L::Panelled => f::LeafStyle::Panelled,
+                L::Glazed => f::LeafStyle::Glazed,
+                L::PartGlazed => f::LeafStyle::PartGlazed,
+                L::Louvred => f::LeafStyle::Louvred,
+                L::VisionPanel => f::LeafStyle::VisionPanel,
+                L::AllGlass => f::LeafStyle::AllGlass,
+                L::French => f::LeafStyle::French,
+                L::SlimSteel => f::LeafStyle::SlimSteel,
+            }
+        },
+        fittings: {
+            use core::construction::GlassFittings as G;
+            match fr.construction.fittings {
+                G::Patch => f::GlassFittings::Patch,
+                G::BottomRail => f::GlassFittings::BottomRail,
+                G::Rails => f::GlassFittings::Rails,
+            }
+        },
+        leaf_panes_across: fr.construction.panes.map(|p| p[0] as u32),
+        leaf_panes_up: fr.construction.panes.map(|p| p[1] as u32),
+        lining: fr.construction.trim.lining,
+        architrave: fr.construction.trim.architrave,
+        threshold: fr.construction.trim.threshold,
+        fire_rating: Some(fr.construction.ratings.fire.clone()).filter(|s| !s.is_empty()),
+        acoustic_rating: Some(fr.construction.ratings.acoustic.clone()).filter(|s| !s.is_empty()),
+        security_rating: Some(fr.construction.ratings.security.clone()).filter(|s| !s.is_empty()),
+        u_value: fr.construction.ratings.u_value,
+        accessible: fr.construction.ratings.accessible,
+        columns: tracks(&g.columns),
+        rows: tracks(&g.rows),
+        cells: g
+            .cells
+            .iter()
+            .map(|cl| f::Cell {
+                mechanism: match cl.mechanism {
+                    k::Mechanism::Fixed => f::Mechanism::Fixed,
+                    k::Mechanism::Hinged => f::Mechanism::Hinged,
+                    k::Mechanism::TopHung => f::Mechanism::TopHung,
+                    k::Mechanism::BottomHung => f::Mechanism::BottomHung,
+                    k::Mechanism::Louvred => f::Mechanism::Louvred,
+                    k::Mechanism::SurfaceSliding => f::Mechanism::SurfaceSliding,
+                    k::Mechanism::Pocket => f::Mechanism::Pocket,
+                    k::Mechanism::Sliding => f::Mechanism::Sliding,
+                    k::Mechanism::Pivot => f::Mechanism::Pivot,
+                    k::Mechanism::CentrePivot => f::Mechanism::CentrePivot,
+                    k::Mechanism::DoubleAction => f::Mechanism::DoubleAction,
+                    k::Mechanism::Folding => f::Mechanism::Folding,
+                    k::Mechanism::TiltTurn => f::Mechanism::TiltTurn,
+                    k::Mechanism::VerticalSliding => f::Mechanism::VerticalSliding,
+                    k::Mechanism::HorizontalPivot => f::Mechanism::HorizontalPivot,
+                    k::Mechanism::Sectional => f::Mechanism::Sectional,
+                    k::Mechanism::Rolling => f::Mechanism::Rolling,
+                    k::Mechanism::Revolving => f::Mechanism::Revolving,
+                },
+                hand: cl.hand,
+                flipped: cl.flipped,
+                active: cl.active,
+                track: cl.track as u32,
+                display: match cl.display {
+                    k::Display::Convention => f::CellDisplay::Convention,
+                    k::Display::Closed => f::CellDisplay::Closed,
+                    k::Display::Open => f::CellDisplay::Open,
+                },
+                panes_across: cl.panes[0],
+                panes_up: cl.panes[1],
+                across: cl.across,
+            })
+            .collect(),
+        operation: None,
+        active_share: None,
+        panels: None,
+        fixed: None,
+        panes_across: None,
+        panes_up: None,
     }
 }
 
@@ -704,7 +934,12 @@ fn element_type(e: &Element, id: &str, t: &core::ElementType, ids: &Ids) -> f::T
             out.height = Some(o.height);
             let default_sill = if window { 0.9 } else { 0.0 };
             out.sill = (o.sill != default_sill).then_some(o.sill);
-            out.frame = (!o.frame.is_default()).then(|| frame(&o.frame));
+            let kind = if window {
+                core::OpeningKind::Window
+            } else {
+                core::OpeningKind::Door
+            };
+            out.frame = (o.frame != core::OpeningFrame::for_kind(kind)).then(|| frame(&o.frame));
         }
         core::TypeParams::Slab(s) | core::TypeParams::Roof(s) => {
             out.category = if matches!(t.params, core::TypeParams::Roof(_)) {
@@ -796,19 +1031,45 @@ fn opening(e: &Element, id: &str, o: &core::Opening, ids: &Ids) -> f::Opening {
         mark: e.mark.clone(),
         kind,
         wall: ids.get(o.host).unwrap_or_default(),
-        offset: Some(o.offset),
+        offset: o.roof_at.is_none().then_some(o.offset),
         centre: None,
         r#type: e.of_type.as_ref().and_then(|t| ids.get(t.id)),
         width: some_if(o.width, own(e, Param::Width)),
         height: some_if(o.height, own(e, Param::Height)),
         sill: some_if(
             o.sill,
-            own(e, Param::Sill) && (typed || o.sill != default_sill),
+            own(e, Param::Sill) && (typed || o.sill != default_sill) && o.roof_at.is_none(),
         ),
         material: ids.of(o.material).filter(|_| own(e, Param::Material)),
-        frame: (own(e, Param::Frame) && (typed || !o.frame.is_default())).then(|| frame(&o.frame)),
+        frame: (own(e, Param::Frame) && (typed || o.frame != core::OpeningFrame::for_kind(o.kind)))
+            .then(|| frame(&o.frame)),
         flip_hand: o.flip_hand,
         flip_facing: o.flip_facing,
+        roof_at: o.roof_at,
+        arrangement: o.arrangement.as_ref().map(arrangement),
+    }
+}
+
+/// A window's arrangement, as the file writes it.
+fn arrangement(a: &core::Arrangement) -> f::Arrangement {
+    f::Arrangement {
+        kind: match a.kind {
+            core::ArrangementKind::Ribbon => f::ArrangementKind::Ribbon,
+            core::ArrangementKind::Corner => f::ArrangementKind::Corner,
+            core::ArrangementKind::Bay => f::ArrangementKind::Bay,
+            core::ArrangementKind::Bow => f::ArrangementKind::Bow,
+        },
+        group: a.group,
+        corner_start: a.corner_start,
+        corner_end: a.corner_end,
+        left_start: a.left_start,
+        left_end: a.left_end,
+        angle_start: a.angle_start,
+        angle_end: a.angle_end,
+        joint: match a.joint {
+            core::CornerJoint::Post => f::CornerJoint::Post,
+            core::CornerJoint::Glass => f::CornerJoint::Glass,
+        },
     }
 }
 
@@ -896,12 +1157,39 @@ fn site_element(e: &Element, id: &str, s: &site::Site, ids: &Ids) -> f::SiteElem
         thickness: None,
         points: vec![],
         contour: 0.0,
+        lines: vec![],
+        survey: false,
+        faceted: false,
+        major: 0,
+        labels: false,
+        levels: false,
+        shift: None,
+        pads: vec![],
+        under_buildings: false,
+        strata: vec![],
+        analysis: f::GroundShading::None,
+        flow: false,
         pattern: None,
         at: None,
         base: 0.0,
         plant: f::PlantForm::Tree,
         canopy: None,
         height: None,
+        cut: None,
+        depth: 0.0,
+        width: 0.0,
+        only_cut: false,
+        retained: vec![],
+        radius: 0.0,
+        fill: None,
+        edges: vec![],
+        rules: None,
+        path: vec![],
+        road: None,
+        drain: None,
+        tank: None,
+        walk: None,
+        investigation: None,
         material: ids.of(s.material),
     };
     match &s.form {
@@ -911,12 +1199,83 @@ fn site_element(e: &Element, id: &str, s: &site::Site, ids: &Ids) -> f::SiteElem
             thickness,
             points,
             contour,
+            data,
         } => {
             out.outline = boundary.clone();
             out.top = *top;
             out.thickness = Some(*thickness);
             out.points = points.clone();
             out.contour = *contour;
+            out.lines = data
+                .lines
+                .iter()
+                .map(|l| f::GroundLine {
+                    sharp: l.kind == site::GroundLineKind::Break,
+                    points: l.points.clone(),
+                    closed: l.closed,
+                })
+                .collect();
+            out.survey = data.survey;
+            out.faceted = data.faceted;
+            out.major = data.major;
+            out.labels = data.labels;
+            out.levels = data.levels;
+            out.shift = (data.shift != glam::DVec3::ZERO).then_some(data.shift);
+            out.pads = data
+                .pads
+                .iter()
+                .map(|p| f::GroundPad {
+                    outline: p.outline.clone(),
+                    level: p.level,
+                    cut: p.cut,
+                    fill: p.fill,
+                    depth: p.depth,
+                })
+                .collect();
+            out.under_buildings = data.under_buildings;
+            out.strata = data
+                .strata
+                .iter()
+                .map(|l| f::SoilLayer {
+                    name: l.name.clone(),
+                    thickness: l.thickness,
+                })
+                .collect();
+            out.analysis = match data.analysis {
+                site::GroundAnalysis::None => f::GroundShading::None,
+                site::GroundAnalysis::Slope => f::GroundShading::Slope,
+                site::GroundAnalysis::Aspect => f::GroundShading::Aspect,
+                site::GroundAnalysis::Height => f::GroundShading::Height,
+            };
+            out.flow = data.flow;
+        }
+        site::SiteForm::Pad {
+            boundary,
+            top,
+            base,
+            cut,
+            fill,
+            depth,
+            path,
+            width,
+            only_cut,
+            retained,
+            // a wall on a retained edge is exported as the wall it is
+            walls: _,
+            bend,
+        } => {
+            out.kind = f::SiteKind::Pad;
+            out.outline = boundary.clone();
+            out.top = *top;
+            out.thickness = Some(*base);
+            out.cut = Some(*cut);
+            out.fill = Some(*fill);
+            out.depth = *depth;
+            out.path = path.iter().map(|p| p.extend(0.0)).collect();
+            out.width = *width;
+            out.only_cut = *only_cut;
+            out.retained = retained.iter().map(|e| *e as u32).collect();
+            out.radius = *bend;
         }
         site::SiteForm::Area {
             boundary,
@@ -924,6 +1283,7 @@ fn site_element(e: &Element, id: &str, s: &site::Site, ids: &Ids) -> f::SiteElem
             top,
             thickness,
             pattern,
+            ..
         } => {
             out.kind = f::SiteKind::Area;
             out.outline = boundary.clone();
@@ -966,6 +1326,7 @@ fn site_element(e: &Element, id: &str, s: &site::Site, ids: &Ids) -> f::SiteElem
             form,
             canopy,
             height,
+            ..
         } => {
             out.kind = f::SiteKind::Plant;
             out.at = Some(*position);
@@ -978,6 +1339,217 @@ fn site_element(e: &Element, id: &str, s: &site::Site, ids: &Ids) -> f::SiteElem
             };
             out.canopy = Some(*canopy);
             out.height = Some(*height);
+        }
+        site::SiteForm::Road(r) => {
+            out.kind = f::SiteKind::Road;
+            out.path = r.path.clone();
+            let p = &r.parking;
+            let road = f::SiteRoad {
+                width: r.width,
+                fall: r.fall,
+                crowned: r.crowned,
+                kerb: r.kerb,
+                footpath: r.footpath,
+                thickness: r.thickness,
+                cut: r.cut,
+                fill: r.fill,
+                works: r.works,
+                parking: (!p.is_none()).then_some(f::RoadParking {
+                    side: match p.side {
+                        core::road::Side::Right => f::ParkingSide::Right,
+                        core::road::Side::Both => f::ParkingSide::Both,
+                        _ => f::ParkingSide::Left,
+                    },
+                    width: p.width,
+                    length: p.length,
+                    angle: p.angle,
+                }),
+                gullies: r.gullies,
+                radius: r.centre_radius(),
+            };
+            out.road = (road != f::SiteRoad::default()).then_some(road);
+        }
+        site::SiteForm::Spot { position, height } => {
+            out.kind = f::SiteKind::Spot;
+            out.at = Some(*position);
+            out.top = *height;
+        }
+        site::SiteForm::Line(l) => {
+            out.kind = f::SiteKind::GroundLine;
+            out.lines = vec![f::GroundLine {
+                sharp: l.kind == site::GroundLineKind::Break,
+                points: l.points.clone(),
+                closed: l.closed,
+            }];
+        }
+        site::SiteForm::Walk(w) => {
+            use core::walk::Surface as U;
+            out.kind = f::SiteKind::Path;
+            out.walk = Some(f::SitePath {
+                path: w.path.clone(),
+                width: w.width,
+                surface: match w.surface {
+                    U::Gravel => f::PathSurface::Gravel,
+                    U::Paving => f::PathSurface::Paving,
+                    U::Asphalt => f::PathSurface::Asphalt,
+                    U::Bark => f::PathSurface::Bark,
+                },
+                edging: w.edging,
+                thickness: w.thickness,
+                radius: w.radius,
+            });
+        }
+        site::SiteForm::Drain(d) => {
+            use core::services::DrainUse as U;
+            out.kind = f::SiteKind::Drain;
+            out.drain = Some(f::SiteDrain {
+                path: d.path.clone(),
+                service: match d.service {
+                    U::Foul => f::DrainService::Foul,
+                    U::Surface => f::DrainService::Surface,
+                    U::Combined => f::DrainService::Combined,
+                    U::Field => f::DrainService::Field,
+                },
+                diameter: d.diameter,
+                fall: d.fall,
+                depth: d.depth,
+                chambers: d.chambers,
+                chamber: d.chamber,
+                trench: d.trench,
+                bed: d.bed,
+            });
+        }
+        site::SiteForm::Investigation(p) => {
+            use core::investigation as inv;
+            out.kind = f::SiteKind::Investigation;
+            out.at = Some(p.position);
+            let text = |t: &str| (!t.is_empty()).then(|| t.to_string());
+            out.investigation = Some(f::SiteProbe {
+                kind: match p.kind {
+                    inv::ProbeKind::Borehole => f::ProbeType::Borehole,
+                    inv::ProbeKind::TrialPit => f::ProbeType::TrialPit,
+                    inv::ProbeKind::Probe => f::ProbeType::Probe,
+                },
+                ground: p.ground,
+                depth: p.depth,
+                layers: p
+                    .layers
+                    .iter()
+                    .map(|l| f::ProbeLayer {
+                        to: l.to,
+                        soil: match l.soil {
+                            inv::SoilKind::Topsoil => f::SoilType::Topsoil,
+                            inv::SoilKind::MadeGround => f::SoilType::MadeGround,
+                            inv::SoilKind::Clay => f::SoilType::Clay,
+                            inv::SoilKind::Silt => f::SoilType::Silt,
+                            inv::SoilKind::Sand => f::SoilType::Sand,
+                            inv::SoilKind::Gravel => f::SoilType::Gravel,
+                            inv::SoilKind::Peat => f::SoilType::Peat,
+                            inv::SoilKind::Rock => f::SoilType::Rock,
+                        },
+                        unit: text(&l.unit),
+                        description: text(&l.description),
+                    })
+                    .collect(),
+                water: p
+                    .water
+                    .iter()
+                    .map(|w| f::ProbeWater {
+                        depth: w.depth,
+                        rest: w.rest,
+                        note: text(&w.note),
+                    })
+                    .collect(),
+                tests: p
+                    .tests
+                    .iter()
+                    .map(|t| f::ProbeTest {
+                        depth: t.depth,
+                        kind: match t.kind {
+                            inv::TestKind::Spt => f::TestType::Spt,
+                            inv::TestKind::Vane => f::TestType::Vane,
+                            inv::TestKind::Penetrometer => f::TestType::Penetrometer,
+                            inv::TestKind::Dynamic => f::TestType::Dynamic,
+                        },
+                        value: t.value,
+                        text: text(&t.text),
+                    })
+                    .collect(),
+                method: text(&p.method),
+                date: text(&p.date),
+                report: text(&p.report),
+                notes: text(&p.notes),
+            });
+        }
+        site::SiteForm::Tank(t) => {
+            use core::services::TankUse as U;
+            out.kind = f::SiteKind::Tank;
+            out.at = Some(t.centre);
+            out.tank = Some(f::SiteTank {
+                service: match t.service {
+                    U::Septic => f::TankService::Septic,
+                    U::Treatment => f::TankService::Treatment,
+                    U::Rainwater => f::TankService::Rainwater,
+                    U::Attenuation => f::TankService::Attenuation,
+                    U::Soakaway => f::TankService::Soakaway,
+                },
+                length: t.length,
+                width: t.width,
+                depth: t.depth,
+                angle: t.angle,
+                cover: t.cover,
+                wall: t.wall,
+                working: t.working,
+            });
+        }
+        site::SiteForm::Property {
+            boundary,
+            edges,
+            rules,
+        } => {
+            out.kind = f::SiteKind::Property;
+            out.outline = boundary.clone();
+            out.edges = edges
+                .iter()
+                .map(|e| match e {
+                    core::LotEdge::Front => f::LotEdge::Front,
+                    core::LotEdge::Side => f::LotEdge::Side,
+                    core::LotEdge::Rear => f::LotEdge::Rear,
+                    core::LotEdge::Open => f::LotEdge::Open,
+                })
+                .collect();
+            out.rules = (*rules != core::PlanningRules::default()).then(|| f::LotRules {
+                front: rules.front,
+                side: rules.side,
+                rear: rules.rear,
+                height: rules.height,
+                coverage: rules.coverage,
+                floor_ratio: rules.floor_ratio,
+                bearings: rules.bearings,
+                setbacks: rules.setbacks,
+                angle: rules.angle,
+                angle_from: rules.angle_from,
+                envelope: rules.envelope,
+                easements: rules
+                    .easements
+                    .iter()
+                    .map(|e| f::LotEasement {
+                        name: e.name.clone(),
+                        edge: e.edge as u32,
+                        width: e.width,
+                    })
+                    .collect(),
+                own: rules
+                    .own
+                    .iter()
+                    .map(|o| f::LotEdgeRule {
+                        edge: o.edge as u32,
+                        setback: o.setback,
+                        note: (!o.note.is_empty()).then(|| o.note.clone()),
+                        note_offset: o.note_off,
+                    })
+                    .collect(),
+            });
         }
     }
     out
@@ -1000,6 +1572,9 @@ fn view(e: &Element, id: &str, v: &core::View, ids: &Ids) -> f::View {
         azimuth: 30.0,
         altitude: 30.0,
         category: None,
+        drain: None,
+        probe: None,
+        stair: None,
         by_type: false,
         callout: v.callout.and_then(|co| {
             Some(f::Callout {
@@ -1007,6 +1582,25 @@ fn view(e: &Element, id: &str, v: &core::View, ids: &Ids) -> f::View {
                 min: co.lo,
                 max: co.hi,
             })
+        }),
+        site: (!v.site.is_default()).then(|| {
+            let s = &v.site;
+            f::ViewSite {
+                ground: match s.ground {
+                    core::GroundState::After => f::SiteGround::After,
+                    core::GroundState::Before => f::SiteGround::Before,
+                    core::GroundState::Both => f::SiteGround::Both,
+                },
+                contours: s.contours,
+                levels: s.levels,
+                cut_fill: s.cut_fill,
+                banks: s.banks,
+                limit: s.limit,
+                legal: s.legal,
+                roads: s.roads,
+                services: s.services,
+                investigation: s.investigation,
+            }
         }),
     };
     let mut default_style = core::ViewStyle::HiddenLine;
@@ -1036,6 +1630,18 @@ fn view(e: &Element, id: &str, v: &core::View, ids: &Ids) -> f::View {
             out.altitude = *altitude;
             default_style = core::ViewStyle::Shaded;
         }
+        core::ViewKind::LongSection { drain } => {
+            out.kind = f::ViewKind::LongSection;
+            out.drain = ids.get(*drain);
+        }
+        core::ViewKind::BoreholeLog { probe } => {
+            out.kind = f::ViewKind::BoreholeLog;
+            out.probe = ids.get(*probe);
+        }
+        core::ViewKind::WalkSection { stair } => {
+            out.kind = f::ViewKind::WalkSection;
+            out.stair = ids.get(*stair);
+        }
         core::ViewKind::Schedule { category, by_type } => {
             out.kind = f::ViewKind::Schedule;
             out.scale = 100.0;
@@ -1049,6 +1655,9 @@ fn view(e: &Element, id: &str, v: &core::View, ids: &Ids) -> f::View {
                 core::ScheduleCategory::Furniture => f::ScheduleCategory::Furniture,
                 core::ScheduleCategory::Fixtures => f::ScheduleCategory::Fixtures,
                 core::ScheduleCategory::Rooms => f::ScheduleCategory::Rooms,
+                core::ScheduleCategory::Drainage => f::ScheduleCategory::Drainage,
+                core::ScheduleCategory::Stairs => f::ScheduleCategory::Stairs,
+                core::ScheduleCategory::Parking => f::ScheduleCategory::Parking,
                 core::ScheduleCategory::Materials => f::ScheduleCategory::Materials,
             });
         }

@@ -9,6 +9,17 @@
 
 A preview shows the result. Every field, readout, dimension, tag, schedule and sheet follows at once. The choice is saved with the project and can be undone.
 
+## Drawing standard
+
+A project draws to a **drawing standard**: the sheet sizes it offers, the scales, and how the scales are written. Two ship:
+
+- **ISO**: A sheets (A0 to A4, A3 to start with), scales written as ratios, 1:1 to 1:500.
+- **US**: ARCH sheets (ARCH A to ARCH E1, ARCH D to start with) and ANSI sheets (letter, tabloid, C to E), scales written the architect's way, from 12" = 1'-0" to 1/16" = 1'-0", and the engineer's 1" = 10'-0" to 1" = 100'-0".
+
+Pick it under **Standard** in the *Project* tab of *Properties*, or at the top of the New project window. Sheet-size and scale pickers then show the standard's own, with the rest under *Show all*. Changing the standard moves the views to its nearest scales, in one step that can be undone.
+
+A standard is part of the [style pack](graphic-styles), so an office can make its own.
+
 ## Number formats
 
 Each kind of annotation can write its numbers its own way: **dimensions**, **level heads**, **spot levels**, **tags** and **schedules**. The status bar's **Units** menu lists each kind with a sample of how it writes now; click one, or *Number formats…*, to open the **Number formats** window. *Project* comes first, then each kind.

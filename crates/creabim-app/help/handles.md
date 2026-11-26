@@ -20,7 +20,7 @@ For an exact value, type it during the drag (`Tab`), or click a temporary dimens
 
 ## Turning, sliding and sizing
 
-- A selected **object** (furniture or a fixture) has a square grip in front of it: drag it round to turn the object about its middle, in steps of 5°. The arrow beside it turns it round to face the other way.
+- A selected **object** (furniture or a fixture) has a round **turn dot** in front of it: drag it round to turn the object about its middle. A protractor shows the turn, which goes in Rotate's step (whole degrees when that is *Free*) and locks at 0°, 90° and 180° as it passes them; hold `Alt` to turn it freely. The arrow beside it turns it round to face the other way.
 - A **column** has a turning grip beside it, and round grips on its sides for its width and depth (a round column's diameter); it stays on its point.
 - A **stair** has a turning grip behind its first riser.
 - A **door or window** has a round grip in its middle to slide it along its wall at the same width; a **beam** has a round grip on its side for its width.
@@ -36,15 +36,26 @@ Slabs, roofs, shafts, sketches and railing paths all show the same grips on thei
 
 Rest the pointer on any grip for a tip saying what it does. During a drag, press `Tab` to type a length.
 
-## The edge palette
+## Edges in Edit mode
 
-Rest the pointer on an edge of a selected element's outline, in the 3D view or a plan, and a small palette opens by the pointer:
+In [Edit mode](edit-mode), an edge of the outline is taken anywhere along it. It thickens and shows its length under the pointer.
+
+- **Drag** it and it moves as it is; the edges beside it stretch.
+- **Click** it and it is picked: it turns orange, with its two corners filled. `Shift`+click picks more, and a box picks the corners inside it, in the 3D view too.
+- `M` moves what is picked by a base point, and leaves the rest of the outline where it is.
+- A click on nothing lets go of what is picked. `Esc` or `Tab` leaves Edit mode.
+
+With an edge picked, the strip at the right of the view, and a right-click on the edge, have:
 
 - **Offset edge** pushes the edge out or pulls it in, square to itself.
-- **Offset all** grows or shrinks the whole outline by one distance, in place. Press `Ctrl` to make a copy instead.
-- **Insert point** adds a corner there, then moves it.
+- **Offset all** (*Offset* on the strip) grows or shrinks the whole outline by one distance. Press `Ctrl` to make a copy instead.
+- **Insert point** adds a corner in its middle, then moves it. A right-click adds it where you clicked.
 
 Each follows the pointer with snaps. Type a distance and press `Enter` to send it that far the way the pointer went, click to place it, or press `Esc` to stop.
+
+## A face or a wire
+
+A closed outline is a face: [Pull](masses) makes it a solid. **Remove face**, on the strip (or the Face switch in Properties), leaves a closed wire: lines only, and Pull makes each line a wall, open at both ends. **Make face** fills it again.
 
 ## Shafts
 

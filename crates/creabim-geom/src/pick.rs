@@ -17,6 +17,17 @@ pub struct Hit {
     pub triangle: usize,
 }
 
+/// A lot's envelope stands round the whole house as a see-through volume:
+/// taken as the nearest hit, every click on the steps, the deck or a wall
+/// inside it picked the lot, and a drag moved the lot (owner markup MU124).
+/// Picked last, where the ray met nothing else, it still took every click
+/// on empty paper in a section, where a drag for a box then moved the lot
+/// (MU126). So a ray never picks it: a lot is picked by its lines, on the
+/// ground in 3D and in the drawings.
+pub fn backdrop(item: &SceneItem) -> bool {
+    item.finish == Some(crate::scene::LOT_ENVELOPE)
+}
+
 /// Closest element hit by a ray, using Möller–Trumbore intersection.
 pub fn pick(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Option<Hit> {
     pick_where(scene, origin, dir, &|_| true)
@@ -30,7 +41,11 @@ pub fn pick_where(
     keep: &dyn Fn(ElementId) -> bool,
 ) -> Option<Hit> {
     let mut best: Option<Hit> = None;
-    for (at, item) in scene.iter().enumerate().filter(|(_, i)| keep(i.id)) {
+    for (at, item) in scene
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| keep(i.id) && !backdrop(i))
+    {
         let p = &item.mesh.positions;
         for (tri, idx) in item.mesh.indices.chunks(3).enumerate() {
             let (a, b, c) = (
@@ -57,7 +72,7 @@ pub fn pick_where(
 /// nearest hit: what is behind or inside the closest one, to cycle to.
 pub fn pick_all(scene: &[SceneItem], origin: Vec3, dir: Vec3) -> Vec<Hit> {
     let mut best: Vec<Hit> = Vec::new();
-    for (at, item) in scene.iter().enumerate() {
+    for (at, item) in scene.iter().enumerate().filter(|(_, i)| !backdrop(i)) {
         let p = &item.mesh.positions;
         for (tri, idx) in item.mesh.indices.chunks(3).enumerate() {
             let (a, b, c) = (
@@ -195,6 +210,58 @@ mod tests {
         let hit = pick(&scene, Vec3::new(5.0, 3.0, 50.0), -Vec3::Z).unwrap();
         assert_eq!(model.get(hit.id).unwrap().name, "FF Slab");
         assert!((hit.t - 47.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_lot_envelope_never_takes_the_pick_from_what_is_inside_it() {
+        // a box as twelve triangles
+        let boxed = |lo: Vec3, hi: Vec3| {
+            let c = |i: usize| {
+                [
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                ]
+            };
+            crate::TriMesh {
+                positions: (0..8).map(c).collect(),
+                normals: vec![[0.0, 0.0, 1.0]; 8],
+                indices: vec![
+                    0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 0, 2,
+                    6, 0, 6, 4, 1, 5, 7, 1, 7, 3,
+                ],
+            }
+        };
+        let box_item = |id, lo: Vec3, hi: Vec3, finish: Option<&'static str>| SceneItem {
+            id,
+            mesh: boxed(lo, hi),
+            color: [0.5; 3],
+            surface: crate::scene::PLAIN_SURFACE,
+            ghost: finish.is_some(),
+            layer: None,
+            finish,
+        };
+        let (lot, step) = (ElementId::new(), ElementId::new());
+        // a step inside the lot's envelope, the ray coming from outside it
+        let scene = vec![
+            box_item(
+                lot,
+                Vec3::splat(-10.0),
+                Vec3::splat(10.0),
+                Some(crate::scene::LOT_ENVELOPE),
+            ),
+            box_item(step, Vec3::splat(-1.0), Vec3::splat(1.0), None),
+        ];
+        let (o, d) = (Vec3::new(-30.0, 0.0, 0.0), Vec3::X);
+        assert_eq!(pick(&scene, o, d).unwrap().id, step);
+        let all: Vec<_> = pick_all(&scene, o, d).into_iter().map(|h| h.id).collect();
+        assert_eq!(all, [step]);
+        // past the step the envelope alone is met: nothing is picked, as
+        // on empty paper beside the house in a section
+        let o = Vec3::new(-30.0, 5.0, 0.0);
+        assert!(pick(&scene, o, d).is_none());
+        assert!(pick_all(&scene, o, d).is_empty());
+        let _ = lot;
     }
 
     #[test]

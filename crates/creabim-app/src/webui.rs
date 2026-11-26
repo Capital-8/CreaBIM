@@ -22,9 +22,11 @@ pub enum Pane {
     Nav,
     /// The guide, at the right of the window while it is open.
     Help,
+    /// A control's tip, over everything, right by its control (MU102).
+    Tip,
 }
 
-const PANES: usize = 6;
+const PANES: usize = 7;
 
 impl Pane {
     /// In the order they are made, which stacks the popup on top.
@@ -35,6 +37,7 @@ impl Pane {
         Pane::Nav,
         Pane::Help,
         Pane::Popup,
+        Pane::Tip,
     ];
 
     fn name(self) -> &'static str {
@@ -45,6 +48,7 @@ impl Pane {
             Pane::Popup => "popup",
             Pane::Nav => "nav",
             Pane::Help => "help",
+            Pane::Tip => "tip",
         }
     }
 }
@@ -64,9 +68,21 @@ pub struct WebUi {
     sent: [String; PANES],
     /// Where each pane is, in points.
     pub rects: [egui::Rect; PANES],
-    bounds: [Option<Rect>; PANES],
+    /// The pages' zoom: the interface scale (#96).
     zoom: f32,
     popup_shown: bool,
+    /// Frames until the shade asked to go is lifted.
+    unshade: Option<u8>,
+    /// The popup's page has been told it is on the window.
+    popup_here: bool,
+    /// Frames still to wait, off the window, after the card was told to
+    /// show itself, so it has painted before it comes on (MU102).
+    here_wait: u8,
+    /// The panes are shaded behind a window that waits for an answer.
+    shaded: bool,
+    /// Which side the buttons sit in CreaBIM's own windows, sent with
+    /// every state: "right" or "left".
+    pub dir: &'static str,
     #[cfg(target_os = "linux")]
     x11: Option<X11Focus>,
 }
@@ -140,10 +156,17 @@ impl WebUi {
                     position: PhysicalPosition::new(0, 0).into(),
                     size: PhysicalSize::new(10, 10).into(),
                 })
-                .with_background_color(BACKGROUND)
+                // a see-through panel is clear until its page paints: the
+                // dark of a page not yet drawn showed as a block for a
+                // frame as New project opened (MU102)
+                .with_background_color(if matches!(pane, Pane::Popup | Pane::Tip) {
+                    (0, 0, 0, 0)
+                } else {
+                    BACKGROUND
+                })
                 // the popup's corners can be round (Save the changes):
                 // what its page leaves clear shows the app behind
-                .with_transparent(pane == Pane::Popup)
+                .with_transparent(matches!(pane, Pane::Popup | Pane::Tip))
                 .with_ipc_handler(move |r| {
                     if let Ok(body) = serde_json::from_str(r.body()) {
                         inbox.lock().unwrap().push(Msg { pane, body });
@@ -154,15 +177,28 @@ impl WebUi {
                 .map_err(|e| e.to_string())?;
             views.push((pane, view));
         }
+        // the tip's panel waits off the window until a tip shows
+        for (pane, view) in &views {
+            if *pane == Pane::Tip {
+                let _ = view.set_bounds(Rect {
+                    position: PhysicalPosition::new(-4000, -4000).into(),
+                    size: PhysicalSize::new(10u32, 10u32).into(),
+                });
+            }
+        }
         Ok(Self {
             views,
             _context: context,
             inbox,
             sent: Default::default(),
             rects: [egui::Rect::NOTHING; PANES],
-            bounds: [None; PANES],
             zoom: 1.0,
             popup_shown: false,
+            unshade: None,
+            popup_here: false,
+            here_wait: 0,
+            shaded: false,
+            dir: "right",
             #[cfg(target_os = "linux")]
             x11: X11Focus::new(frame),
         })
@@ -195,24 +231,21 @@ impl WebUi {
     pub fn place(&mut self, pane: Pane, rect: egui::Rect, ppp: f32) {
         let i = pane as usize;
         self.rects[i] = rect;
-        let bounds = Rect {
-            position: PhysicalPosition::new(
-                (rect.min.x * ppp).round() as i32,
-                (rect.min.y * ppp).round() as i32,
-            )
-            .into(),
-            size: PhysicalSize::new(
-                (rect.width() * ppp).round().max(1.0) as u32,
-                (rect.height() * ppp).round().max(1.0) as u32,
-            )
-            .into(),
-        };
-        if self.bounds[i] != Some(bounds) {
-            self.bounds[i] = Some(bounds);
-            let _ = self.view(pane).set_bounds(bounds);
-        }
+        // cover every pixel the band touches: rounding the corner and the
+        // size apart left a one-pixel row between a band and the views,
+        // which the splash's shade showed as a bright line (MU81). Placed
+        // every frame, so a new interface scale (its pixels per point)
+        // moves the bands at once
+        let (x0, y0) = ((rect.min.x * ppp).floor(), (rect.min.y * ppp).floor());
+        let (x1, y1) = ((rect.max.x * ppp).ceil(), (rect.max.y * ppp).ceil());
+        let _ = self.view(pane).set_bounds(Rect {
+            position: PhysicalPosition::new(x0 as i32, y0 as i32).into(),
+            size: PhysicalSize::new((x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32).into(),
+        });
     }
 
+    /// Zoom every page by the interface scale (#96), so the bars grow with
+    /// the slots egui gives them.
     pub fn set_zoom(&mut self, zoom: f32) {
         if self.zoom != zoom {
             for (_, view) in &self.views {
@@ -224,6 +257,10 @@ impl WebUi {
 
     /// Send a pane its state, if it changed since last time.
     pub fn send(&mut self, pane: Pane, state: &Value) {
+        let mut state = state.clone();
+        if let Some(o) = state.as_object_mut() {
+            o.insert("dir".into(), self.dir.into());
+        }
         let text = state.to_string();
         let i = pane as usize;
         if self.sent[i] == text {
@@ -240,6 +277,52 @@ impl WebUi {
         let _ = self.view(pane).evaluate_script(script);
     }
 
+    /// Shade every pane but the popup, as egui shades what it draws behind
+    /// a modal window, so the whole app dims behind the question as one.
+    pub fn shade(&mut self, on: bool) {
+        if !on {
+            // lifted a frame later (see `tick`): the views' shade goes
+            // with the frame now being drawn, which reaches the screen
+            // after the pages have acted, so the bars were bright a
+            // frame before the views (MU103)
+            if self.shaded && self.unshade.is_none() {
+                self.unshade = Some(1);
+            }
+            return;
+        }
+        self.unshade = None;
+        self.set_shade(true);
+    }
+
+    /// Once a frame: lift the shade asked to go.
+    pub fn tick(&mut self) -> bool {
+        match self.unshade {
+            Some(0) => {
+                self.unshade = None;
+                self.set_shade(false);
+                false
+            }
+            Some(n) => {
+                self.unshade = Some(n - 1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn set_shade(&mut self, on: bool) {
+        if self.shaded == on {
+            return;
+        }
+        self.shaded = on;
+        let script = format!("document.documentElement.classList.toggle('cb-shade', {on})");
+        for pane in Pane::ALL {
+            if pane != Pane::Popup {
+                self.run(pane, &script);
+            }
+        }
+    }
+
     /// Run a script in every pane's page.
     pub fn run_all(&self, script: &str) {
         for (_, v) in &self.views {
@@ -252,8 +335,53 @@ impl WebUi {
         self.sent[pane as usize].clear();
     }
 
-    pub fn show_popup(&mut self, rect: egui::Rect, ppp: f32) {
+    /// Is a menu or card showing (not parked off the window)?
+    pub fn popup_showing(&self) -> bool {
+        self.popup_shown
+    }
+
+    /// Bring the popup onto the window. A card told to show itself waits
+    /// two frames off the window first, to paint: true while it waits.
+    pub fn show_popup(&mut self, rect: egui::Rect, ppp: f32) -> bool {
+        // its page draws its card from now (see `stage_popup`)
+        if !self.popup_here {
+            self.popup_here = true;
+            self.here_wait = if self.rects[Pane::Popup as usize].min.x < -1000.0 {
+                2
+            } else {
+                0
+            };
+            self.run(
+                Pane::Popup,
+                "document.documentElement.classList.add('cb-here')",
+            );
+        }
+        self.popup_shown = true;
+        if self.here_wait > 0 {
+            self.here_wait -= 1;
+            return true;
+        }
         self.place(Pane::Popup, rect, ppp);
+        false
+    }
+
+    /// Lay a card's page out at its own size, off the window: it is
+    /// measured and painted there, and comes on only when it is whole. A
+    /// popup put on the window before its page had drawn showed as an
+    /// empty pale block for a moment (MU103).
+    pub fn stage_popup(&mut self, rect: egui::Rect, ppp: f32) {
+        if self.popup_here {
+            self.popup_here = false;
+            self.run(
+                Pane::Popup,
+                "document.documentElement.classList.remove('cb-here')",
+            );
+        }
+        self.place(
+            Pane::Popup,
+            rect.translate(egui::vec2(-8000.0, -8000.0) - rect.min.to_vec2()),
+            ppp,
+        );
         self.popup_shown = true;
     }
 
@@ -263,6 +391,13 @@ impl WebUi {
         if self.popup_shown || self.rects[Pane::Popup as usize] == egui::Rect::NOTHING {
             self.place(Pane::Popup, PARKED, 1.0);
             self.popup_shown = false;
+            if self.popup_here {
+                self.popup_here = false;
+                self.run(
+                    Pane::Popup,
+                    "document.documentElement.classList.remove('cb-here')",
+                );
+            }
             let _ = self
                 .view(Pane::Popup)
                 .evaluate_script("window.CB && CB.state({items: []})");
@@ -398,6 +533,7 @@ mod approved_icons {
         ("Screen wall", "screen-wall"),
         ("Fixtures", "fixtures"),
         ("Terrain", "terrain"),
+        ("Building pad", "pad"),
         ("Paving", "paving"),
         ("Planting", "planting"),
         ("Section", "scissors-line-dashed"),
@@ -414,6 +550,7 @@ mod approved_icons {
         ("Diameter", "diameter"),
         ("Arc length", "arc-length"),
         ("Note", "message-square-text"),
+        ("Symbol", "crosshair"),
         ("Spot level", "spot-level"),
         ("Detail component", "detail-component"),
         ("Sketch", "pen-tool"),
@@ -526,11 +663,13 @@ mod approved_icons {
         let body = super::JS
             .find("class=\"np-body\"")
             .expect("the choices' part");
-        let starts = super::JS.find("class=\"np-starts\"").unwrap();
-        let samples = super::JS.find("class=\"np-samples\"").unwrap();
+        // (REV05: the sources at its left, the picked start at its right,
+        // all three closed before the buttons)
+        let side = super::JS.find("class=\"np-side\"").unwrap();
+        let prev = super::JS.find("class=\"np-prev\"").unwrap();
         let foot = super::JS.find("class=\"np-foot\"").unwrap();
-        assert!(body < starts && starts < samples && samples < foot);
-        let between = &super::JS[samples..foot];
+        assert!(side < body && body < prev && prev < foot);
+        let between = &super::JS[prev..foot];
         assert!(
             between.contains("</div></div>"),
             "the part closes before the buttons"

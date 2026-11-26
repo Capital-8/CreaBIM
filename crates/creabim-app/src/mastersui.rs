@@ -145,15 +145,6 @@ fn straighten(a: DVec2, mut b: DVec2) -> DVec2 {
     b
 }
 
-/// Sheet sizes, mm, landscape.
-const PAPERS: [(&str, f64, f64); 5] = [
-    ("A4", 297.0, 210.0),
-    ("A3", 420.0, 297.0),
-    ("A2", 594.0, 420.0),
-    ("A1", 841.0, 594.0),
-    ("A0", 1189.0, 841.0),
-];
-
 /// A text's box, roughly, mm from the corner: for picking.
 fn text_box(at: DVec2, size: f64, text: &str, align: TextAlign) -> (DVec2, DVec2) {
     let w = size * 0.55 * text.chars().count().max(1) as f64;
@@ -177,6 +168,7 @@ fn item_box(it: &TitleItem) -> (DVec2, DVec2) {
             text,
             align,
             angle,
+            ..
         } => {
             // its corners turned with it, about its point
             let (lo, hi) = text_box(*at, *size, text, *align);
@@ -241,6 +233,7 @@ fn item_dist(it: &TitleItem, p: DVec2) -> f64 {
             text,
             align,
             angle,
+            ..
         } => {
             // measured along the text: the point turned back by its angle
             let q = *at + DVec2::from_angle(-*angle).rotate(p - *at);
@@ -654,9 +647,9 @@ impl CreaBimApp {
         v.push(Item::new("master.new:", "New blank master").icon("plus"));
         v.push(Item::Separator);
         v.push(
-            Item::new("master.import", "Bring in an SVG or DXF…")
+            Item::new("master.import", "Bring in an SVG, DXF or project…")
                 .icon("download")
-                .hint("A frame drawn in Inkscape, AutoCAD or any drawing program"),
+                .hint("A frame drawn in Inkscape, AutoCAD or any drawing program, or another CreaBIM project's masters"),
         );
         v
     }
@@ -718,6 +711,7 @@ impl CreaBimApp {
                             paper: Some(DVec2::new(420.0, 297.0)),
                             guides: vec![],
                             margins: None,
+                            stock: Default::default(),
                         },
                     ),
                 };
@@ -749,12 +743,19 @@ impl CreaBimApp {
             "master.import" => {
                 let Some(p) = rfd::FileDialog::new()
                     .set_title("Bring in a frame or title block")
-                    .add_filter("Drawings", &["svg", "dxf"])
+                    .add_filter("Drawings and projects", &["svg", "dxf", "creabim"])
                     .pick_file()
                 else {
                     return true;
                 };
                 let path = p.to_string_lossy().to_string();
+                // another project: its masters and text styles, as the old
+                // Sheet templates window brought them
+                if path.to_lowercase().ends_with(".creabim") {
+                    self.drafting.path = path;
+                    self.import_templates();
+                    return true;
+                }
                 match creabim_exchange::titleblock::read(&path) {
                     Ok(t) => {
                         let stem = p
@@ -885,6 +886,8 @@ impl CreaBimApp {
                             size: 1.0,
                             kind,
                             color: None,
+                            copy_of: None,
+                            measures: None,
                         }),
                     );
                     ids.push(e.id);
@@ -1088,6 +1091,10 @@ impl CreaBimApp {
             return;
         };
         let paper = t.paper.unwrap_or(DVec2::new(420.0, 297.0));
+        // a master with paper of its own shows it, dark paper or not
+        // (pens stage 7)
+        let stock = creabim_geom::sheetpaper::master_paper(self.doc.model(), &t, false);
+        let dark = dark && stock.is_plain();
         let o = t.corner.at(paper.x, paper.y);
         // a new size (maximised, a divider dragged) fits the sheet again
         if (self.masters.seen - body.size()).length() > 1.0 {
@@ -1179,6 +1186,16 @@ impl CreaBimApp {
                 egui::Color32::from_gray(44),
                 egui::Color32::from_gray(58),
             )
+        } else if !stock.is_plain() {
+            // the grid a shade of whatever the paper is
+            (
+                crate::annotate::color32(stock.rgb),
+                stock.roles.map_or(egui::Color32::from_gray(25), |r| {
+                    crate::annotate::color32(r.ink)
+                }),
+                egui::Color32::from_black_alpha(14),
+                egui::Color32::from_black_alpha(28),
+            )
         } else {
             (
                 egui::Color32::WHITE,
@@ -1189,7 +1206,7 @@ impl CreaBimApp {
         };
         // black on white turns light on dark paper; colours keep theirs
         let ink_of = |c: [f32; 3], a: f32| {
-            if dark && c.iter().all(|v| *v < 0.12) {
+            if (dark || stock.roles.is_some()) && c.iter().all(|v| *v < 0.12) {
                 ink.gamma_multiply(a)
             } else {
                 rgb(c, a)
@@ -1207,6 +1224,9 @@ impl CreaBimApp {
             egui::Color32::from_black_alpha(if dark { 40 } else { 26 }),
         );
         painter.rect_filled(sheet, 0.0, sheet_fill);
+        if !stock.is_plain() {
+            crate::sheetview::paint_paper(&painter, body, center, scale, paper, &stock);
+        }
         // its edge, fine and a shade of the desk
         painter.rect_stroke(
             sheet,
@@ -1434,6 +1454,7 @@ impl CreaBimApp {
                         text,
                         align,
                         angle,
+                        ..
                     } => {
                         // as sheets draw it: the size is the font's, in mm
                         let px = (*size as f32 * scale).max(4.0);
@@ -1645,7 +1666,11 @@ impl CreaBimApp {
             painter.text(
                 to_s(w) + egui::vec2(12.0, 14.0),
                 egui::Align2::LEFT_TOP,
-                format!("{:.1}, {:.1} mm", rel.x, rel.y),
+                format!(
+                    "{}, {}",
+                    crate::units::paper_text(rel.x),
+                    crate::units::paper_text(rel.y)
+                ),
                 egui::FontId::proportional(11.0),
                 pal.muted,
             );
@@ -1760,8 +1785,11 @@ impl CreaBimApp {
                             };
                             self.edit_master("Border margin", |t| t.margins = Some(m));
                             self.status = format!(
-                                "Margins {:.0}, {:.0}, {:.0}, {:.0} mm (left, bottom, right, top).",
-                                m[0], m[1], m[2], m[3]
+                                "Margins {}, {}, {}, {} (left, bottom, right, top).",
+                                crate::units::paper_text(m[0]),
+                                crate::units::paper_text(m[1]),
+                                crate::units::paper_text(m[2]),
+                                crate::units::paper_text(m[3])
                             );
                         }
                     }
@@ -2069,6 +2097,8 @@ impl CreaBimApp {
                                     text: words,
                                     align: TextAlign::Start,
                                     angle: 0.0,
+                                    colour: None,
+                                    font: None,
                                 })
                             });
                             self.masters.sel = Some(n);
@@ -2116,16 +2146,16 @@ impl CreaBimApp {
             let mut keep = true;
             let mut add = false;
             egui::Area::new(egui::Id::new("master.newfield"))
-                .order(egui::Order::Foreground)
+                .order(crate::app::overlay_order())
                 .fixed_pos(body.left_top() + egui::vec2(16.0, 12.0))
                 .show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.label(egui::RichText::new("Your own field").strong());
-                        let r = ui.add(
+                        let r = crate::props::text_field(
+                            ui,
                             egui::TextEdit::singleline(&mut name)
-                                .vertical_align(egui::Align::Center)
-                                .hint_text("client, drawn by, checked…")
-                                .desired_width(200.0),
+                                .hint_text("client, drawn by, checked…"),
+                            200.0,
                         );
                         r.request_focus();
                         ui.horizontal(|ui| {
@@ -2138,12 +2168,10 @@ impl CreaBimApp {
                                 keep = false;
                             }
                         });
-                        ui.label(
-                            egui::RichText::new(
-                                "Each sheet fills it in; it shows its default until then.",
-                            )
-                            .small()
-                            .weak(),
+                        crate::props::info(
+                            ui,
+                            "Each sheet fills it in; it shows its default until then.",
+                            "",
                         );
                     });
                 });
@@ -2175,16 +2203,17 @@ impl CreaBimApp {
         let dark = self.dark_paper(ui.ctx());
         let Some((id, name, t)) = self.master() else {
             crate::props::section(ui, "Master");
-            crate::props::note(
+            crate::props::empty(
                 ui,
                 "No masters yet: + in the Masters view's header makes one.",
             );
             return;
         };
         let users = super::drafting::template_users(self.doc.model(), id);
-        if self.prop_header(ui, "master_about", "Master", true, None) {
+        let open = self.prop_header(ui, "master_about", "Master", true, None);
+        crate::props::fold(ui, open, |ui| {
             // a draft that outlives the frame: a copy remade each frame
-            // threw away what was typed
+            // threw away what was typed (#46)
             let draft = self.masters.names.entry(id).or_insert_with(|| name.clone());
             let r = crate::props::row(ui, "Name", |ui| {
                 crate::props::fill(
@@ -2202,13 +2231,10 @@ impl CreaBimApp {
                 *draft = name.clone();
             }
             let size = t.paper.unwrap_or(DVec2::new(420.0, 297.0));
-            let now = PAPERS
-                .iter()
-                .find(|(_, w, h)| {
-                    (size - DVec2::new(*w, *h)).length() < 0.5
-                        || (size - DVec2::new(*h, *w)).length() < 0.5
-                })
-                .map_or("Custom", |p| p.0);
+            // the project's standard's sizes, the rest under Show all
+            let std = crate::sheetview::standard(ui.ctx());
+            let now = creabim_core::standards::size_name(&std, size.x, size.y)
+                .unwrap_or_else(|| "Custom".into());
             let portrait = size.y > size.x;
             let mut pick: Option<DVec2> = None;
             crate::props::row(ui, "Paper", |ui| {
@@ -2217,19 +2243,27 @@ impl CreaBimApp {
                     .width(ui.available_width())
                     .selected_text(format!("{now}{}", if portrait { ", portrait" } else { "" }))
                     .show_ui(ui, |ui| {
-                        for (n, w, h) in PAPERS {
-                            if ui.selectable_label(n == now && !portrait, n).clicked() {
-                                pick = Some(DVec2::new(w, h));
-                            }
-                            if ui
-                                .selectable_label(n == now && portrait, format!("{n}, portrait"))
-                                .clicked()
-                            {
-                                pick = Some(DVec2::new(h, w));
-                            }
+                        if let Some(p) = crate::sheetview::paper_menu(ui, &std, &now) {
+                            pick = Some(if portrait {
+                                DVec2::new(p.h, p.w)
+                            } else {
+                                DVec2::new(p.w, p.h)
+                            });
                         }
                     });
             });
+            let mut turn = portrait;
+            if crate::props::choice(
+                ui,
+                "Orientation",
+                &mut turn,
+                &[
+                    (false, "Landscape", "wider than tall"),
+                    (true, "Portrait", "taller than wide"),
+                ],
+            ) {
+                pick = Some(DVec2::new(size.y, size.x));
+            }
             if let Some(p) = pick {
                 self.edit_master("Master paper", |t| t.paper = Some(p));
                 self.masters.camera = None;
@@ -2266,6 +2300,100 @@ impl CreaBimApp {
             if crate::props::check(ui, "Border", &mut border, "Drawn").changed() {
                 self.edit_master("Master border", |t| t.border = border);
             }
+            // its paper: a colour and a texture; every sheet on it follows
+            // (pens stage 7, decision 3 A)
+            let mut stock = t.stock;
+            let kinds = [
+                ("White", "Plain white paper"),
+                (
+                    "The palette's",
+                    "The project palette's paper: the frame and notes take its ink",
+                ),
+                ("Its own", "A colour of your own"),
+            ];
+            let mut which = match stock.colour {
+                tb::PaperColour::White => 0,
+                tb::PaperColour::Palette => 1,
+                tb::PaperColour::Own(_) => 2,
+            };
+            let before = which;
+            crate::props::row(ui, "Colour", |ui| {
+                egui::ComboBox::from_id_salt(("master.stock", id))
+                    .icon(crate::props::combo_icon)
+                    .width(ui.available_width())
+                    .selected_text(kinds[which].0)
+                    .show_ui(ui, |ui| {
+                        for (k, (n, tip)) in kinds.iter().enumerate() {
+                            if ui
+                                .selectable_label(which == k, *n)
+                                .on_hover_text(*tip)
+                                .clicked()
+                            {
+                                which = k;
+                            }
+                        }
+                    })
+            })
+            .response
+            .on_hover_text("The paper every sheet on this master is drawn on");
+            if which != before {
+                stock.colour = match which {
+                    1 => tb::PaperColour::Palette,
+                    2 => tb::PaperColour::Own([0.96, 0.94, 0.89]),
+                    _ => tb::PaperColour::White,
+                };
+            }
+            if let tb::PaperColour::Own(c) = &mut stock.colour {
+                // sRGB as typed: the paper is printed as the picker shows
+                let mut s = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                crate::props::row(ui, "Its colour", |ui| {
+                    if crate::props::colour_button_srgb(ui, &mut s).changed() {
+                        *c = s.map(|v| v as f32 / 255.0);
+                    }
+                });
+            }
+            if which == 1 {
+                let pal = creabim_core::styles::project_palette(self.doc.model());
+                crate::props::plain_note(
+                    ui,
+                    &if pal.is_ink() {
+                        "The project's palette is Ink: white paper. Pick a palette in the Project tab.".to_string()
+                    } else {
+                        format!("{}: its paper, and its ink on the frame.", pal.name)
+                    },
+                );
+            }
+            // a list, not buttons: four don't fit a narrow panel
+            crate::props::row(ui, "Texture", |ui| {
+                egui::ComboBox::from_id_salt(("master.texture", id))
+                    .icon(crate::props::combo_icon)
+                    .width(ui.available_width())
+                    .selected_text(stock.texture.label())
+                    .show_ui(ui, |ui| {
+                        for x in tb::PaperTexture::ALL {
+                            ui.selectable_value(&mut stock.texture, x, x.label())
+                                .on_hover_text(x.hint());
+                        }
+                    })
+            })
+            .response
+            .on_hover_text("Printed over the paper; Print on white leaves it off");
+            if stock.texture != tb::PaperTexture::None {
+                let mut pct = (stock.strength * 100.0).round();
+                crate::props::row(ui, "Strength", |ui| {
+                    crate::props::fill(
+                        ui,
+                        egui::Slider::new(&mut pct, 25.0..=200.0)
+                            .suffix(" %")
+                            .max_decimals(0),
+                    )
+                    .on_hover_text("How strongly the texture shows: 100 % as it comes")
+                });
+                stock.strength = pct / 100.0;
+            }
+            if stock != t.stock {
+                self.edit_master("Master paper look", |t| t.stock = stock);
+            }
             crate::props::row(ui, "Sheets", |ui| {
                 ui.label(match users.len() {
                     0 => "None on it yet".to_string(),
@@ -2299,10 +2427,11 @@ impl CreaBimApp {
             if every {
                 self.set_sheet_template(&all_sheets, Some(id));
             }
-        }
+        });
         // its own fields: what each sheet can fill in beyond the built-in
         // ones, and what shows until it does
-        if self.prop_header(ui, "master_fields", "Its own fields", true, None) {
+        let open = self.prop_header(ui, "master_fields", "Its own fields", true, None);
+        crate::props::fold(ui, open, |ui| {
             let mut fields = t.fields.clone();
             let mut changed = false;
             let mut remove = None;
@@ -2310,18 +2439,19 @@ impl CreaBimApp {
                 crate::props::row(ui, &format!("{{{f}}}"), |ui| {
                     ui.horizontal(|ui| {
                         let w = ui.available_width() - 26.0;
-                        // a draft that outlives the frame, as the name's
+                        // a draft that outlives the frame, as the name's (#50),
+                        // in the house field (DSM05)
                         let draft = self
                             .masters
                             .field_drafts
                             .entry((id, f.clone()))
                             .or_insert_with(|| v.clone());
-                        let r = ui.add(
+                        let r = crate::props::text_field(
+                            ui,
                             egui::TextEdit::singleline(draft)
-                                .vertical_align(egui::Align::Center)
-                                .desired_width(w)
                                 .hint_text("Until a sheet fills it")
                                 .id(master_field_id(id, f)),
+                            w,
                         );
                         if r.lost_focus() && *draft != *v {
                             *v = draft.clone();
@@ -2345,11 +2475,10 @@ impl CreaBimApp {
                 .data(|d| d.get_temp::<String>(key))
                 .unwrap_or_default();
             let add = crate::props::row(ui, "New field", |ui| {
-                let r = ui.add(
-                    egui::TextEdit::singleline(&mut new)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(ui.available_width())
-                        .hint_text("client, drawn by, revision…"),
+                let r = crate::props::text_field(
+                    ui,
+                    egui::TextEdit::singleline(&mut new).hint_text("client, drawn by, revision…"),
+                    f32::INFINITY,
                 );
                 r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             });
@@ -2370,13 +2499,15 @@ impl CreaBimApp {
             if changed {
                 self.edit_master("Master fields", |t| t.fields = fields);
             }
-            crate::props::note(
+            crate::props::info(
                 ui,
                 "Every sheet fills in {sheet}, {number}, {project}, {scale} and {date} itself.",
+                "",
             );
-        }
+        });
         // the guides it is drawn by
-        if self.prop_header(ui, "master_guides", "Guides", true, None) {
+        let open = self.prop_header(ui, "master_guides", "Guides", true, None);
+        crate::props::fold(ui, open, |ui| {
             let n = t.guides.len();
             crate::props::row(ui, "Guides", |ui| {
                 ui.label(match n {
@@ -2409,11 +2540,9 @@ impl CreaBimApp {
                 self.edit_master("Clear guides", |t| t.guides.clear());
                 self.masters.guide_sel = None;
             }
-            crate::props::note(
-                ui,
-                "Guides are kept with the master and never printed. Pick one to drag it; Delete removes it.",
-            );
-        }
+            crate::props::info(ui, "Guides stay with the master and are never printed.", "");
+            crate::props::howto(ui, "Guide: pick one to drag it · Delete removes it.");
+        });
         // its pictures and logos, each to pick (MU40: one place for them)
         let pics: Vec<(usize, String)> = t
             .items
@@ -2422,16 +2551,25 @@ impl CreaBimApp {
             .filter_map(|(k, it)| match it {
                 TitleItem::Image { lo, hi, .. } => Some((
                     k,
-                    format!("Picture, {:.0} × {:.0} mm", hi.x - lo.x, hi.y - lo.y),
+                    format!(
+                        "Picture, {} × {}",
+                        crate::units::paper_text(hi.x - lo.x),
+                        crate::units::paper_text(hi.y - lo.y)
+                    ),
                 )),
                 TitleItem::Logo { lo, hi, .. } => Some((
                     k,
-                    format!("Logo, {:.0} × {:.0} mm", hi.x - lo.x, hi.y - lo.y),
+                    format!(
+                        "Logo, {} × {}",
+                        crate::units::paper_text(hi.x - lo.x),
+                        crate::units::paper_text(hi.y - lo.y)
+                    ),
                 )),
                 _ => None,
             })
             .collect();
-        if self.prop_header(ui, "master_pictures", "Pictures and logos", true, None) {
+        let open = self.prop_header(ui, "master_pictures", "Pictures and logos", true, None);
+        crate::props::fold(ui, open, |ui| {
             for (k, label) in &pics {
                 let on = self.masters.sel == Some(*k);
                 if crate::props::row(ui, "", |ui| {
@@ -2458,41 +2596,36 @@ impl CreaBimApp {
             {
                 self.add_master_picture();
             }
-        }
+        });
         // the border picked: its margins to type
-        if self.masters.border_sel
-            && self.prop_header(ui, "master_border", "Picked border", true, None)
-        {
-            let paper = t.paper.unwrap_or(DVec2::new(420.0, 297.0));
-            let mut m = t.margins.unwrap_or(tb::MARGINS);
-            let mut changed = false;
-            for (k, name) in ["Left", "Bottom", "Right", "Top"].into_iter().enumerate() {
-                let max = if k % 2 == 0 { paper.x } else { paper.y } / 2.0;
-                changed |= crate::props::row(ui, name, |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(&mut m[k])
-                            .range(0.0..=max)
-                            .speed(0.5)
-                            .suffix(" mm"),
-                    )
-                })
-                .changed();
-            }
-            if changed {
-                self.edit_master("Border margins", |t| t.margins = Some(m));
-            }
-            if crate::props::action(
-                ui,
-                "",
-                "Usual margins",
-                "20 mm at the binding side, 10 mm the others",
-                t.margins.is_some_and(|x| x != tb::MARGINS),
-            )
-            .clicked()
-            {
-                self.edit_master("Border margins", |t| t.margins = None);
-            }
+        if self.masters.border_sel {
+            let open = self.prop_header(ui, "master_border", "Picked border", true, None);
+            crate::props::fold(ui, open, |ui| {
+                let paper = t.paper.unwrap_or(DVec2::new(420.0, 297.0));
+                let mut m = t.margins.unwrap_or(tb::MARGINS);
+                let mut changed = false;
+                for (k, name) in ["Left", "Bottom", "Right", "Top"].into_iter().enumerate() {
+                    let max = if k % 2 == 0 { paper.x } else { paper.y } / 2.0;
+                    changed |= crate::props::row(ui, name, |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut m[k]).range(0.0..=max))
+                    })
+                    .changed();
+                }
+                if changed {
+                    self.edit_master("Border margins", |t| t.margins = Some(m));
+                }
+                if crate::props::action(
+                    ui,
+                    "",
+                    "Usual margins",
+                    "20 mm at the binding side, 10 mm the others",
+                    t.margins.is_some_and(|x| x != tb::MARGINS),
+                )
+                .clicked()
+                {
+                    self.edit_master("Border margins", |t| t.margins = None);
+                }
+            });
         }
         // what is picked
         let Some(i) = self.masters.sel.filter(|i| *i < t.items.len()) else {
@@ -2509,349 +2642,338 @@ impl CreaBimApp {
             TitleItem::Image { .. } => "Picked picture",
             TitleItem::Logo { .. } => "Picked logo",
         };
-        if !self.prop_header(ui, "master_picked", title, true, None) {
-            return;
-        }
-        let mut edited = it.clone();
-        let mut label = None;
-        let colour_row = |ui: &mut egui::Ui, name: &str, c: &mut [f32; 3]| -> bool {
-            crate::props::row(ui, name, |ui| ui.color_edit_button_rgb(c)).changed()
-        };
-        match &mut edited {
-            TitleItem::Text {
-                at,
-                size,
-                text,
-                align,
-                angle,
-            } => {
-                // a draft that outlives the frame: `text` is remade from
-                // the master each frame and lost what was typed
-                let draft = self
-                    .masters
-                    .text_drafts
-                    .entry((id, i))
-                    .or_insert_with(|| text.clone());
-                let r = crate::props::row(ui, "Words", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::TextEdit::singleline(draft)
-                            .vertical_align(egui::Align::Center)
-                            .id(master_text_id(id, i)),
-                    )
-                });
-                if r.lost_focus() && *draft != *text {
-                    *text = draft.clone();
-                    label = Some("Master text");
-                } else if !r.has_focus() && *draft != *text {
-                    *draft = text.clone();
-                }
-                if crate::props::row(ui, "Size", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(size)
-                            .range(0.5..=60.0)
-                            .speed(0.1)
-                            .suffix(" mm"),
-                    )
-                })
-                .changed()
-                {
-                    label = Some("Text size");
-                }
-                if crate::props::choice(
-                    ui,
-                    "Align",
+        let open = self.prop_header(ui, "master_picked", title, true, None);
+        crate::props::fold(ui, open, |ui| {
+            let mut edited = it.clone();
+            let mut label = None;
+            let colour_row = |ui: &mut egui::Ui, name: &str, c: &mut [f32; 3]| -> bool {
+                crate::props::row(ui, name, |ui| crate::props::colour_button_rgb(ui, c)).changed()
+            };
+            match &mut edited {
+                TitleItem::Text {
+                    at,
+                    size,
+                    text,
                     align,
-                    &[
-                        (TextAlign::Start, "Left", "Text runs right from its point"),
-                        (TextAlign::Middle, "Centre", "Text centred on its point"),
-                        (TextAlign::End, "Right", "Text ends at its point"),
-                    ],
-                ) {
-                    label = Some("Text alignment");
-                }
-                let mut deg = angle.to_degrees();
-                if crate::props::row(ui, "Turned", |ui| {
-                    crate::props::fill(ui, egui::DragValue::new(&mut deg).speed(1.0).suffix("°"))
-                })
-                .changed()
-                {
-                    *angle = deg.to_radians();
-                    label = Some("Text angle");
-                }
-                let (mut x, mut y) = (at.x, at.y);
-                let cx = crate::props::row(ui, "X", |ui| {
-                    crate::props::fill(ui, egui::DragValue::new(&mut x).speed(0.5).suffix(" mm"))
-                });
-                let cy = crate::props::row(ui, "Y", |ui| {
-                    crate::props::fill(ui, egui::DragValue::new(&mut y).speed(0.5).suffix(" mm"))
-                });
-                if cx.changed() || cy.changed() {
-                    *at = DVec2::new(x, y);
-                    label = Some("Move text");
-                }
-            }
-            TitleItem::Line { points, width } => {
-                if crate::props::row(ui, "Pen", |ui| {
-                    crate::props::fill(
+                    angle,
+                    ..
+                } => {
+                    // a draft that outlives the frame: `text` is remade from
+                    // the master each frame and lost what was typed (#50)
+                    let draft = self
+                        .masters
+                        .text_drafts
+                        .entry((id, i))
+                        .or_insert_with(|| text.clone());
+                    let r = crate::props::row(ui, "Words", |ui| {
+                        crate::props::fill(
+                            ui,
+                            egui::TextEdit::singleline(draft)
+                                .vertical_align(egui::Align::Center)
+                                .id(master_text_id(id, i)),
+                        )
+                    });
+                    if r.lost_focus() && *draft != *text {
+                        *text = draft.clone();
+                        label = Some("Master text");
+                    } else if !r.has_focus() && *draft != *text {
+                        *draft = text.clone();
+                    }
+                    if crate::props::row(ui, "Size", |ui| {
+                        crate::props::fill(ui, crate::units::paper_small(size).range(0.5..=60.0))
+                    })
+                    .changed()
+                    {
+                        label = Some("Text size");
+                    }
+                    if crate::props::choice(
                         ui,
-                        egui::DragValue::new(width)
-                            .range(0.05..=3.0)
-                            .speed(0.01)
-                            .suffix(" mm"),
-                    )
-                })
-                .changed()
-                {
-                    label = Some("Line pen");
+                        "Align",
+                        align,
+                        &[
+                            (TextAlign::Start, "Left", "Text runs right from its point"),
+                            (TextAlign::Middle, "Centre", "Text centred on its point"),
+                            (TextAlign::End, "Right", "Text ends at its point"),
+                        ],
+                    ) {
+                        label = Some("Text alignment");
+                    }
+                    let mut deg = angle.to_degrees();
+                    if crate::props::row(ui, "Turned", |ui| {
+                        crate::props::fill(
+                            ui,
+                            egui::DragValue::new(&mut deg).speed(1.0).suffix("°"),
+                        )
+                    })
+                    .changed()
+                    {
+                        *angle = deg.to_radians();
+                        label = Some("Text angle");
+                    }
+                    let (mut x, mut y) = (at.x, at.y);
+                    let cx = crate::props::row(ui, "X", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut x))
+                    });
+                    let cy = crate::props::row(ui, "Y", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut y))
+                    });
+                    if cx.changed() || cy.changed() {
+                        *at = DVec2::new(x, y);
+                        label = Some("Move text");
+                    }
                 }
-                let len: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
-                crate::props::row(ui, "Length", |ui| ui.label(format!("{len:.1} mm")));
-                crate::props::note(ui, "Brought in: a line drawn here takes colours too.");
-            }
-            TitleItem::Fill { gray, .. } => {
-                let mut g = *gray * 100.0;
-                if crate::props::row(ui, "Grey", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(&mut g).range(0.0..=100.0).suffix(" %"),
-                    )
-                })
-                .changed()
-                {
-                    *gray = g / 100.0;
-                    label = Some("Fill grey");
-                }
-            }
-            TitleItem::Shape {
-                closed,
-                pen,
-                colour,
-                fill,
-                opacity,
-                ..
-            } => {
-                // the pen: on or off, its width and colour
-                let mut has_pen = pen.is_some();
-                if crate::props::check(ui, "Outline", &mut has_pen, "Drawn").changed() {
-                    *pen = has_pen.then_some(0.25);
-                    label = Some("Outline");
-                }
-                if let Some(w) = pen {
+                TitleItem::Line { points, width } => {
                     if crate::props::row(ui, "Pen", |ui| {
                         crate::props::fill(
                             ui,
-                            egui::DragValue::new(w)
-                                .range(0.05..=5.0)
+                            egui::DragValue::new(width)
+                                .range(0.05..=3.0)
                                 .speed(0.01)
                                 .suffix(" mm"),
                         )
                     })
                     .changed()
                     {
-                        label = Some("Pen width");
+                        label = Some("Line pen");
                     }
-                    if colour_row(ui, "Pen colour", colour) {
-                        label = Some("Pen colour");
+                    let len: f64 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+                    crate::props::worked_out(
+                        ui,
+                        "master-line",
+                        &[crate::props::Worked::new(
+                            "Length",
+                            crate::units::paper_text(len),
+                        )],
+                    );
+                    crate::props::info(ui, "Brought in: a line drawn here takes colours too.", "");
+                }
+                TitleItem::Fill { gray, .. } => {
+                    let mut g = *gray * 100.0;
+                    if crate::props::row(ui, "Grey", |ui| {
+                        crate::props::fill(
+                            ui,
+                            egui::DragValue::new(&mut g).range(0.0..=100.0).suffix(" %"),
+                        )
+                    })
+                    .changed()
+                    {
+                        *gray = g / 100.0;
+                        label = Some("Fill grey");
                     }
-                    if dark && colour.iter().all(|v| *v < 0.12) {
-                        crate::props::note(
+                }
+                TitleItem::Shape {
+                    closed,
+                    pen,
+                    colour,
+                    fill,
+                    opacity,
+                    ..
+                } => {
+                    // the pen: on or off, its width and colour
+                    let mut has_pen = pen.is_some();
+                    if crate::props::check(ui, "Outline", &mut has_pen, "Drawn").changed() {
+                        *pen = has_pen.then_some(0.25);
+                        label = Some("Outline");
+                    }
+                    if let Some(w) = pen {
+                        if crate::props::row(ui, "Pen", |ui| {
+                            crate::props::fill(
+                                ui,
+                                egui::DragValue::new(w)
+                                    .range(0.05..=5.0)
+                                    .speed(0.01)
+                                    .suffix(" mm"),
+                            )
+                        })
+                        .changed()
+                        {
+                            label = Some("Pen width");
+                        }
+                        if colour_row(ui, "Pen colour", colour) {
+                            label = Some("Pen colour");
+                        }
+                        if dark && colour.iter().all(|v| *v < 0.12) {
+                            crate::props::info(
                             ui,
                             "Prints black. On dark paper black shows light, so you can see it as you work.",
+                            "",
                         );
-                    }
-                }
-                // the fill: closed shapes only
-                if *closed {
-                    let mut has_fill = fill.is_some();
-                    if crate::props::check(ui, "Fill", &mut has_fill, "Filled").changed() {
-                        *fill = has_fill.then_some([0.85, 0.85, 0.85]);
-                        label = Some("Fill");
-                    }
-                    if let Some(f) = fill {
-                        if colour_row(ui, "Fill colour", f) {
-                            label = Some("Fill colour");
                         }
                     }
-                } else if crate::props::action(
-                    ui,
-                    "",
-                    "Close it",
-                    "Join its last corner to its first, so it can be filled",
-                    true,
-                )
-                .clicked()
-                {
-                    *closed = true;
-                    label = Some("Close shape");
-                }
-                let mut pct = *opacity * 100.0;
-                if crate::props::row(ui, "Opacity", |ui| {
-                    // the slider and its number inside the field column
-                    ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
-                    ui.add(
-                        egui::Slider::new(&mut pct, 0.0..=100.0)
-                            .suffix(" %")
-                            .max_decimals(0),
-                    )
-                })
-                .changed()
-                {
-                    *opacity = (pct / 100.0).clamp(0.0, 1.0);
-                    label = Some("Opacity");
-                }
-            }
-            TitleItem::Logo { lo, hi, shapes } => {
-                // its size, its proportions kept as either changes
-                let (mut w, mut h) = (hi.x - lo.x, hi.y - lo.y);
-                let aspect = h / w.max(1e-9);
-                let cw = crate::props::row(ui, "Width", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(&mut w)
-                            .range(1.0..=1200.0)
-                            .speed(0.5)
-                            .suffix(" mm"),
-                    )
-                });
-                let ch = crate::props::row(ui, "Height", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(&mut h)
-                            .range(1.0..=1200.0)
-                            .speed(0.5)
-                            .suffix(" mm"),
-                    )
-                });
-                if cw.changed() {
-                    *hi = *lo + DVec2::new(w, w * aspect);
-                    label = Some("Logo size");
-                } else if ch.changed() {
-                    *hi = *lo + DVec2::new(h / aspect, h);
-                    label = Some("Logo size");
-                }
-                crate::props::row(ui, "Shapes", |ui| ui.label(format!("{}", shapes.len())));
-                // one colour for all of it: a logo in the title block's ink
-                let mut one = match shapes.first() {
-                    Some(TitleItem::Shape { fill: Some(c), .. })
-                    | Some(TitleItem::Shape { colour: c, .. }) => *c,
-                    _ => [0.0; 3],
-                };
-                if colour_row(ui, "One colour", &mut one) {
-                    for sh in shapes.iter_mut() {
-                        if let TitleItem::Shape { colour, fill, .. } = sh {
-                            *colour = one;
-                            if fill.is_some() {
-                                *fill = Some(one);
+                    // the fill: closed shapes only
+                    if *closed {
+                        let mut has_fill = fill.is_some();
+                        if crate::props::check(ui, "Fill", &mut has_fill, "Filled").changed() {
+                            *fill = has_fill.then_some([0.85, 0.85, 0.85]);
+                            label = Some("Fill");
+                        }
+                        if let Some(f) = fill {
+                            if colour_row(ui, "Fill colour", f) {
+                                label = Some("Fill colour");
                             }
                         }
-                    }
-                    label = Some("Logo colour");
-                }
-                crate::props::note(
-                    ui,
-                    "A vector logo: crisp on sheets and in PDF at any size. Its corners size it.",
-                );
-            }
-            TitleItem::Image {
-                lo,
-                hi,
-                width,
-                height,
-                opacity,
-                ..
-            } => {
-                let mut pct = *opacity * 100.0;
-                if crate::props::row(ui, "Opacity", |ui| {
-                    ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
-                    ui.add(
-                        egui::Slider::new(&mut pct, 0.0..=100.0)
-                            .suffix(" %")
-                            .max_decimals(0),
-                    )
-                })
-                .changed()
-                {
-                    *opacity = (pct / 100.0).clamp(0.0, 1.0);
-                    label = Some("Picture opacity");
-                }
-                let (mut w, mut h) = (hi.x - lo.x, hi.y - lo.y);
-                let aspect = *height as f64 / (*width).max(1) as f64;
-                let cw = crate::props::row(ui, "Width", |ui| {
-                    crate::props::fill(
+                    } else if crate::props::action(
                         ui,
-                        egui::DragValue::new(&mut w)
-                            .range(1.0..=1200.0)
-                            .speed(0.5)
-                            .suffix(" mm"),
+                        "",
+                        "Close it",
+                        "Join its last corner to its first, so it can be filled",
+                        true,
                     )
-                });
-                let ch = crate::props::row(ui, "Height", |ui| {
-                    crate::props::fill(
-                        ui,
-                        egui::DragValue::new(&mut h)
-                            .range(1.0..=1200.0)
-                            .speed(0.5)
-                            .suffix(" mm"),
-                    )
-                });
-                // its own proportions, kept as either changes
-                if cw.changed() {
-                    *hi = *lo + DVec2::new(w, w * aspect);
-                    label = Some("Picture size");
-                } else if ch.changed() {
-                    *hi = *lo + DVec2::new(h / aspect, h);
-                    label = Some("Picture size");
-                }
-                crate::props::row(ui, "Pixels", |ui| ui.label(format!("{width} × {height}")));
-                if crate::props::action(
-                    ui,
-                    "",
-                    "Its own proportions",
-                    "Undo any stretching: its height from its width",
-                    ((h / w) - aspect).abs() > 1e-3,
-                )
-                .clicked()
-                {
-                    *hi = *lo + DVec2::new(w, w * aspect);
-                    label = Some("Picture proportions");
-                }
-            }
-        }
-        // what lies over what: drawn in order, the last on top (MU40)
-        let last = t.items.len().saturating_sub(1);
-        let (front, back) = crate::props::actions2(
-            ui,
-            "Order",
-            ("To front", "Over everything else (Ctrl+])", i < last),
-            ("To back", "Under everything else (Ctrl+[)", i > 0),
-        );
-        if front || back {
-            self.master_order(i, front);
-            return;
-        }
-        let dup = crate::props::action(ui, "", "Duplicate", "A copy, 5 mm along (Ctrl+D)", true)
-            .clicked();
-        let del = crate::props::action(ui, "", "Delete", "Take it off the master (Delete)", true)
-            .clicked();
-        if dup {
-            self.masters_command(Command::Duplicate);
-            return;
-        }
-        if del {
-            self.masters_command(Command::Delete);
-            return;
-        }
-        if let Some(l) = label {
-            if edited != it {
-                self.edit_master(l, |t| {
-                    if let Some(x) = t.items.get_mut(i) {
-                        *x = edited;
+                    .clicked()
+                    {
+                        *closed = true;
+                        label = Some("Close shape");
                     }
-                });
+                    let mut pct = *opacity * 100.0;
+                    if crate::props::row(ui, "Opacity", |ui| {
+                        // the slider and its number inside the field column
+                        ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
+                        ui.add(
+                            egui::Slider::new(&mut pct, 0.0..=100.0)
+                                .suffix(" %")
+                                .max_decimals(0),
+                        )
+                    })
+                    .changed()
+                    {
+                        *opacity = (pct / 100.0).clamp(0.0, 1.0);
+                        label = Some("Opacity");
+                    }
+                }
+                TitleItem::Logo { lo, hi, shapes } => {
+                    // its size, its proportions kept as either changes
+                    let (mut w, mut h) = (hi.x - lo.x, hi.y - lo.y);
+                    let aspect = h / w.max(1e-9);
+                    let cw = crate::props::row(ui, "Width", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut w).range(1.0..=1200.0))
+                    });
+                    let ch = crate::props::row(ui, "Height", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut h).range(1.0..=1200.0))
+                    });
+                    if cw.changed() {
+                        *hi = *lo + DVec2::new(w, w * aspect);
+                        label = Some("Logo size");
+                    } else if ch.changed() {
+                        *hi = *lo + DVec2::new(h / aspect, h);
+                        label = Some("Logo size");
+                    }
+                    crate::props::row(ui, "Shapes", |ui| ui.label(format!("{}", shapes.len())));
+                    // one colour for all of it: a logo in the title block's ink
+                    let mut one = match shapes.first() {
+                        Some(TitleItem::Shape { fill: Some(c), .. })
+                        | Some(TitleItem::Shape { colour: c, .. }) => *c,
+                        _ => [0.0; 3],
+                    };
+                    if colour_row(ui, "One colour", &mut one) {
+                        for sh in shapes.iter_mut() {
+                            if let TitleItem::Shape { colour, fill, .. } = sh {
+                                *colour = one;
+                                if fill.is_some() {
+                                    *fill = Some(one);
+                                }
+                            }
+                        }
+                        label = Some("Logo colour");
+                    }
+                    crate::props::worked_out(
+                        ui,
+                        "master-logo",
+                        &[crate::props::Worked::new(
+                            "Source",
+                            "SVG, crisp at any size",
+                        )],
+                    );
+                    crate::props::howto(ui, "Logo: drag its corners to size it.");
+                }
+                TitleItem::Image {
+                    lo,
+                    hi,
+                    width,
+                    height,
+                    opacity,
+                    ..
+                } => {
+                    let mut pct = *opacity * 100.0;
+                    if crate::props::row(ui, "Opacity", |ui| {
+                        ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(40.0);
+                        ui.add(
+                            egui::Slider::new(&mut pct, 0.0..=100.0)
+                                .suffix(" %")
+                                .max_decimals(0),
+                        )
+                    })
+                    .changed()
+                    {
+                        *opacity = (pct / 100.0).clamp(0.0, 1.0);
+                        label = Some("Picture opacity");
+                    }
+                    let (mut w, mut h) = (hi.x - lo.x, hi.y - lo.y);
+                    let aspect = *height as f64 / (*width).max(1) as f64;
+                    let cw = crate::props::row(ui, "Width", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut w).range(1.0..=1200.0))
+                    });
+                    let ch = crate::props::row(ui, "Height", |ui| {
+                        crate::props::fill(ui, crate::units::paper(&mut h).range(1.0..=1200.0))
+                    });
+                    // its own proportions, kept as either changes
+                    if cw.changed() {
+                        *hi = *lo + DVec2::new(w, w * aspect);
+                        label = Some("Picture size");
+                    } else if ch.changed() {
+                        *hi = *lo + DVec2::new(h / aspect, h);
+                        label = Some("Picture size");
+                    }
+                    crate::props::row(ui, "Pixels", |ui| ui.label(format!("{width} × {height}")));
+                    if crate::props::action(
+                        ui,
+                        "",
+                        "Its own proportions",
+                        "Undo any stretching: its height from its width",
+                        ((h / w) - aspect).abs() > 1e-3,
+                    )
+                    .clicked()
+                    {
+                        *hi = *lo + DVec2::new(w, w * aspect);
+                        label = Some("Picture proportions");
+                    }
+                }
             }
-        }
+            // what lies over what: drawn in order, the last on top (MU40)
+            let last = t.items.len().saturating_sub(1);
+            let (front, back) = crate::props::actions2(
+                ui,
+                "Order",
+                ("To front", "Over everything else (Ctrl+])", i < last),
+                ("To back", "Under everything else (Ctrl+[)", i > 0),
+            );
+            if front || back {
+                self.master_order(i, front);
+                return;
+            }
+            let dup =
+                crate::props::action(ui, "", "Duplicate", "A copy, 5 mm along (Ctrl+D)", true)
+                    .clicked();
+            let del =
+                crate::props::action(ui, "", "Delete", "Take it off the master (Delete)", true)
+                    .clicked();
+            if dup {
+                self.masters_command(Command::Duplicate);
+                return;
+            }
+            if del {
+                self.masters_command(Command::Delete);
+                return;
+            }
+            if let Some(l) = label {
+                if edited != it {
+                    self.edit_master(l, |t| {
+                        if let Some(x) = t.items.get_mut(i) {
+                            *x = edited;
+                        }
+                    });
+                }
+            }
+        });
     }
 }
 
@@ -2968,6 +3090,8 @@ mod tests {
             text: "ABCDEFGHIJ".into(),
             align: TextAlign::Start,
             angle: std::f64::consts::FRAC_PI_2,
+            colour: None,
+            font: None,
         };
         // it runs up from its point
         assert_eq!(item_dist(&text, DVec2::new(0.0, 10.0)), 0.0);
@@ -3057,6 +3181,8 @@ mod tests {
             text: "{project}".into(),
             align: TextAlign::End,
             angle: 0.0,
+            colour: None,
+            font: None,
         };
         // right-aligned: it runs leftward from its point
         assert_eq!(item_dist(&text, DVec2::new(-5.0, 0.0)), 0.0);
@@ -3112,6 +3238,8 @@ mod tests {
             text: "A".into(),
             align: TextAlign::Start,
             angle: 0.0,
+            colour: None,
+            font: None,
         };
         scale_item(&mut text, DVec2::ZERO, DVec2::splat(2.0));
         assert!(matches!(text, TitleItem::Text { size, .. } if (size - 6.0).abs() < 1e-9));

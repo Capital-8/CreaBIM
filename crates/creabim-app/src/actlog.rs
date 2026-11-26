@@ -50,7 +50,13 @@ pub fn is_problem(line: &str) -> bool {
         || l.contains("failed")
         || l.contains("not changed")
         || l.contains("panicked")
-        || l.contains("slow:")
+}
+
+/// A timing note ("slow: between frames took 120 ms"): kept for a problem
+/// report, grey in the Log, never counted as a problem (MU89: they made
+/// up nearly all of its "problems", mostly the app waiting while idle).
+pub fn is_timing(line: &str) -> bool {
+    line.contains("slow:")
 }
 
 /// Largest the log grows before it starts again.
@@ -190,4 +196,165 @@ pub fn slow_table() -> String {
         ));
     }
     out
+}
+
+/// The timed steps of the frame under way on this thread: those still
+/// open, each with what its inner steps took so far, and those finished,
+/// each with the time that was its own (its inner steps taken off).
+#[derive(Default)]
+struct Steps {
+    open: Vec<(&'static str, f64, bool)>,
+    done: Vec<(&'static str, f64, bool)>,
+}
+
+thread_local! {
+    static STEPS: std::cell::RefCell<Steps> = std::cell::RefCell::new(Steps::default());
+}
+
+/// When the last frame ended, to tell a wait between frames from a frame.
+static FRAME_END: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// A timed step starts: its place among the open ones, for [`step_close`].
+pub fn step_open(what: &'static str) -> usize {
+    STEPS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.open.push((what, 0.0, false));
+        s.open.len() - 1
+    })
+}
+
+/// A timed step that took `ms` ends. When it is the outermost one, a slow
+/// "frame" is written to the log as what its time went on (MU40: lag
+/// measured, not told): each step's own time, the longest first, so a
+/// frame never reads only "frame took 161 ms".
+pub fn step_close(place: usize, what: &'static str, ms: f64) {
+    let breakdown = STEPS.with(|s| close_in(&mut s.borrow_mut(), place, what, ms));
+    if what == "frame" && place == 0 {
+        *FRAME_END.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+    if let Some(b) = breakdown {
+        line(b);
+    }
+}
+
+/// How long ago the last frame ended, ms: a long wait while the pointer
+/// is held is time lost outside the frame (drawing, the graphics card).
+pub fn since_frame() -> Option<f64> {
+    let end = *FRAME_END.lock().unwrap_or_else(|e| e.into_inner());
+    end.map(|t| t.elapsed().as_secs_f64() * 1000.0)
+}
+
+fn close_in(s: &mut Steps, place: usize, what: &'static str, ms: f64) -> Option<String> {
+    if place >= s.open.len() {
+        // closed out of turn, after the step around it: nothing to add
+        return None;
+    }
+    // steps inside it that were never closed end with it
+    s.open.truncate(place + 1);
+    let (_, inner, parent) = s.open.pop()?;
+    if let Some(around) = s.open.last_mut() {
+        around.1 += ms;
+        around.2 = true;
+    }
+    s.done.push((what, (ms - inner).max(0.0), parent));
+    if !s.open.is_empty() {
+        return None;
+    }
+    let done = std::mem::take(&mut s.done);
+    if what != "frame" || ms < SLOW_MS {
+        return None;
+    }
+    Some(breakdown(ms, &done))
+}
+
+/// "slow: frame of 161 ms: snaps_3d 80 + rest of show_3d 41 + …": each
+/// step's own time, steps of one name added up, the longest first; those
+/// under 3 ms are left out.
+fn breakdown(ms: f64, done: &[(&'static str, f64, bool)]) -> String {
+    let mut by_name: Vec<(&'static str, f64, u32, bool)> = Vec::new();
+    for &(what, own, parent) in done {
+        match by_name.iter_mut().find(|r| r.0 == what) {
+            Some(r) => {
+                r.1 += own;
+                r.2 += 1;
+                r.3 |= parent;
+            }
+            None => by_name.push((what, own, 1, parent)),
+        }
+    }
+    by_name.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let parts: Vec<String> = by_name
+        .iter()
+        .filter(|r| r.1 >= 3.0)
+        .take(8)
+        .map(|&(what, own, n, parent)| {
+            let rest = if parent { "rest of " } else { "" };
+            let times = if n > 1 {
+                format!(" ×{n}")
+            } else {
+                String::new()
+            };
+            format!("{rest}{what}{times} {own:.0}")
+        })
+        .collect();
+    format!("slow: frame of {ms:.0} ms: {}", parts.join(" + "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slow_frame_says_where_its_time_went() {
+        let mut s = Steps::default();
+        let open = |s: &mut Steps, what| {
+            s.open.push((what, 0.0, false));
+            s.open.len() - 1
+        };
+        let frame = open(&mut s, "frame");
+        let view = open(&mut s, "show_3d");
+        let snaps = open(&mut s, "snaps_3d");
+        assert_eq!(close_in(&mut s, snaps, "snaps_3d", 80.0), None);
+        assert_eq!(close_in(&mut s, view, "show_3d", 121.0), None);
+        for _ in 0..2 {
+            let plan = open(&mut s, "show_plan");
+            assert_eq!(close_in(&mut s, plan, "show_plan", 10.0), None);
+        }
+        let quick = open(&mut s, "properties");
+        assert_eq!(close_in(&mut s, quick, "properties", 1.0), None);
+        assert_eq!(
+            close_in(&mut s, frame, "frame", 161.0).as_deref(),
+            Some(
+                "slow: frame of 161 ms: snaps_3d 80 + rest of show_3d 41 + \
+                 show_plan ×2 20 + rest of frame 19"
+            )
+        );
+        assert!(s.open.is_empty() && s.done.is_empty());
+    }
+
+    #[test]
+    fn a_quick_frame_writes_nothing_and_leaves_nothing() {
+        let mut s = Steps::default();
+        s.open.push(("frame", 0.0, false));
+        s.open.push(("show_plan", 0.0, false));
+        assert_eq!(close_in(&mut s, 1, "show_plan", 4.0), None);
+        assert_eq!(close_in(&mut s, 0, "frame", 9.0), None);
+        assert!(s.done.is_empty());
+    }
+
+    #[test]
+    fn a_step_left_open_ends_with_the_one_around_it() {
+        let mut s = Steps::default();
+        s.open.push(("frame", 0.0, false));
+        s.open.push(("show_3d", 0.0, false));
+        s.open.push(("hover_3d", 0.0, false));
+        // show_3d closes while hover_3d is still open
+        assert_eq!(close_in(&mut s, 1, "show_3d", 70.0), None);
+        // hover_3d's own close, late, changes nothing
+        assert_eq!(close_in(&mut s, 2, "hover_3d", 60.0), None);
+        assert_eq!(
+            close_in(&mut s, 0, "frame", 75.0).as_deref(),
+            Some("slow: frame of 75 ms: show_3d 70 + rest of frame 5")
+        );
+    }
 }

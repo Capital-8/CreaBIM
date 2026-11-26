@@ -26,7 +26,7 @@ pub(super) struct DraftingUi {
     /// The template the templates window shows.
     template: Option<ElementId>,
     /// A path typed for importing a title block or a project's templates.
-    path: String,
+    pub(super) path: String,
 }
 
 /// The guide line angle steps offered, degrees (0 is none).
@@ -228,6 +228,16 @@ impl CreaBimApp {
                     self.plan.dim_step_size
                 };
             }
+            "grid.shape" => {
+                self.plan.grid_arc = index == Some(1);
+                self.plan.grid_arc_ends = None;
+                self.status = if self.plan.grid_arc {
+                    "Grid arc: click its two ends, then a point it passes through."
+                } else {
+                    "Grid line: click its two ends."
+                }
+                .into();
+            }
             "align.mode" => {
                 if let Some(m) = index.and_then(|i| crate::aligntool::AlignMode::ALL.get(i)) {
                     self.plan.align.mode = *m;
@@ -248,7 +258,9 @@ impl CreaBimApp {
                 self.status = format!("Cleared {n} guide references.");
             }
             "styles" => self.open_styles(None),
-            "templates" => self.drafting.templates_open = true,
+            // the Masters view, which took over from the old window (MU40;
+            // owner 2026-11-18: the window had no design pass, ran off screen)
+            "templates" => self.open_master(None),
             "align" => self.use_align_tool(),
             "styles.select" => {
                 if let Some(id) = id {
@@ -258,6 +270,15 @@ impl CreaBimApp {
             _ => return false,
         }
         true
+    }
+
+    /// Align in Corner mode (J): trim or extend two to a corner.
+    pub(super) fn use_corner_tool(&mut self) {
+        self.plan.tool = Tool::Align;
+        self.plan.cancel();
+        self.plan.align.mode = crate::aligntool::AlignMode::Corner;
+        self.plan.align.corner = None;
+        self.status = crate::aligntool::hint(&self.plan.align).into();
     }
 
     /// Switch to the Align tool.
@@ -290,11 +311,15 @@ impl CreaBimApp {
         }
         let mut open = true;
         let area = self.mat.area.unwrap_or_else(|| ctx.content_rect());
+        // fits the window, its contents scrolling (MU85: taller than a
+        // laptop's screen, its last rows out of reach)
         crate::app::shell::window("Annotation styles")
             .open(&mut open)
             .default_pos(area.min + Vec2::new(40.0, 70.0))
             .constrain_to(area)
             .min_width(620.0)
+            .max_height((area.height() - 40.0).max(240.0))
+            .vscroll(true)
             .collapsible(false)
             .show(ctx, |ui| self.styles_contents(ui));
         self.drafting.styles_open = open;
@@ -348,6 +373,26 @@ impl CreaBimApp {
                 .drafting
                 .style
                 .and_then(|id| self.doc.model().get(id).cloned());
+            // the starter styles, for a project from before they shipped
+            let missing: Vec<_> = creabim_core::annotation::starter_text_styles()
+                .into_iter()
+                .filter(|(n, _)| !self.doc.model().iter().any(|e| e.name == *n))
+                .collect();
+            if !missing.is_empty()
+                && ui
+                    .button("Starter styles")
+                    .on_hover_text(
+                        "Add a style for dimensions, one for notes and one for tags, to start from",
+                    )
+                    .clicked()
+            {
+                let mut tx = Transaction::new("Starter styles");
+                for (name, s) in missing {
+                    tx = tx.insert(Element::new(name, ElementKind::TextStyle(s)));
+                }
+                let r = self.doc.commit(tx);
+                self.report(r, "Starter styles added: duplicate one to make it yours.");
+            }
             if let Some(e) = &current {
                 if ui.button("Duplicate").clicked() {
                     if let ElementKind::TextStyle(s) = &e.kind {
@@ -406,23 +451,46 @@ impl CreaBimApp {
             return;
         };
         let mut name = e.name.clone();
-        crate::props::flow(ui, |ui| {
-            ui.label("Name");
-            if ui.text_edit_singleline(&mut name).changed() && !name.trim().is_empty() {
-                let r = self
-                    .doc
-                    .edit_merged(id, "Rename style", |e| e.name = name.clone());
-                self.report(r, "Style renamed.");
-            }
+        // a Properties row like every other (MU85)
+        let renamed = crate::props::row(ui, "Name", |ui| {
+            let w = ui.available_width();
+            crate::props::text_field(ui, egui::TextEdit::singleline(&mut name), w).changed()
         });
+        if renamed && !name.trim().is_empty() {
+            let r = self
+                .doc
+                .edit_merged(id, "Rename style", |e| e.name = name.clone());
+            self.report(r, "Style renamed.");
+        }
         if let Some(label) = crate::annotate::style_ui(ui, &mut s) {
             let r = self
                 .doc
                 .edit_merged(id, label, |e| e.kind = ElementKind::TextStyle(s));
             self.report(r, format!("{label}: every user shows it."));
         }
+        // its font for every style and for what has none (MU85: a font
+        // changed here left the tags in theirs)
+        crate::props::row(ui, "", |ui| {
+            if ui
+                .add_sized(
+                    [ui.available_width(), ui.spacing().interact_size.y],
+                    egui::Button::new("Use this font in every style").truncate(),
+                )
+                .on_hover_text("Every annotation style takes this font, and so do dimensions, notes and tags with no style")
+                .clicked()
+            {
+                self.font_everywhere(s.font);
+            }
+        });
         ui.add_space(4.0);
+        let from = ui
+            .ctx()
+            .graphics(|g| g.get(ui.layer_id()).map(|l| l.next_idx()));
         style_preview(ui, &s);
+        // as the views draw: on dark paper with the theme (MU85)
+        if self.dark_paper(ui.ctx()) {
+            super::darken_shapes(ui.ctx(), ui.layer_id(), from);
+        }
         let users = crate::annotate::style_users(self.doc.model(), id);
         crate::props::flow(ui, |ui| {
             if ui
@@ -477,11 +545,33 @@ impl CreaBimApp {
                 (&mut anno.tag_style, "Tags"),
             ] {
                 let mut on = *slot == Some(id);
-                if ui.checkbox(&mut on, text).changed() {
+                if crate::props::tickbox(ui, &mut on, text).changed() {
                     *slot = on.then_some(id);
                 }
             }
         });
+    }
+
+    /// Font `f` for every text style, and for annotations with none.
+    fn font_everywhere(&mut self, f: creabim_core::Font) {
+        let model = self.doc.model();
+        let mut tx = Transaction::new("Font in every style");
+        for e in model.iter() {
+            if let ElementKind::TextStyle(s) = &e.kind {
+                if s.font != f {
+                    let mut after = e.clone();
+                    after.kind = ElementKind::TextStyle(TextStyle { font: f, ..*s });
+                    tx = tx.replace(e.clone(), after);
+                }
+            }
+        }
+        let mut pack = creabim_core::styles::active_pack(model).into_owned();
+        pack.text_font = (f != creabim_core::Font::Sans).then_some(f);
+        let r = self.doc.commit(tx).and_then(|_| {
+            let t = creabim_core::styles::apply_pack(self.doc.model(), &pack);
+            self.doc.commit(t)
+        });
+        self.report(r, format!("{} in every style.", f.label()));
     }
 
     fn add_style(&mut self, name: String, s: TextStyle) {
@@ -551,12 +641,7 @@ impl CreaBimApp {
         {
             self.drafting.template = list.first().map(|l| l.0);
         }
-        ui.label(
-            egui::RichText::new(
-                "A template is a title block every sheet using it draws, with {fields} the sheet fills in.",
-            )
-            .weak(),
-        );
+        crate::props::info(ui, "A template is a title block every sheet using it draws, with {fields} the sheet fills in.", "");
         crate::props::flow(ui, |ui| {
             if ui
                 .button("Copy of the built-in block")
@@ -602,11 +687,11 @@ impl CreaBimApp {
         });
         crate::props::flow(ui, |ui| {
             ui.label("From a path");
-            ui.add(
+            crate::props::text_field(
+                ui,
                 egui::TextEdit::singleline(&mut self.drafting.path)
-                    .vertical_align(egui::Align::Center)
-                    .hint_text(".dxf, .svg or another .creabim project")
-                    .desired_width(360.0),
+                    .hint_text(".dxf, .svg or another .creabim project"),
+                360.0,
             );
             if ui
                 .add_enabled(
@@ -682,26 +767,12 @@ impl CreaBimApp {
             label = Some("Template border");
         }
         template_preview(ui, &t);
-        ui.label(
-            egui::RichText::new("Fields of its own, with what a sheet shows until given one")
-                .weak(),
-        );
+        crate::props::section(ui, "Its own fields");
         let mut remove = None;
         for (i, (k, v)) in t.fields.iter_mut().enumerate() {
             crate::props::flow(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(k)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(110.0),
-                );
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(v)
-                            .vertical_align(egui::Align::Center)
-                            .desired_width(200.0),
-                    )
-                    .changed()
-                {
+                crate::props::text_field(ui, egui::TextEdit::singleline(k), 110.0);
+                if crate::props::text_field(ui, egui::TextEdit::singleline(v), 200.0).changed() {
                     label = Some("Field value");
                 }
                 if ui.small_button("Remove").clicked() {
@@ -729,29 +800,21 @@ impl CreaBimApp {
             ))
             .weak(),
         );
+        // the same 200 ms as every fold (AMD-017)
+        ui.style_mut().animation_time = 0.2;
         egui::CollapsingHeader::new("Text")
             .id_salt(("template_text", id))
             .show(ui, |ui| {
                 for item in t.items.iter_mut() {
                     if let TitleItem::Text { text, size, .. } = item {
                         crate::props::flow(ui, |ui| {
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(text)
-                                        .vertical_align(egui::Align::Center)
-                                        .desired_width(260.0),
-                                )
+                            if crate::props::text_field(ui, egui::TextEdit::singleline(text), 260.0)
                                 .changed()
                             {
                                 label = Some("Template text");
                             }
                             if ui
-                                .add(
-                                    egui::DragValue::new(size)
-                                        .speed(0.05)
-                                        .range(0.5..=40.0)
-                                        .suffix(" mm"),
-                                )
+                                .add(crate::units::paper_small(size).range(0.5..=40.0))
                                 .changed()
                             {
                                 label = Some("Template text size");
@@ -834,7 +897,12 @@ impl CreaBimApp {
             .map(|n| format!("A{n}"))
             .find(|n| !used.contains(n))
             .expect("unbounded");
-        let mut s = Sheet::a(number, "A3");
+        let std = creabim_core::standards::of(self.doc.model());
+        let paper = std
+            .sheet(&std.default_sheet)
+            .cloned()
+            .unwrap_or_else(|| creabim_core::standards::iso().sheets[3].clone());
+        let mut s = Sheet::sized(number, &paper);
         if let Some(p) = t.paper {
             (s.width, s.height) = (p.x, p.y);
         }
@@ -849,7 +917,7 @@ impl CreaBimApp {
 
     /// Import from the typed path: a title block from a DXF or SVG, or the
     /// templates and annotation styles of another project.
-    fn import_templates(&mut self) {
+    pub(super) fn import_templates(&mut self) {
         let path = self.drafting.path.trim().to_string();
         let lower = path.to_lowercase();
         if lower.ends_with(".creabim") || lower.ends_with(".json") {
@@ -931,11 +999,45 @@ impl CreaBimApp {
         })
         .response
         .on_hover_text("The master (title block and frame) this sheet is drawn on");
+        // the paper it gets from its master, said (pens stage 7)
+        let paper_says = match sheets::template_of(self.doc.model(), sh).map(|t| t.stock) {
+            Some(st) if !st.is_plain() => {
+                use creabim_core::titleblock::{PaperColour, PaperTexture};
+                let colour = match st.colour {
+                    PaperColour::White => "White".to_string(),
+                    // short: the row is narrow (screen check: cut with …)
+                    PaperColour::Own(_) => "Own".to_string(),
+                    PaperColour::Palette => {
+                        let p = creabim_core::styles::project_palette(self.doc.model());
+                        if p.is_ink() {
+                            "White".to_string()
+                        } else {
+                            p.name.clone()
+                        }
+                    }
+                };
+                if st.texture == PaperTexture::None {
+                    colour
+                } else {
+                    format!("{colour}, {}", st.texture.label())
+                }
+            }
+            _ => "White".to_string(),
+        };
+        crate::props::readout(
+            ui,
+            "Paper",
+            &paper_says,
+            "From its master: its colour and texture. Edit the master to change it",
+        );
         // its master in the Masters view, to change (MU40: a view, not a
         // window)
-        if crate::props::action(
+        // with the masters' icon, so it reads as a button among fields
+        // (owner, as Edit in Notes)
+        if crate::props::action_icon(
             ui,
             "",
+            "sheet-template",
             "Edit the master",
             "Open its master in a Masters view: what you change shows on every sheet on it",
             true,
@@ -956,7 +1058,19 @@ impl CreaBimApp {
                 f
             })
             .unwrap_or_default();
+        // what the project fills in (its Project tab): over a master's
+        // default, under the sheet's own value
+        let project: Vec<(&'static str, String)> = self
+            .doc
+            .model()
+            .project_info()
+            .map(|(_, p)| p.fields())
+            .unwrap_or_default();
         for (k, default) in fields {
+            let from_project = project
+                .iter()
+                .find(|(p, _)| *p == k)
+                .map(|(_, v)| v.clone());
             let mut v = sh.fields.get(&k).cloned().unwrap_or_default();
             let mut word = k.replace('_', " ");
             if let Some(f) = word.get_mut(0..1) {
@@ -965,12 +1079,15 @@ impl CreaBimApp {
             if crate::props::row(ui, &word, |ui| {
                 crate::props::fill(
                     ui,
-                    egui::TextEdit::singleline(&mut v).hint_text(if default.is_empty() {
-                        "From the master".to_string()
-                    } else {
-                        default
-                    }),
+                    egui::TextEdit::singleline(&mut v)
+                        .vertical_align(egui::Align::Center)
+                        .hint_text(match from_project {
+                            Some(p) => p,
+                            None if default.is_empty() => "From the master".to_string(),
+                            None => default,
+                        }),
                 )
+                .on_hover_text("Empty, the sheet shows the project's value, else its master's. Type to give this sheet its own")
             })
             .changed()
             {
@@ -1052,7 +1169,8 @@ pub(super) fn new_style_name(model: &creabim_core::Model, base: &str) -> String 
 
 /// A dimension and a tag drawn in a style, on white paper.
 fn style_preview(ui: &mut egui::Ui, s: &TextStyle) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(380.0, 90.0), Sense::hover());
+    // as wide as the fields above it (MU85)
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 90.0), Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, Color32::WHITE);
     // paper mm, four pixels to the mm
@@ -1072,6 +1190,7 @@ fn style_preview(ui: &mut egui::Ui, s: &TextStyle) {
             look,
             witness: None,
             breaks: vec![],
+            label: Default::default(),
         },
         PlanItem::Tag {
             id: ElementId::new(),

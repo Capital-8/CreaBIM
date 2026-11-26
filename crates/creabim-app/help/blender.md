@@ -11,7 +11,7 @@ To have objects come in as real BIM elements:
 
 - put them in a collection named *Walls*, *Slabs*, *Doors* or *Windows*;
 - or give an object a `creabim_kind` property, or an `ifc_class` property such as `IfcColumn`;
-- or, in CreaBIM, select the object and use *Assign as…* in *Properties* (for example *Assign as… › Slab*). It gets slab handles, a thickness and a material, and stays linked.
+- or, in CreaBIM, select the object and use *Assign as* in its *Data (IFC)* tab in *Properties* (for example *Slab*). It gets slab handles, a thickness and a material, and stays linked.
 
 With *File › Reload linked files when saved* ticked, saving in Blender updates CreaBIM within a second. Walls stay walls and slabs stay slabs.
 

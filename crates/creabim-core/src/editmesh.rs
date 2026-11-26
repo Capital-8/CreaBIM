@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 pub struct EditMesh {
     pub vertices: Vec<DVec3>,
     pub faces: Vec<Vec<u32>>,
+    /// Lines that bound no face, each from one corner to another: a shape
+    /// can be lines alone, or carry lines beside its faces (MU43). Empty
+    /// in every mesh made before, and left out of their files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<[u32; 2]>,
 }
 
 impl EditMesh {
@@ -31,12 +36,24 @@ impl EditMesh {
             vec![2, 3, 7, 6], // back (+y)
             vec![3, 0, 4, 7], // left (-x)
         ];
-        Self { vertices, faces }
+        Self {
+            vertices,
+            faces,
+            edges: vec![],
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.faces.is_empty() {
+        if self.faces.is_empty() && self.edges.is_empty() {
             return Err("mesh has no faces".into());
+        }
+        for (i, e) in self.edges.iter().enumerate() {
+            if e[0] == e[1] {
+                return Err(format!("line {i} has no length"));
+            }
+            if let Some(v) = e.iter().find(|&&v| v as usize >= self.vertices.len()) {
+                return Err(format!("line {i} uses missing vertex {v}"));
+            }
         }
         for (i, f) in self.faces.iter().enumerate() {
             if f.len() < 3 {
@@ -137,15 +154,25 @@ impl EditMesh {
     pub fn extrude_face(&mut self, face: usize, distance: f64) {
         let offset = self.face_normal(face) * distance;
         let old = self.faces[face].clone();
+        // a face round a hole comes back on itself along a seam: a corner
+        // it passes twice is lifted once, and the seam grows no side
+        let mut lifted: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
         let new: Vec<u32> = old
             .iter()
             .map(|&v| {
-                self.vertices.push(self.vertices[v as usize] + offset);
-                (self.vertices.len() - 1) as u32
+                *lifted.entry(v).or_insert_with(|| {
+                    self.vertices.push(self.vertices[v as usize] + offset);
+                    (self.vertices.len() - 1) as u32
+                })
             })
             .collect();
-        for i in 0..old.len() {
-            let j = (i + 1) % old.len();
+        let m = old.len();
+        let seam = |a: u32, b: u32| (0..m).any(|k| old[k] == b && old[(k + 1) % m] == a);
+        for i in 0..m {
+            let j = (i + 1) % m;
+            if seam(old[i], old[j]) {
+                continue;
+            }
             self.faces.push(vec![old[i], old[j], new[j], new[i]]);
         }
         self.faces[face] = new;
@@ -203,6 +230,209 @@ impl EditMesh {
         }
         self.faces[face] = new;
         true
+    }
+
+    /// Inset each of `faces` on its own by `by`, then sink (negative) or
+    /// raise the new inner faces by `depth`, with sides square to them: a
+    /// recess or a raised panel in one go (MU49). Each face keeps its
+    /// number, now the inner one. False, and nothing changed, when `by`
+    /// would close a face up or make its inner outline cross itself.
+    pub fn inset_faces(&mut self, faces: &[usize], by: f64, depth: f64) -> bool {
+        let mut fs = faces.to_vec();
+        fs.sort_unstable();
+        fs.dedup();
+        if fs.is_empty() || fs.iter().any(|f| *f >= self.faces.len()) {
+            return false;
+        }
+        let before = self.clone();
+        for f in &fs {
+            if !(self.inset_face(*f, by) && self.ring_is_simple(*f)) {
+                *self = before;
+                return false;
+            }
+        }
+        if depth.abs() > 1e-9 {
+            for f in &fs {
+                self.extrude_face(*f, depth);
+            }
+        }
+        true
+    }
+
+    /// Outset `face` by `by`: a rim around it, cut into the faces next to
+    /// it, parallel to the face and `by` behind it. The face keeps its
+    /// size and its number. False, and nothing changed, when a corner of
+    /// the face has more or fewer than one edge leaving it, when that edge
+    /// does not go behind the face, or when `by` is further than it runs.
+    pub fn outset_face(&mut self, face: usize, by: f64) -> bool {
+        let Some(ring) = self.faces.get(face).cloned() else {
+            return false;
+        };
+        let k = ring.len();
+        if k < 3 || by <= 0.0 {
+            return false;
+        }
+        let n = self.face_normal(face);
+        // each corner slides down the one edge that leaves the face
+        let mut moved = Vec::with_capacity(k);
+        for i in 0..k {
+            let (v, before, after) = (ring[i], ring[(i + k - 1) % k], ring[(i + 1) % k]);
+            let mut away: Vec<u32> = vec![];
+            for (g, f) in self.faces.iter().enumerate() {
+                if g == face {
+                    continue;
+                }
+                let m = f.len();
+                for j in 0..m {
+                    if f[j] != v {
+                        continue;
+                    }
+                    for w in [f[(j + m - 1) % m], f[(j + 1) % m]] {
+                        if w != before && w != after && !away.contains(&w) {
+                            away.push(w);
+                        }
+                    }
+                }
+            }
+            let [w] = away[..] else {
+                return false;
+            };
+            let d = self.vertices[w as usize] - self.vertices[v as usize];
+            let len = d.length();
+            let Some(dir) = d.try_normalize() else {
+                return false;
+            };
+            let down = -dir.dot(n);
+            if down < 0.05 {
+                return false;
+            }
+            let t = by / down;
+            if t > len - 1e-6 {
+                return false;
+            }
+            moved.push(self.vertices[v as usize] + dir * t);
+        }
+        // every side of the face has one face across it
+        for i in 0..k {
+            let (a, b) = (ring[i], ring[(i + 1) % k]);
+            let across = self
+                .faces
+                .iter()
+                .enumerate()
+                .filter(|(g, f)| {
+                    *g != face && (0..f.len()).any(|j| f[j] == b && f[(j + 1) % f.len()] == a)
+                })
+                .count();
+            if across != 1 {
+                return false;
+            }
+        }
+        let first = self.vertices.len() as u32;
+        self.vertices.extend(moved);
+        let new = |v: u32| ring.iter().position(|r| *r == v).map(|i| first + i as u32);
+        let mut rim = vec![];
+        for (g, f) in self.faces.iter_mut().enumerate() {
+            if g == face {
+                continue;
+            }
+            let m = f.len();
+            for j in 0..m {
+                let (a, b) = (f[j], f[(j + 1) % m]);
+                if let (Some(na), Some(nb)) = (new(a), new(b)) {
+                    rim.push(vec![a, b, nb, na]);
+                }
+            }
+            for v in f.iter_mut() {
+                if let Some(nv) = new(*v) {
+                    *v = nv;
+                }
+            }
+        }
+        self.faces.extend(rim);
+        true
+    }
+
+    /// Outset each of `faces`, then sink or raise them by `depth` as
+    /// [`Self::inset_faces`] does. False, and nothing changed, when one
+    /// of them cannot take it.
+    pub fn outset_faces(&mut self, faces: &[usize], by: f64, depth: f64) -> bool {
+        let mut fs = faces.to_vec();
+        fs.sort_unstable();
+        fs.dedup();
+        if fs.is_empty() {
+            return false;
+        }
+        let before = self.clone();
+        for f in &fs {
+            if !self.outset_face(*f, by) {
+                *self = before;
+                return false;
+            }
+        }
+        if depth.abs() > 1e-9 {
+            for f in &fs {
+                self.extrude_face(*f, depth);
+            }
+        }
+        true
+    }
+
+    /// How far `faces` can be outset, up to `want`, as
+    /// [`Self::inset_reach`].
+    pub fn outset_reach(&self, faces: &[usize], want: f64) -> f64 {
+        let fits = |t: f64| t > 0.0 && self.clone().outset_faces(faces, t, 0.0);
+        if fits(want) {
+            return want;
+        }
+        let (mut lo, mut hi) = (0.0, want);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.0;
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// How far `faces` can be inset, up to `want`: `want` itself when it
+    /// fits, else the most that still leaves every face (to a millimetre
+    /// or so). Zero when nothing fits.
+    pub fn inset_reach(&self, faces: &[usize], want: f64) -> f64 {
+        let fits = |t: f64| t > 0.0 && self.clone().inset_faces(faces, t, 0.0);
+        if fits(want) {
+            return want;
+        }
+        let (mut lo, mut hi) = (0.0, want);
+        for _ in 0..16 {
+            let mid = (lo + hi) / 2.0;
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Does the outline of `face` keep clear of itself, seen square on?
+    fn ring_is_simple(&self, face: usize) -> bool {
+        let n = self.face_normal(face).abs();
+        let flat: Vec<glam::DVec2> = self.faces[face]
+            .iter()
+            .map(|v| {
+                let q = self.vertices[*v as usize];
+                if n.x >= n.y && n.x >= n.z {
+                    glam::DVec2::new(q.y, q.z)
+                } else if n.y >= n.z {
+                    glam::DVec2::new(q.z, q.x)
+                } else {
+                    glam::DVec2::new(q.x, q.y)
+                }
+            })
+            .collect();
+        !crate::polygon::self_intersects(&flat, true)
     }
 
     /// Scale a face's vertices about its centre, Blender's S key on a face.
@@ -302,7 +532,11 @@ impl EditMesh {
                 faces.push(vec![cur, e_next, center, e_prev]);
             }
         }
-        EditMesh { vertices, faces }
+        EditMesh {
+            vertices,
+            faces,
+            edges: vec![],
+        }
     }
 
     /// Signed volume; positive when faces point outward.
@@ -323,6 +557,74 @@ impl EditMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outset_cuts_a_rim_around_the_face_and_leaves_its_size() {
+        let mut m = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        let top = (0..6).find(|f| m.face_normal(*f).z > 0.9).unwrap();
+        let (volume, z, was) = (m.volume(), m.face_center(top).z, m.faces[top].clone());
+        assert!(m.outset_faces(&[top], 0.25, 0.0));
+        m.validate().unwrap();
+        // the face is as it was; four rim faces, each 0.25 high, on the sides
+        assert_eq!(m.faces[top], was);
+        assert_eq!(m.faces.len(), 6 + 4);
+        assert!((m.volume() - volume).abs() < 1e-9);
+        for f in 6..10 {
+            assert!(m.face_normal(f).z.abs() < 1e-9, "a rim face is upright");
+            assert!((m.face_center(f).z - (z - 0.125)).abs() < 1e-9);
+        }
+        // every edge still has a face each side of it
+        for f in &m.faces {
+            for j in 0..f.len() {
+                let (a, b) = (f[j], f[(j + 1) % f.len()]);
+                let back = m
+                    .faces
+                    .iter()
+                    .filter(|g| (0..g.len()).any(|i| g[i] == b && g[(i + 1) % g.len()] == a))
+                    .count();
+                assert_eq!(back, 1, "edge {a}-{b}");
+            }
+        }
+        // raised with it: the top goes up 0.5, the volume by its area times that
+        let mut up = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        assert!(up.outset_faces(&[top], 0.25, 0.5));
+        assert!((up.volume() - (volume + 8.0 * 0.5)).abs() < 1e-9);
+        // the sides are 1 high: 1.2 is too far, and nothing changes
+        let mut b = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        let kept = b.clone();
+        assert!(!b.outset_faces(&[top], 1.2, 0.0));
+        assert_eq!(b.faces, kept.faces);
+        let most = kept.outset_reach(&[top], 1.2);
+        assert!(most > 0.99 && most < 1.0, "{most}");
+    }
+
+    #[test]
+    fn inset_with_a_depth_makes_a_recess_and_stops_where_a_face_would_close() {
+        let mut m = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        let top = (0..6).find(|f| m.face_normal(*f).z > 0.9).unwrap();
+        let side = (0..6).find(|f| m.face_normal(*f).x > 0.9).unwrap();
+        let (volume, z) = (m.volume(), m.face_center(top).z);
+        // a recess 0.5 in from the edges of the top, 0.25 deep
+        assert!(m.inset_faces(&[top], 0.5, -0.25));
+        m.validate().unwrap();
+        assert!((m.face_center(top).z - (z - 0.25)).abs() < 1e-9);
+        assert!((m.volume() - (volume - 3.0 * 1.0 * 0.25)).abs() < 1e-9);
+        // two faces at once, each on its own
+        let mut two = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        assert!(two.inset_faces(&[top, side], 0.2, 0.0));
+        two.validate().unwrap();
+        assert_eq!(two.faces.len(), 6 + 4 + 4);
+        // the top is 2 wide: 1.0 from each side closes it, and nothing changes
+        let mut box_ = EditMesh::cuboid(DVec3::new(4.0, 2.0, 1.0));
+        let was = box_.clone();
+        assert!(!box_.inset_faces(&[top], 1.2, 0.0));
+        assert_eq!(box_.faces, was.faces);
+        assert_eq!(box_.vertices.len(), was.vertices.len());
+        // as far as it goes: just under 1.0, and 0.3 as asked when it fits
+        let most = was.inset_reach(&[top], 1.2);
+        assert!(most > 0.99 && most < 1.0, "{most}");
+        assert_eq!(was.inset_reach(&[top], 0.3), 0.3);
+    }
 
     #[test]
     fn inset_leaves_a_ring_and_a_smaller_face() {

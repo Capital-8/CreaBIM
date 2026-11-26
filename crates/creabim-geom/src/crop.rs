@@ -127,6 +127,7 @@ pub fn crop(d: &PlanView, lo: DVec2, hi: DVec2) -> PlanView {
                 points,
                 hatch,
                 rgb,
+                material,
             } => {
                 let points = clip_polygon(points, lo, hi);
                 if !points.is_empty() {
@@ -135,6 +136,7 @@ pub fn crop(d: &PlanView, lo: DVec2, hi: DVec2) -> PlanView {
                         points,
                         hatch: *hatch,
                         rgb: *rgb,
+                        material: *material,
                     });
                 }
             }
@@ -158,7 +160,9 @@ pub fn crop(d: &PlanView, lo: DVec2, hi: DVec2) -> PlanView {
                     lines(&mut items, *id, *pen, &pts, false);
                 }
             }
-            PlanItem::Label { at, .. } | PlanItem::Text { at, .. } => {
+            PlanItem::Label { at, .. }
+            | PlanItem::Text { at, .. }
+            | PlanItem::Symbol { at, .. } => {
                 if inside(*at, lo, hi) {
                     items.push(it.clone());
                 }

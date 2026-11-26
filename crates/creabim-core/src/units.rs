@@ -640,6 +640,59 @@ pub fn write_number(
     number_format(model, kind, own).write(&model.units(), kind, metres)
 }
 
+/// A level on the site, as site drawings write it: above the project's
+/// datum (its zero's height above sea level), in metres to two places
+/// (or decimal feet), unless the style pack gives spot levels a unit of
+/// their own.
+pub fn site_level(model: &crate::Model, z: f64) -> String {
+    let datum = model.project_info().map_or(0.0, |(_, p)| p.elevation);
+    let z = z + datum;
+    let f = number_format(model, NumberKind::SpotLevels, None);
+    if f.unit.is_some() {
+        return f.write(&model.units(), NumberKind::SpotLevels, z);
+    }
+    if model.units().is_imperial() {
+        format!("{:.2}'", z / M_PER_FOOT)
+    } else {
+        format!("{z:.2}")
+    }
+}
+
+/// A level on the site read from the project's zero, signed, to two
+/// places: "+0.45" (or decimal feet).
+pub fn level_from_zero(model: &crate::Model, z: f64) -> String {
+    if model.units().is_imperial() {
+        format!("{:+.2}'", z / M_PER_FOOT)
+    } else {
+        format!("{z:+.2}")
+    }
+}
+
+/// How the project reads its site levels.
+pub fn level_reading(model: &crate::Model) -> crate::LevelReading {
+    model
+        .project_info()
+        .map_or(crate::LevelReading::Datum, |(_, p)| p.site_levels)
+}
+
+/// What is added to a height above the project's zero to read it as the
+/// project reads its site levels, in metres: its datum, or nothing.
+pub fn level_shift(model: &crate::Model) -> f64 {
+    match level_reading(model) {
+        crate::LevelReading::Datum => model.project_info().map_or(0.0, |(_, p)| p.elevation),
+        crate::LevelReading::Zero => 0.0,
+    }
+}
+
+/// Metres in the unit site levels are typed in: a metre, or a foot.
+pub fn level_unit(model: &crate::Model) -> f64 {
+    if model.units().is_imperial() {
+        M_PER_FOOT
+    } else {
+        1.0
+    }
+}
+
 #[cfg(test)]
 mod format_tests {
     use super::*;

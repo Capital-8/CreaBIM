@@ -130,6 +130,11 @@ pub fn centres_under(
 /// The tool's hint for the status bar in 3D.
 pub fn hint(state: &AlignState) -> String {
     match (&state.reference_3d, state.mode) {
+        // after the first pick, say what comes next (it was overwritten)
+        (_, AlignMode::Corner) if state.corner.is_some_and(|c| c.0 == ElementId::NIL) => {
+            "Now click the part of the second to keep: both run to where they meet. Esc starts again.".into()
+        }
+        (_, AlignMode::Corner) => CORNER_IN_PLANS.into(),
         (None, _) => "Align in 3D: click the reference: a face, edge, corner or centre line (dashed purple) of another element, a grid line, or empty space for the working level's plane.".into(),
         (Some(r), AlignMode::Align) => format!("Reference: {}. Now click a face of what to move flush to it, or its centre line to centre it there. Tab picks what is behind. Esc lets go of the reference.", r.what),
         (Some(r), AlignMode::Extend) => format!("Reference: {}. Now click near the end of a wall or beam to run it to the reference; other things stretch the face clicked. Esc lets go of the reference.", r.what),
@@ -555,17 +560,71 @@ pub fn apply(
         AlignMode::Align => align_tx(model, &reference.shape, pick, centre, plane),
         // what has no ends to run stretches the face clicked instead
         AlignMode::Extend => extend_tx(model, &reference.shape, pick, at).unwrap_or_else(stretch),
+        AlignMode::Corner => Err(CORNER_IN_PLANS.into()),
     }
 }
 
 /// A click with the Align tool in a 3D pane: the reference first, then
 /// what to align to it. Returns the status line.
+/// Corner runs lines to a corner, which a plan shows.
+const CORNER_IN_PLANS: &str =
+    "Corner: click the part of each wall, beam or line to keep; both run to where they meet.";
+
+/// The element a Corner click takes in 3D (an opening's wall), and the
+/// point it was clicked at, in plan.
+fn corner_under(model: &Model, under: &Under) -> Option<(ElementId, DVec2, f64)> {
+    let f = under.face.as_ref()?;
+    let id = match &model.get(f.id)?.kind {
+        ElementKind::Opening(o) => o.host,
+        _ => f.id,
+    };
+    crate::aligntool::corner_line(model.get(id)?)?;
+    Some((id, f.face.point.truncate(), f.face.point.z))
+}
+
+/// Corner in 3D (MU69: it only worked in plans): the first click picks
+/// the part of one to keep, the second the part of the other.
+fn corner_click_3d(
+    doc: &mut Document,
+    state: &mut AlignState,
+    under: &Under,
+    selection: &mut Selection,
+) -> String {
+    let model = doc.model();
+    let Some((id, at, _)) = corner_under(model, under) else {
+        return "Click a wall, beam or line: Corner runs two of them to where they meet.".into();
+    };
+    // a 3D pick keeps no view: the nil id stands for the 3D view
+    let first = state.corner.filter(|c| c.0 == ElementId::NIL && c.1 != id);
+    let Some((_, a, keep)) = first else {
+        state.corner = Some((ElementId::NIL, id, at));
+        selection.only(id);
+        return "Now click the part of the second to keep: both run to where they meet. Esc starts again.".into();
+    };
+    match crate::aligntool::corner_tx(model, (a, keep), (id, at)) {
+        Ok((tx, _)) => {
+            state.corner = None;
+            match doc.commit(tx) {
+                Ok(()) => {
+                    selection.extend(vec![a, id], false);
+                    "Trim to corner. Click the next pair.".into()
+                }
+                Err(e) => format!("Couldn't do that: {e}"),
+            }
+        }
+        Err(why) => why,
+    }
+}
+
 pub fn click(
     doc: &mut Document,
     state: &mut AlignState,
     under: &Under,
     selection: &mut Selection,
 ) -> String {
+    if state.mode == AlignMode::Corner {
+        return corner_click_3d(doc, state, under, selection);
+    }
     let Some(reference) = state.reference_3d.clone() else {
         return match reference_at(doc.model(), under) {
             Some(r) => {
@@ -619,6 +678,14 @@ pub fn draw(
     state: &AlignState,
     under: &Under,
 ) {
+    // Corner: the result as a ghost before the second click (MU69)
+    if let (AlignMode::Corner, Some((v, first, keep))) = (state.mode, state.corner) {
+        if let Some((id, at, z)) = corner_under(model, under).filter(|_| v == ElementId::NIL) {
+            if let Some(lines) = crate::aligntool::corner_preview(model, (first, keep), (id, at)) {
+                crate::aligntool::paint_corner_ghost(painter, &|q| project(q.extend(z)), lines);
+            }
+        }
+    }
     let accent = crate::theme::interaction();
     let fill = |tris: &[[DVec3; 3]], c: Color32| {
         for t in tris {
@@ -752,7 +819,11 @@ pub fn draw(
                 {
                     let (a, b) = under.edge.expect("checked");
                     if let (Some(a), Some(b)) = (project(a), project(b)) {
-                        painter.line_segment([a, b], Stroke::new(3.0, snaps::GUIDE));
+                        // as in the plans: blue, over a light edge so it
+                        // reads on a shape's own blue (MU49: "almost faint")
+                        painter
+                            .line_segment([a, b], Stroke::new(6.0, Color32::from_white_alpha(200)));
+                        painter.line_segment([a, b], Stroke::new(3.5, snaps::GUIDE));
                     }
                 }
                 _ if under.centre.is_some() => {}

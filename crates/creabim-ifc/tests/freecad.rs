@@ -146,6 +146,9 @@ fn the_starter_house_round_trips_natively_through_ifc4() {
                 // IFC4 export writes no grids, and a shaft goes out as the
                 // holes it cuts (known gaps); layered materials add a few
                 | "Grid" | "Shaft" | "Material"
+                // the project's information names the IfcProject, site and
+                // building; the import doesn't read it back yet
+                | "Project information"
         );
         if building {
             assert_eq!(

@@ -150,7 +150,11 @@ pub fn read(
             out.push(Incoming {
                 object: object.clone(),
                 name: object,
-                mesh: EditMesh { vertices, faces },
+                mesh: EditMesh {
+                    vertices,
+                    faces,
+                    edges: vec![],
+                },
                 hint: node["extras"]["ifc_class"]
                     .as_str()
                     .and_then(crate::Assign::parse),

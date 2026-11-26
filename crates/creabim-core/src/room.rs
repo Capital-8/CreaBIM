@@ -291,6 +291,113 @@ impl Ceiling {
     }
 }
 
+/// The height tags a ceiling plan is missing: one for each ceiling on its
+/// level in each ceiling plan, as room tags are placed in plans (MU142:
+/// "CH" heights were plain text, not tags, so they took neither the tag
+/// style nor the annotation colour, and could not be moved). `ceiling`
+/// and `view` keep it to that one ceiling or view, when given.
+pub fn ceiling_tags_missing(
+    model: &Model,
+    ceiling: Option<ElementId>,
+    view: Option<ElementId>,
+) -> Vec<crate::Element> {
+    let tagged: std::collections::HashSet<(ElementId, ElementId)> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Tag(t) => Some((t.view, t.host)),
+            _ => None,
+        })
+        .collect();
+    let mut out = vec![];
+    for v in model.iter() {
+        let ElementKind::View(vw) = &v.kind else {
+            continue;
+        };
+        let crate::ViewKind::Plan { level, .. } = vw.kind else {
+            continue;
+        };
+        if !vw.ceiling_plan || view.is_some_and(|only| only != v.id) {
+            continue;
+        }
+        for c in model.iter() {
+            let ElementKind::Ceiling(cl) = &c.kind else {
+                continue;
+            };
+            if cl.level != level
+                || ceiling.is_some_and(|only| only != c.id)
+                || tagged.contains(&(v.id, c.id))
+            {
+                continue;
+            }
+            out.push(crate::Element::new(
+                "Ceiling height tag",
+                ElementKind::Tag(crate::Tag::new(v.id, c.id, DVec2::ZERO)),
+            ));
+        }
+    }
+    out
+}
+
+/// The height tags of a new ceiling `id` on `level`, one in each of the
+/// level's ceiling plans: to go in with the ceiling, in one step.
+pub fn ceiling_tags_for(model: &Model, id: ElementId, level: ElementId) -> Vec<crate::Element> {
+    model
+        .iter()
+        .filter(|v| {
+            matches!(&v.kind, ElementKind::View(vw)
+                if vw.ceiling_plan && matches!(vw.kind, crate::ViewKind::Plan { level: l, .. } if l == level))
+        })
+        .map(|v| {
+            crate::Element::new(
+                "Ceiling height tag",
+                ElementKind::Tag(crate::Tag::new(v.id, id, DVec2::ZERO)),
+            )
+        })
+        .collect()
+}
+
+/// The height tags plan `view` of `level` needs once it looks up: one for
+/// each ceiling on the level it has none for. To go in with the view (new,
+/// or turned to look up) in one step.
+pub fn ceiling_tags_in(model: &Model, view: ElementId, level: ElementId) -> Vec<crate::Element> {
+    let tagged: std::collections::HashSet<ElementId> = model
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ElementKind::Tag(t) if t.view == view => Some(t.host),
+            _ => None,
+        })
+        .collect();
+    model
+        .iter()
+        .filter(|c| {
+            matches!(&c.kind, ElementKind::Ceiling(cl) if cl.level == level)
+                && !tagged.contains(&c.id)
+        })
+        .map(|c| {
+            crate::Element::new(
+                "Ceiling height tag",
+                ElementKind::Tag(crate::Tag::new(view, c.id, DVec2::ZERO)),
+            )
+        })
+        .collect()
+}
+
+/// The step that tags every ceiling not yet tagged in its ceiling plans:
+/// for a file from before ceiling heights were tags. None when none is
+/// missing.
+pub fn tag_ceilings(model: &Model) -> Option<crate::Transaction> {
+    let tags = ceiling_tags_missing(model, None, None);
+    if tags.is_empty() {
+        return None;
+    }
+    Some(
+        tags.into_iter()
+            .fold(crate::Transaction::new("Tag ceiling heights"), |tx, t| {
+                tx.insert(t)
+            }),
+    )
+}
+
 // ------------------------------------------------------------ boundaries
 
 /// Where a room's outline comes from, edge by edge.
@@ -831,6 +938,74 @@ mod tests {
         let mut doc = Document::new();
         doc.commit(tx).unwrap();
         (doc, l, ids)
+    }
+
+    /// MU142: a ceiling's height is a tag in each ceiling plan of its
+    /// level, as a room's name is in each plan: one each, none in a plan
+    /// looking down, none in another level's, none twice.
+    #[test]
+    fn each_ceiling_is_tagged_once_in_each_ceiling_plan() {
+        let (mut doc, l, _) = house();
+        let other = Element::new(
+            "First",
+            ElementKind::Level(Level {
+                elevation: 3.0,
+                height: 3.0,
+            }),
+        );
+        let mut up = crate::View::plan(l);
+        up.ceiling_plan = true;
+        let up = Element::new("Ceiling plan", ElementKind::View(up));
+        let down = Element::new("Plan", ElementKind::View(crate::View::plan(l)));
+        let mut above = crate::View::plan(other.id);
+        above.ceiling_plan = true;
+        let above = Element::new("First ceiling plan", ElementKind::View(above));
+        let square = vec![
+            DVec2::ZERO,
+            DVec2::new(2.0, 0.0),
+            DVec2::new(2.0, 2.0),
+            DVec2::new(0.0, 2.0),
+        ];
+        let c1 = Element::new(
+            "Ceiling",
+            ElementKind::Ceiling(Ceiling::drawn(l, square.clone(), 2.4)),
+        );
+        let moved: Vec<DVec2> = square.iter().map(|p| *p + DVec2::new(3.0, 0.0)).collect();
+        let c2 = Element::new(
+            "Ceiling",
+            ElementKind::Ceiling(Ceiling::drawn(l, moved, 2.6)),
+        );
+        let (upv, c1id, c2id) = (up.id, c1.id, c2.id);
+        doc.commit(
+            Transaction::new("views")
+                .insert(other)
+                .insert(up)
+                .insert(down)
+                .insert(above)
+                .insert(c1)
+                .insert(c2),
+        )
+        .unwrap();
+        let tx = tag_ceilings(doc.model()).expect("two to tag");
+        doc.commit(tx).unwrap();
+        let mut tags: Vec<(ElementId, ElementId)> = doc
+            .model()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Tag(t) => Some((t.view, t.host)),
+                _ => None,
+            })
+            .collect();
+        tags.sort();
+        let mut want = vec![(upv, c1id), (upv, c2id)];
+        want.sort();
+        assert_eq!(tags, want);
+        // tagged once: nothing more to do
+        assert!(tag_ceilings(doc.model()).is_none());
+        // a new ceiling goes in with its tag in the one ceiling plan
+        let new = ceiling_tags_for(doc.model(), ElementId::new(), l);
+        assert_eq!(new.len(), 1);
+        assert!(matches!(&new[0].kind, ElementKind::Tag(t) if t.view == upv));
     }
 
     #[test]

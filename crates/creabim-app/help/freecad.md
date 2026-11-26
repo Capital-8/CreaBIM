@@ -6,7 +6,7 @@
 
 ## Link a FreeCAD file
 
-*File › Import and link…* and pick the `.FCStd` file. Its objects come in and stay linked: with *Reload linked files when saved* ticked, saving in FreeCAD updates them here. *Assign as…* in *Properties* turns an object into a wall, slab, door or window.
+*File › Import and link…* and pick the `.FCStd` file. Its objects come in and stay linked: with *Reload linked files when saved* ticked, saving in FreeCAD updates them here. *Assign as*, in the *Data (IFC)* tab of *Properties*, turns an object into a wall, slab, door or window.
 
 ## Material cards
 

@@ -154,7 +154,22 @@ pub fn garden_house() -> Model {
         ("Shrub", (6.5, 11.2), PlantForm::Shrub, 1.4, 1.1),
         ("Shrub", (10.8, -6.0), PlantForm::Shrub, 1.2, 1.0),
     ] {
-        let mut p = Site::plant(g, DVec2::new(at.0, at.1), form, canopy, height);
+        let at = DVec2::new(at.0, at.1);
+        // the broadleaf trees are grown, each its own (see crate::tree)
+        let mut p = match form {
+            PlantForm::Tree => {
+                let (shape, ..) = crate::tree::TreePreset::Shade.shape();
+                let shape = crate::tree::TreeShape {
+                    depth: canopy * 0.92,
+                    crown_base: height * 0.3,
+                    trunk: canopy * 0.06,
+                    seed: crate::tree::seed_at(at),
+                    ..shape
+                };
+                Site::tree(g, at, shape, canopy, height)
+            }
+            _ => Site::plant(g, at, form, canopy, height),
+        };
         if let crate::SiteForm::Plant { base, .. } = &mut p.form {
             *base = -0.15;
         }

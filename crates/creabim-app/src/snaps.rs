@@ -57,9 +57,24 @@ pub enum SnapKind {
     Grid,
     /// An even division of an edge: its thirds, quarters… (MU34 B1).
     Division,
+    /// On an object's centre line, front to back or side to side, through
+    /// its middle (MU142).
+    CentreLine,
 }
 
 static DIVISIONS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Alt held: what is dragged goes free of whole treads (Stair Guides
+/// REV02 §7). Set by the plan pane each frame.
+static FREE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn free() -> bool {
+    FREE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_free(on: bool) {
+    FREE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// The parts every edge snaps at, as ArchiCAD's special snaps: 0 off, else
 /// 3, 4, 5… (halves are the midpoint snap's).
@@ -94,6 +109,7 @@ impl SnapKind {
             SnapKind::UnderlayCentre => "Underlay centreline",
             SnapKind::Grid => "",
             SnapKind::Division => "Division",
+            SnapKind::CentreLine => "Centre line",
         }
     }
 
@@ -153,7 +169,7 @@ pub struct SnapSettings {
 
 /// The steps the Snap menu offers, in micrometres: metric, then imperial.
 pub const STEPS_METRIC: [u32; 3] = [10_000, 50_000, 100_000];
-pub const STEPS_IMPERIAL: [u32; 4] = [3_175, 12_700, 25_400, 152_400];
+pub const STEPS_IMPERIAL: [u32; 5] = [3_175, 6_350, 12_700, 25_400, 152_400];
 
 thread_local! {
     static STEP: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
@@ -245,7 +261,7 @@ impl SnapSettings {
                 SnapKind::Endpoint => self.endpoint,
                 SnapKind::Midpoint => self.midpoint,
                 SnapKind::Division => divisions() > 2,
-                SnapKind::Center => self.center,
+                SnapKind::Center | SnapKind::CentreLine => self.center,
                 SnapKind::Quadrant => self.quadrant,
                 SnapKind::Intersection => self.intersection,
                 SnapKind::Perpendicular => self.perpendicular,
@@ -266,6 +282,7 @@ impl SnapSettings {
     fn takes(&self, src: Source) -> bool {
         match src {
             Source::Edge | Source::Underlay | Source::UnderlayCentre => true,
+            Source::CentreLine => self.center,
             Source::Guide => self.guides,
             Source::GridLine => self.grid_lines,
         }
@@ -364,7 +381,7 @@ pub fn snap_bar(ui: &mut egui::Ui, s: &mut SnapSettings) {
                 });
                 ui.separator();
                 for (label, v) in s.switches() {
-                    ui.checkbox(v, label);
+                    crate::props::tickbox(ui, v, label);
                 }
             })
             .response
@@ -391,6 +408,8 @@ pub enum Through {
     Point(usize),
     /// A point the pointer rested on while drawing.
     Rested,
+    /// The end of another grid line, while drawing grids (MU68).
+    GridEnd,
     /// An edge the alignment crosses.
     Edge,
 }
@@ -405,12 +424,45 @@ pub struct Line {
     pub through: Through,
 }
 
+thread_local! {
+    /// The two directions alignments run in: X and Y, or the plane being
+    /// drawn on (see [`TrackAxes`]).
+    static TRACK_AXES: std::cell::Cell<[DVec3; 2]> =
+        const { std::cell::Cell::new([DVec3::X, DVec3::Y]) };
+}
+
+fn track_axes() -> [DVec3; 2] {
+    TRACK_AXES.with(|a| a.get())
+}
+
+/// While it lives, alignments run along the two directions of the plane
+/// being drawn on and not along the model's X and Y: on a wall's face
+/// that is along the wall and straight up, so the next point lines up and
+/// corners come square there too. Dropped, they are X and Y again.
+pub struct TrackAxes(());
+
+impl TrackAxes {
+    pub fn on(x: DVec3, y: DVec3) -> Self {
+        if let (Some(x), Some(y)) = (x.try_normalize(), y.try_normalize()) {
+            TRACK_AXES.with(|a| a.set([x, y]));
+        }
+        Self(())
+    }
+}
+
+impl Drop for TrackAxes {
+    fn drop(&mut self) {
+        TRACK_AXES.with(|a| a.set([DVec3::X, DVec3::Y]));
+    }
+}
+
 impl Line {
     fn axis(&self) -> DVec3 {
+        let [x, y] = track_axes();
         if self.along_x {
-            DVec3::X
+            x
         } else {
-            DVec3::Y
+            y
         }
     }
 
@@ -426,6 +478,7 @@ impl Line {
             Through::Start => "in line with the start".into(),
             Through::Point(n) => format!("in line with point {n}"),
             Through::Rested => "in line with a point".into(),
+            Through::GridEnd => "in line with a grid end".into(),
             Through::Edge => "on edge".into(),
         }
     }
@@ -481,6 +534,8 @@ pub enum Source {
     Underlay,
     /// A wall centreline of the level traced underneath: never drawn.
     UnderlayCentre,
+    /// An object's centre line: only a line, never drawn (MU142).
+    CentreLine,
 }
 
 impl Source {
@@ -491,6 +546,7 @@ impl Source {
             Source::GridLine => SnapKind::OnGridLine,
             Source::Underlay => SnapKind::UnderlayFace,
             Source::UnderlayCentre => SnapKind::UnderlayCentre,
+            Source::CentreLine => SnapKind::CentreLine,
         }
     }
 }
@@ -523,6 +579,12 @@ pub struct Snapper {
     /// Elements left out when snapping (the selection being moved), so a
     /// selection change needs no rebuild (MU39: a click took 60 ms here).
     hide: Vec<ElementId>,
+    /// The same as a set: every point and edge is asked on every snap, so
+    /// a list of 200 moving elements was 12 ms a frame to look through.
+    hide_set: std::collections::HashSet<ElementId>,
+    /// Where its points and edges fall on the screen, kept while the view
+    /// holds still (see [`Snapper::near_cursor`]).
+    on_screen: OnScreen,
     /// Corner, middle and centre candidates.
     points: Vec<Point>,
     /// Distance between grid points; 0 turns the grid off.
@@ -531,6 +593,62 @@ pub struct Snapper {
 
 /// Pixels within which a snap takes over the pointer.
 pub const TOLERANCE: f32 = 10.0;
+
+/// A snapper's points and edges by where they fall on the screen, in
+/// square cells: a snap looks only at what is in the cells round the
+/// pointer, not through every point and edge (17 to 24 ms a frame with
+/// half a million triangles in the model). Kept for one view of the
+/// model: it is made when a second snap in a row sees the same view, and
+/// dropped when the view or the snapper changes.
+#[derive(Default)]
+struct OnScreen(std::sync::Mutex<ScreenState>);
+
+#[derive(Default)]
+struct ScreenState {
+    /// What the last snap saw: the view (four points as it shows them)
+    /// and how many points and edges the snapper had.
+    seen: Option<ViewKey>,
+    grid: Option<ScreenGrid>,
+}
+
+type ViewKey = ([u32; 8], usize, usize);
+
+struct ScreenGrid {
+    points: HashMap<(i32, i32), Vec<u32>>,
+    segments: HashMap<(i32, i32), Vec<u32>>,
+    /// Edges too long on screen to list in every cell they cross, or with
+    /// an end the view can't place: always looked at.
+    always: Vec<u32>,
+}
+
+/// The side of a cell, in pixels.
+const CELL: f32 = 32.0;
+/// An edge over more cells than this is in `always`.
+const MOST_CELLS: i64 = 256;
+
+fn cell_of(p: Pos2) -> (i32, i32) {
+    let c = |v: f32| (v / CELL).floor().clamp(-1.0e6, 1.0e6) as i32;
+    (c(p.x), c(p.y))
+}
+
+impl Clone for OnScreen {
+    /// A copy starts without it: it may go on to hold other points.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for OnScreen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OnScreen")
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests turn the screen cells off to compare with looking at everything.
+    static LOOK_AT_ALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 impl Snapper {
     pub fn new() -> Self {
@@ -554,11 +672,122 @@ impl Snapper {
     pub fn hide(&mut self, ids: &[ElementId]) {
         if self.hide != ids {
             self.hide = ids.to_vec();
+            self.hide_set = ids.iter().copied().collect();
         }
     }
 
     fn hidden(&self, h: Option<ElementId>) -> bool {
-        h.is_some_and(|h| self.hide.contains(&h))
+        !self.hide_set.is_empty() && h.is_some_and(|h| self.hide_set.contains(&h))
+    }
+
+    /// The points and edges that can lie within [`TOLERANCE`] of `cursor`
+    /// on the screen, as indices in their own order; `None` to look at
+    /// them all (few of them, a view seen for the first time, or one that
+    /// can't be told). Every point within reach is among them, and every
+    /// edge that passes within reach, so a snap finds what it would have
+    /// found looking at everything.
+    fn near_cursor(
+        &self,
+        cursor: Pos2,
+        project: &dyn Fn(DVec3) -> Option<Pos2>,
+    ) -> Option<(Vec<u32>, Vec<u32>)> {
+        /// Below this, looking at everything is as quick.
+        const FEW: usize = 2000;
+        #[cfg(test)]
+        if LOOK_AT_ALL.with(|l| l.get()) {
+            return None;
+        }
+        if self.points.len() + self.segments.len() < FEW
+            || !(cursor.x.is_finite() && cursor.y.is_finite())
+        {
+            return None;
+        }
+        // the view, as it shows four points
+        let mut view = [0u32; 8];
+        let probes = [
+            DVec3::ZERO,
+            DVec3::new(64.0, 0.0, 0.0),
+            DVec3::new(0.0, 64.0, 0.0),
+            DVec3::new(0.0, 0.0, 64.0),
+        ];
+        let mut placed = 0;
+        for (i, q) in probes.iter().enumerate() {
+            if let Some(sp) = project(*q) {
+                view[i * 2] = sp.x.to_bits();
+                view[i * 2 + 1] = sp.y.to_bits();
+                placed += 1;
+            }
+        }
+        if placed < 2 {
+            return None;
+        }
+        let key: ViewKey = (view, self.points.len(), self.segments.len());
+        let mut state = self.on_screen.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.seen != Some(key) {
+            // a view that moves is looked through whole; it is put in
+            // cells once it holds still for a second snap
+            state.seen = Some(key);
+            state.grid = None;
+            return None;
+        }
+        let grid = state.grid.get_or_insert_with(|| {
+            let mut g = ScreenGrid {
+                points: HashMap::new(),
+                segments: HashMap::new(),
+                always: vec![],
+            };
+            for (i, q) in self.points.iter().enumerate() {
+                match project(q.p) {
+                    Some(sp) if sp.x.is_finite() && sp.y.is_finite() => {
+                        g.points.entry(cell_of(sp)).or_default().push(i as u32)
+                    }
+                    _ => {}
+                }
+            }
+            for (i, seg) in self.segments.iter().enumerate() {
+                let ends = (project(seg.a), project(seg.b));
+                let (Some(a), Some(b)) = ends else {
+                    g.always.push(i as u32);
+                    continue;
+                };
+                if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) {
+                    g.always.push(i as u32);
+                    continue;
+                }
+                let (lo, hi) = (cell_of(a.min(b)), cell_of(a.max(b)));
+                let cells = (hi.0 as i64 - lo.0 as i64 + 1) * (hi.1 as i64 - lo.1 as i64 + 1);
+                if cells > MOST_CELLS {
+                    g.always.push(i as u32);
+                    continue;
+                }
+                for cx in lo.0..=hi.0 {
+                    for cy in lo.1..=hi.1 {
+                        g.segments.entry((cx, cy)).or_default().push(i as u32);
+                    }
+                }
+            }
+            g
+        });
+        // the cells a square of the reach round the pointer touches (a
+        // little more, for rounding)
+        let reach = egui::vec2(TOLERANCE + 1.0, TOLERANCE + 1.0);
+        let (lo, hi) = (cell_of(cursor - reach), cell_of(cursor + reach));
+        let (mut pts, mut segs) = (Vec::new(), grid.always.clone());
+        for cx in lo.0..=hi.0 {
+            for cy in lo.1..=hi.1 {
+                if let Some(v) = grid.points.get(&(cx, cy)) {
+                    pts.extend_from_slice(v);
+                }
+                if let Some(v) = grid.segments.get(&(cx, cy)) {
+                    segs.extend_from_slice(v);
+                }
+            }
+        }
+        // in their own order, each once: ties fall as they did
+        pts.sort_unstable();
+        segs.sort_unstable();
+        segs.dedup();
+        Some((pts, segs))
     }
 
     /// An edge, with its ends and middle; a guide is only a line.
@@ -573,7 +802,9 @@ impl Snapper {
             host,
             arc: None,
         });
-        if src != Source::Guide {
+        // a guide, or an object's centre line, is only a line: its ends
+        // are nowhere in particular
+        if !matches!(src, Source::Guide | Source::CentreLine) {
             self.point(a, SnapKind::Endpoint, src, host);
             self.point(b, SnapKind::Endpoint, src, host);
             self.point((a + b) / 2.0, SnapKind::Midpoint, src, host);
@@ -783,19 +1014,79 @@ impl Snapper {
     /// every mesh (walls, slabs, masses, columns, beams), not the
     /// triangulation's inner diagonals.
     pub fn from_scene(scene: &[SceneItem], exclude: &[ElementId]) -> Self {
+        // nor a lot's envelope: a volume round the whole house, whose
+        // corners and face centres caught the pointer everywhere (MU126)
+        let items: Vec<&SceneItem> = scene
+            .iter()
+            .filter(|i| !exclude.contains(&i.id) && !creabim_geom::pick::backdrop(i))
+            .collect();
+        // each mesh's edges and face centres are found on a few threads (a
+        // house on its lot with its trees took half a second on one, at
+        // start-up), then added in the scene's own order, as before
+        type Found = (Edges, Centres);
+        // the edges the 3D view found for the same mesh, where it has:
+        // finding them again for the whole model was most of the pause
+        // after every edit (MU86); and its face centres, kept the same way
+        let find = |i: &&SceneItem| -> Found { edges_and_centres_cached(&i.mesh) };
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 8);
+        let per = items.len().div_ceil(threads).max(1);
+        let mut found: Vec<Found> = if threads > 1 && items.len() > 16 {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = items
+                    .chunks(per)
+                    .map(|chunk| scope.spawn(move || chunk.iter().map(find).collect::<Vec<_>>()))
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap_or_default())
+                    .collect()
+            })
+        } else {
+            vec![]
+        };
+        // on one thread when there are few, or when a helper failed
+        if found.len() != items.len() {
+            found = items.iter().map(find).collect();
+        }
         let mut s = Self::new();
-        for item in scene {
-            if exclude.contains(&item.id) {
-                continue;
-            }
-            for (a, b) in feature_edges(&item.mesh) {
+        let (ne, nc) = found
+            .iter()
+            .fold((0, 0), |(e, c), f| (e + f.0.len(), c + f.1.len()));
+        s.segments.reserve(ne);
+        s.points.reserve(ne * 3 + nc);
+        for (item, (edges, centres)) in items.iter().zip(found) {
+            for &(a, b) in edges.iter() {
                 s.add_segment(a, b, Source::Edge, Some(item.id));
             }
-            for c in face_centres(&item.mesh) {
+            for &c in centres.iter() {
                 s.point(c, SnapKind::Center, Source::Edge, Some(item.id));
             }
         }
         s
+    }
+
+    /// The scene's snaps of `ids` made again, the rest left as it is: for
+    /// after an edit to a shape or two, where making them all again was
+    /// the pause that followed every edit (MU86).
+    pub fn replace_scene_items(&mut self, ids: &[ElementId], scene: &[SceneItem]) {
+        let of = |h: Option<ElementId>| h.is_some_and(|h| ids.contains(&h));
+        self.segments
+            .retain(|s| !(s.src == Source::Edge && of(s.host)));
+        self.points
+            .retain(|p| !(p.src[0] == Source::Edge && (of(p.host) || of(p.host2))));
+        for item in scene.iter().filter(|i| ids.contains(&i.id)) {
+            let (edges, centres) = edges_and_centres_cached(&item.mesh);
+            for &(a, b) in edges.iter() {
+                self.add_segment(a, b, Source::Edge, Some(item.id));
+            }
+            for &c in centres.iter() {
+                self.point(c, SnapKind::Center, Source::Edge, Some(item.id));
+            }
+        }
+        // the screen cells are of the points as they were
+        self.on_screen = OnScreen::default();
     }
 
     /// Every guide in the model, for the 3D view, `reach` metres each way.
@@ -823,6 +1114,46 @@ impl Snapper {
                     Source::UnderlayCentre,
                     Some(e.id),
                 );
+            }
+        }
+    }
+
+    /// Every object's middle on `level` (none: every level, each at its
+    /// height), and its two centre lines through it, front to back and side
+    /// to side, reaching `reach` past its footprint: Move's base point,
+    /// Rotate's pivot, Align and dimensions take them (MU142).
+    pub fn add_object_centres(
+        &mut self,
+        model: &creabim_core::Model,
+        level: Option<ElementId>,
+        reach: f64,
+    ) {
+        for e in model.iter() {
+            let creabim_core::ElementKind::Object(o) = &e.kind else {
+                continue;
+            };
+            if level.is_some_and(|l| l != o.level) {
+                continue;
+            }
+            let Some(t) = creabim_core::objects::type_of(model, e) else {
+                continue;
+            };
+            let (lo, hi) = t.bounds();
+            let (lo, hi) = (lo.truncate(), hi.truncate());
+            let mid = (lo + hi) / 2.0;
+            let z = if level.is_some() {
+                0.0
+            } else {
+                creabim_core::objects::base_z(model, e).unwrap_or(0.0)
+            };
+            let at = |p: glam::DVec2| o.to_plan(p).extend(z);
+            self.point(at(mid), SnapKind::Center, Source::Edge, Some(e.id));
+            let (hx, hy) = ((hi.x - lo.x) / 2.0 + reach, (hi.y - lo.y) / 2.0 + reach);
+            for (a, b) in [
+                (mid - glam::DVec2::X * hx, mid + glam::DVec2::X * hx),
+                (mid - glam::DVec2::Y * hy, mid + glam::DVec2::Y * hy),
+            ] {
+                self.add_segment(at(a), at(b), Source::CentreLine, Some(e.id));
             }
         }
     }
@@ -995,9 +1326,13 @@ impl Snapper {
             SnapKind::Division => 1.2,
             _ => 2.0,
         };
-        let best_point = self
-            .points
-            .iter()
+        // only what is near the pointer on the screen, when that is known
+        let close = self.near_cursor(cursor, project);
+        let points: Box<dyn Iterator<Item = &Point>> = match &close {
+            Some((pts, _)) => Box::new(pts.iter().map(|i| &self.points[*i as usize])),
+            None => Box::new(self.points.iter()),
+        };
+        let best_point = points
             .filter(|q| cfg.allows(q.kind) && q.src.iter().all(|s| cfg.takes(*s)))
             .filter(|q| !self.hidden(q.host) && !self.hidden(q.host2))
             .filter_map(|q| near(q.p).map(|d| (d + rank(q.kind) * 2.0, q)))
@@ -1013,9 +1348,11 @@ impl Snapper {
             ));
         }
         let segments = || {
-            self.segments
-                .iter()
-                .filter(|s| cfg.takes(s.src) && !self.hidden(s.host))
+            let all: Box<dyn Iterator<Item = &Segment>> = match &close {
+                Some((_, segs)) => Box::new(segs.iter().map(|i| &self.segments[*i as usize])),
+                None => Box::new(self.segments.iter()),
+            };
+            all.filter(|s| cfg.takes(s.src) && !self.hidden(s.host))
         };
         // the temporary guides near the pointer
         let near_guides: Vec<(f32, usize)> = if cfg.allows(SnapKind::OnTempGuide) {
@@ -1139,13 +1476,16 @@ impl Snapper {
             let mut best: Option<(f32, DVec3, Line, Line)> = None;
             for (_, a) in lines.iter().filter(|(_, l)| l.along_x) {
                 for (_, b) in lines.iter().filter(|(_, l)| !l.along_x) {
-                    if a.at.distance(b.at) < 1e-6 || (a.at.z - b.at.z).abs() > 1e-6 {
+                    // on one plane (one height, in a plan)
+                    let [u, v] = track_axes();
+                    let off = (a.at - b.at).dot(u.cross(v));
+                    if a.at.distance(b.at) < 1e-6 || off.abs() > 1e-6 {
                         continue;
                     }
                     if a.through == Through::From && b.through == Through::From {
                         continue;
                     }
-                    let p = DVec3::new(b.at.x, a.at.y, a.at.z);
+                    let p = a.at + u * (b.at - a.at).dot(u);
                     if let Some(d) = near(p) {
                         if best.is_none_or(|(bd, ..)| d < bd) {
                             best = Some((d, p, *a, *b));
@@ -1191,14 +1531,22 @@ impl Snapper {
             if !cfg.allows(kind) {
                 continue;
             }
-            let (Some(sa), Some(sb)) = (project(s.a), project(s.b)) else {
+            // a long guide runs behind the eye: the part in front is used
+            let Some((a, b)) = visible_part(s.a, s.b, project) else {
+                continue;
+            };
+            let (Some(sa), Some(sb)) = (project(a), project(b)) else {
                 continue;
             };
             let t = screen_t(sa, sb, cursor);
             let on = sa + (sb - sa) * t;
             let d = on.distance(cursor);
             if d < TOLERANCE && best.is_none_or(|(bd, _)| d < bd) {
-                let p = s.a + (s.b - s.a) * t as f64;
+                // the point seen under the pointer, not the one as far
+                // along the line as on the screen: in perspective those
+                // part on a long line (MU137: a guide's snap landed by the
+                // car, metres from the pointer)
+                let p = point_seen_at(a, b, on, project);
                 best = Some((
                     d,
                     Snap {
@@ -1220,6 +1568,10 @@ impl Snapper {
                                 && !self.hidden(g.host)
                                 && closest_on_segment(g.a, g.b, s.p).distance(s.p) < 1e-6
                         })?;
+                        // flat drawings only: the crossing is found in plan
+                        if track_axes() != [DVec3::X, DVec3::Y] {
+                            return None;
+                        }
                         let (a, b) = (l.at.truncate(), (l.at + l.axis()).truncate());
                         let p = crossing(a, b, seg.a.truncate(), seg.b.truncate(), true, false)?;
                         let p = p.extend(l.at.z);
@@ -1355,6 +1707,68 @@ fn grid_round(v: f64, step: f64) -> f64 {
     }
 }
 
+/// The point of segment `a`–`b` whose picture is `on`, a point on the
+/// segment's picture. A line's picture is a line, but in perspective the
+/// fraction along it isn't the fraction along the line itself, so it is
+/// found by halving (the picture moves one way as the point does).
+pub fn point_seen_at(
+    a: DVec3,
+    b: DVec3,
+    on: Pos2,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+) -> DVec3 {
+    let (Some(sa), Some(sb)) = (project(a), project(b)) else {
+        return a;
+    };
+    let target = screen_t(sa, sb, on);
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..48 {
+        let mid = (lo + hi) / 2.0;
+        let Some(q) = project(a + (b - a) * mid) else {
+            break;
+        };
+        if screen_t(sa, sb, q) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    a + (b - a) * ((lo + hi) / 2.0)
+}
+
+/// The part of segment `a`–`b` the eye can see (both ends drawn), cut
+/// where it passes behind the eye; none when none of it is in front.
+pub fn visible_part(
+    a: DVec3,
+    b: DVec3,
+    project: &dyn Fn(DVec3) -> Option<Pos2>,
+) -> Option<(DVec3, DVec3)> {
+    match (project(a).is_some(), project(b).is_some()) {
+        (true, true) => Some((a, b)),
+        (false, false) => None,
+        (seen_a, _) => {
+            // halve towards the edge of what is seen from the seen end
+            let (seen, hidden) = if seen_a { (a, b) } else { (b, a) };
+            let (mut lo, mut hi) = (0.0f64, 1.0f64);
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                if project(seen + (hidden - seen) * mid).is_some() {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            // a little short of the eye, where pictures blow up
+            let cut = seen + (hidden - seen) * (lo * 0.98);
+            if seen_a {
+                Some((seen, cut))
+            } else {
+                Some((cut, seen))
+            }
+        }
+    }
+}
+
 fn screen_t(a: Pos2, b: Pos2, p: Pos2) -> f32 {
     let ab = b - a;
     let len2 = ab.length_sq();
@@ -1448,42 +1862,145 @@ fn tri_normal(pts: &[DVec3], t: &[u32; 3]) -> DVec3 {
     (b - a).cross(c - a).normalize_or_zero()
 }
 
-thread_local! {
-    /// Feature edges by mesh content, kept while the meshes are in use.
-    static EDGES: std::cell::RefCell<EdgeMemo> = Default::default();
+/// Feature edges by mesh content, kept while the meshes are in use.
+/// Shared between threads: the worker that builds a 3D scene finds the
+/// edges of its new meshes too ([`warm_edges`]), so the frame that shows
+/// the scene finds them ready.
+static EDGES: std::sync::LazyLock<std::sync::Mutex<EdgeMemo>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn edge_memo() -> std::sync::MutexGuard<'static, EdgeMemo> {
+    EDGES.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A mesh's feature edges, shared.
-pub type Edges = std::rc::Rc<Vec<(DVec3, DVec3)>>;
+pub type Edges = std::sync::Arc<Vec<(DVec3, DVec3)>>;
 
 #[derive(Default)]
 struct EdgeMemo {
     /// Edges by mesh fingerprint, with the round each was last used in.
     edges: HashMap<u64, (Edges, u64)>,
+    /// For large masses: the edges of a shape, from where it stands
+    /// (see `creabim_geom::scene::placed_shape`), so one that only moved
+    /// has its edges placed, not found again.
+    shapes: HashMap<u64, Edges>,
+    /// Face centres by mesh fingerprint, kept and dropped as the edges
+    /// are: found again for the whole scene they were most of a 3D snap
+    /// rebuild (213 ms of 205 on Ridgeline House, the terrain's 109,000
+    /// triangles one mesh no thread could share)
+    centres: HashMap<u64, (Centres, u64)>,
     round: u64,
 }
 
-fn fingerprint(mesh: &creabim_geom::mesh::TriMesh) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    mesh.indices.hash(&mut h);
-    for p in &mesh.positions {
-        for c in p {
-            c.to_bits().hash(&mut h);
+/// A mesh's face centres, shared.
+pub type Centres = std::sync::Arc<Vec<DVec3>>;
+
+/// A mesh's edges and face centres from the caches, its fingerprint (a
+/// hash of every vertex) taken once for both.
+pub fn edges_and_centres_cached(mesh: &creabim_geom::mesh::TriMesh) -> (Edges, Centres) {
+    let key = fingerprint(mesh);
+    let (mut e, mut c) = (None, None);
+    {
+        let mut m = edge_memo();
+        let round = m.round;
+        if let Some((x, used)) = m.edges.get_mut(&key) {
+            *used = (*used).max(round);
+            e = Some(x.clone());
+        }
+        if let Some((x, used)) = m.centres.get_mut(&key) {
+            *used = (*used).max(round);
+            c = Some(x.clone());
         }
     }
-    h.finish()
+    if let (Some(e), Some(c)) = (&e, &c) {
+        return (e.clone(), c.clone());
+    }
+    let e = e.unwrap_or_else(|| edges_now(mesh, key));
+    let c = c.unwrap_or_else(|| Centres::new(face_centres(mesh)));
+    let mut m = edge_memo();
+    let round = m.round;
+    m.edges.entry(key).or_insert((e.clone(), round));
+    m.centres.entry(key).or_insert((c.clone(), round));
+    (e, c)
+}
+
+/// [`face_centres`], worked out once per mesh while the mesh stays the
+/// same, as [`feature_edges_cached`].
+#[cfg(test)]
+pub fn face_centres_cached(mesh: &creabim_geom::mesh::TriMesh) -> Centres {
+    let key = fingerprint(mesh);
+    {
+        let mut m = edge_memo();
+        let round = m.round;
+        if let Some((c, used)) = m.centres.get_mut(&key) {
+            *used = (*used).max(round);
+            return c.clone();
+        }
+    }
+    // found without holding the cache, so a worker is never waited for
+    let c = Centres::new(face_centres(mesh));
+    let mut m = edge_memo();
+    let round = m.round;
+    m.centres.insert(key, (c.clone(), round));
+    c
+}
+
+fn fingerprint(mesh: &creabim_geom::mesh::TriMesh) -> u64 {
+    mesh.fingerprint()
+}
+
+/// The feature edges of a mesh not in the cache: found, or for a large
+/// mass whose shape is known, that shape's edges placed where it stands.
+fn edges_now(mesh: &creabim_geom::mesh::TriMesh, key: u64) -> Edges {
+    let Some((shape, origin)) = creabim_geom::scene::placed_shape(key) else {
+        return Edges::new(feature_edges(mesh));
+    };
+    let known = edge_memo().shapes.get(&shape).cloned();
+    if let Some(local) = known {
+        return Edges::new(
+            local
+                .iter()
+                .map(|(a, b)| (*a + origin, *b + origin))
+                .collect(),
+        );
+    }
+    let found = feature_edges(mesh);
+    let local = Edges::new(
+        found
+            .iter()
+            .map(|(a, b)| (*a - origin, *b - origin))
+            .collect(),
+    );
+    let mut m = edge_memo();
+    if m.shapes.len() >= 256 {
+        m.shapes.clear();
+    }
+    m.shapes.insert(shape, local);
+    Edges::new(found)
 }
 
 /// Start a round of [`feature_edges_cached`] calls (one 3D rebuild):
 /// edges not asked for in the round before are dropped.
 pub fn begin_edge_round() {
-    EDGES.with(|m| {
-        let mut m = m.borrow_mut();
-        let keep = m.round;
-        m.edges.retain(|_, (_, used)| *used >= keep);
-        m.round += 1;
-    });
+    let mut m = edge_memo();
+    let keep = m.round;
+    m.edges.retain(|_, (_, used)| *used >= keep);
+    m.centres.retain(|_, (_, used)| *used >= keep);
+    m.round += 1;
+}
+
+/// Every edge known counts as asked for in this round: for a 3D rebuild
+/// that kept most of its buffers and asked for the edges of a few
+/// meshes only.
+pub fn keep_all_edges() {
+    let mut m = edge_memo();
+    let round = m.round;
+    for (_, used) in m.edges.values_mut() {
+        *used = round;
+    }
+    for (_, used) in m.centres.values_mut() {
+        *used = round;
+    }
 }
 
 /// [`feature_edges`], worked out once per mesh while the mesh stays the
@@ -1491,17 +2008,75 @@ pub fn begin_edge_round() {
 /// edges of every other element again (32 ms for the starter house).
 pub fn feature_edges_cached(mesh: &creabim_geom::mesh::TriMesh) -> Edges {
     let key = fingerprint(mesh);
-    EDGES.with(|m| {
-        let mut m = m.borrow_mut();
+    {
+        let mut m = edge_memo();
         let round = m.round;
         if let Some((e, used)) = m.edges.get_mut(&key) {
-            *used = round;
+            *used = (*used).max(round);
             return e.clone();
         }
-        let e = std::rc::Rc::new(feature_edges(mesh));
-        m.edges.insert(key, (e.clone(), round));
-        e
-    })
+    }
+    // found without holding the cache, so a worker is never waited for
+    let e = edges_now(mesh, key);
+    let mut m = edge_memo();
+    let round = m.round;
+    m.edges.insert(key, (e.clone(), round));
+    e
+}
+
+/// Find the feature edges of every mesh of `scene` not known yet, on the
+/// calling thread and a few helpers: for the worker that built the scene.
+/// During a move of many elements every moved mesh is new, and finding
+/// their edges in the frame that shows the scene held it up 25 ms.
+pub fn warm_edges(scene: &[SceneItem]) {
+    let missing: Vec<(u64, &creabim_geom::mesh::TriMesh)> = {
+        let keys: Vec<u64> = scene.iter().map(|i| fingerprint(&i.mesh)).collect();
+        let m = edge_memo();
+        let mut seen = std::collections::HashSet::new();
+        keys.into_iter()
+            .zip(scene)
+            .filter(|(k, _)| {
+                !(m.edges.contains_key(k) && m.centres.contains_key(k)) && seen.insert(*k)
+            })
+            .map(|(k, i)| (k, &i.mesh))
+            .collect()
+    };
+    if missing.is_empty() {
+        return;
+    }
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8);
+    let per = missing.len().div_ceil(threads).max(1);
+    // edges and face centres both, off the frame: the 3D snaps rebuilt
+    // after an edit then find every unchanged mesh's ready
+    let found: Vec<(u64, Edges, Centres)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = missing
+            .chunks(per)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|(k, mesh)| {
+                            (*k, edges_now(mesh, *k), Centres::new(face_centres(mesh)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+    let mut m = edge_memo();
+    // kept through the round under way and the next: the scene is shown
+    // a frame or two from now, maybe after an older one
+    let round = m.round + 1;
+    for (k, e, c) in found {
+        m.edges.entry(k).or_insert((e, round));
+        m.centres.entry(k).or_insert((c, round));
+    }
 }
 
 /// The creases and open edges of a triangle mesh: where neighbouring faces
@@ -1616,6 +2191,8 @@ fn marker(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) -> Option
         SnapKind::Aligned | SnapKind::AlignedCross => TRACK,
         SnapKind::OnTempGuide | SnapKind::GuideCross => GUIDE,
         SnapKind::UnderlayFace | SnapKind::UnderlayCentre => Color32::from_rgb(20, 140, 150),
+        // an object's centre line, in the guides' pink (MU142 mock-up)
+        SnapKind::CentreLine => Color32::from_rgb(224, 69, 123),
         SnapKind::Grid => return None,
     };
     let s = Stroke::new(2.0, c);
@@ -1668,7 +2245,7 @@ fn marker(painter: &Painter, snap: Snap, at: Pos2, from: Option<Pos2>) -> Option
             painter.line_segment([at + egui::vec2(-r, 0.0), at + egui::vec2(0.0, 0.0)], s);
             painter.line_segment([at + egui::vec2(0.0, 0.0), at + egui::vec2(0.0, r)], s);
         }
-        SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine => {
+        SnapKind::OnEdge | SnapKind::Guide | SnapKind::OnGridLine | SnapKind::CentreLine => {
             painter.circle_stroke(at, r * 0.7, s);
         }
         // a small square lying in the face
@@ -1825,6 +2402,9 @@ pub enum GuideKind {
     Circle,
     /// From the start point, touching a circle.
     Tangent,
+    /// A line another stair offers: its head, foot, side, landing edge or
+    /// centre (Stair Guides REV02).
+    Stair(creabim_core::members::StairMark),
 }
 
 impl GuideKind {
@@ -1839,6 +2419,7 @@ impl GuideKind {
             GuideKind::Radial => "Radial".into(),
             GuideKind::Circle => "Concentric".into(),
             GuideKind::Tangent => "Tangent".into(),
+            GuideKind::Stair(m) => format!("In line with a stair's {}", m.label()),
         }
     }
 }
@@ -1957,6 +2538,67 @@ fn circle_circle(c: DVec2, r: f64, k: DVec2, s: f64) -> Vec<DVec2> {
         return vec![m];
     }
     vec![m + u.perp() * h, m - u.perp() * h]
+}
+
+/// The lines the stairs of a plan's level offer that the pointer at `near`
+/// is on, within `reach`: the nearest, and the nearest that crosses it, so
+/// at most two show at once (MU102: every line within 40 px showed, and a
+/// row of stairs filled the plan with them). Shown and snapped to on
+/// their own while a stair is drawn or its grip dragged (REV02 §1, §7).
+pub fn stair_guides(
+    lines: &[creabim_core::members::StairGuide],
+    near: DVec2,
+    reach: f64,
+) -> Vec<TempGuide> {
+    let mut close: Vec<(f64, DVec2, &creabim_core::members::StairGuide)> = lines
+        .iter()
+        .filter_map(|g| {
+            let d = (g.b - g.a).try_normalize()?;
+            let off = (near - g.a).perp_dot(d).abs();
+            (off < reach).then_some((off, d, g))
+        })
+        .collect();
+    close.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let Some(&(_, d0, _)) = close.first() else {
+        return vec![];
+    };
+    // the nearest, then the nearest across it (over 30° off)
+    let cross = close
+        .iter()
+        .skip(1)
+        .find(|c| c.1.perp_dot(d0).abs() > 0.5)
+        .copied();
+    close
+        .first()
+        .copied()
+        .into_iter()
+        .chain(cross)
+        .map(|(_, d, g)| TempGuide {
+            shape: GuideShape::Line { p: g.a, d },
+            kind: GuideKind::Stair(g.mark),
+            at: (g.a + g.b) / 2.0,
+            z: None,
+        })
+        .collect()
+}
+
+/// Every line the stairs on `level` offer, other than `skip`'s.
+pub fn stair_lines(
+    model: &creabim_core::Model,
+    level: ElementId,
+    skip: Option<ElementId>,
+) -> Vec<creabim_core::members::StairGuide> {
+    model
+        .iter()
+        .filter(|e| Some(e.id) != skip)
+        .filter_map(|e| match &e.kind {
+            creabim_core::ElementKind::Stair(s) if s.level == level => {
+                Some(s.guide_lines(s.rise(model)))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 /// Most references kept at once; resting on another drops the oldest.
@@ -2299,6 +2941,239 @@ pub fn draw_guided(
 
 #[cfg(test)]
 mod tests {
+    /// Timing probe (not a check): where a full rebuild of the 3D snaps
+    /// spends its time on Ridgeline House.
+    #[test]
+    #[ignore]
+    fn probe_snaps_3d_rebuild_time() {
+        use super::*;
+        use std::time::Instant;
+        let m = creabim_core::ridgeline::ridgeline_house();
+        let scene = creabim_geom::scene::build_scene(&m);
+        let tris: usize = scene.iter().map(|i| i.mesh.indices.len() / 3).sum();
+        warm_edges(&scene);
+        let t = Instant::now();
+        let s = Snapper::from_scene(&scene, &[]);
+        let all = t.elapsed();
+        let t = Instant::now();
+        let e: usize = scene
+            .iter()
+            .map(|i| feature_edges_cached(&i.mesh).len())
+            .sum();
+        let edges = t.elapsed();
+        let t = Instant::now();
+        let c: usize = scene.iter().map(|i| face_centres(&i.mesh).len()).sum();
+        let centres = t.elapsed();
+        let t = Instant::now();
+        let f: u64 = scene.iter().map(|i| i.mesh.fingerprint() & 1).sum();
+        println!(
+            "PROBE fingerprints of the whole scene {:?} ({f})",
+            t.elapsed()
+        );
+        let mut big: Vec<(usize, String)> = scene
+            .iter()
+            .map(|i| {
+                (
+                    i.mesh.indices.len() / 3,
+                    m.get(i.id).map_or(String::new(), |e| e.name.clone()),
+                )
+            })
+            .collect();
+        big.sort();
+        big.reverse();
+        println!(
+            "PROBE items {} tris {tris} | from_scene {all:?} | edges(cached) {edges:?} n={e} | face_centres {centres:?} n={c} | points {} segs {}",
+            scene.len(),
+            s.points.len(),
+            s.segments.len()
+        );
+        println!("PROBE biggest {:?}", &big[..6]);
+    }
+
+    /// A mesh's face centres are found once and kept while it stays the
+    /// same, as its edges are: a 3D snap rebuild after an edit found the
+    /// terrain's again every time (205 ms on Ridgeline House).
+    #[test]
+    fn face_centres_are_found_once_per_mesh() {
+        use super::*;
+        let m = creabim_core::starter::starter_house();
+        let scene = creabim_geom::scene::build_scene(&m);
+        let big = scene.iter().max_by_key(|i| i.mesh.indices.len()).unwrap();
+        let a = face_centres_cached(&big.mesh);
+        let b = face_centres_cached(&big.mesh);
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "kept, not found again");
+        assert_eq!(*a, face_centres(&big.mesh), "the same centres");
+        // and a rebuild from the scene snaps to the same points either way
+        warm_edges(&scene);
+        let s = Snapper::from_scene(&scene, &[]);
+        let centres: usize = scene
+            .iter()
+            .filter(|i| !creabim_geom::pick::backdrop(i))
+            .map(|i| face_centres(&i.mesh).len())
+            .sum();
+        let got = s
+            .points
+            .iter()
+            .filter(|p| p.kind == SnapKind::Center)
+            .count();
+        assert_eq!(got, centres);
+    }
+
+    #[test]
+    fn a_row_of_stairs_offers_two_guides_at_most() {
+        use creabim_core::members::{StairGuide, StairMark};
+        use glam::DVec2;
+        // MU102: seven stairs in a row, their feet and heads 10 mm apart,
+        // filled the plan with guide lines
+        let mut lines = vec![];
+        for k in 0..7 {
+            let y = k as f64 * 0.01;
+            lines.push(StairGuide {
+                mark: StairMark::Foot,
+                a: DVec2::new(0.0, y),
+                b: DVec2::new(1.0, y),
+            });
+            let x = 3.0 + k as f64 * 0.01;
+            lines.push(StairGuide {
+                mark: StairMark::Side,
+                a: DVec2::new(x, 0.0),
+                b: DVec2::new(x, 1.0),
+            });
+        }
+        let g = super::stair_guides(&lines, DVec2::new(3.031, 0.021), 0.2);
+        assert_eq!(g.len(), 2, "the nearest, and the nearest across it");
+        // the nearest of each way: the foot at y = 0.02, the side at x = 3.03
+        let on = |p: DVec2| {
+            g.iter().any(|t| matches!(t.shape, super::GuideShape::Line { p: q, .. } if (q - p).length() < 1e-9))
+        };
+        assert!(on(DVec2::new(0.0, 0.02)) && on(DVec2::new(3.03, 0.0)));
+        // out of reach: none
+        assert!(super::stair_guides(&lines, DVec2::new(10.0, 10.0), 0.2).is_empty());
+    }
+
+    #[test]
+    fn a_moved_mass_has_its_edges_placed_not_found_again() {
+        use creabim_core::modifiers::{Modifier, ModifierKind};
+        let mut tower = creabim_core::FreeMesh::new(
+            None,
+            DVec3::ZERO,
+            creabim_core::EditMesh::cuboid(DVec3::new(10.0, 8.0, 24.0)),
+        );
+        tower.modifiers = vec![Modifier::new(ModifierKind::Panelize {
+            width: 1.2,
+            height: 3.0,
+            joint: 0.02,
+            depth: 0.05,
+        })];
+        let shape = tower.evaluated().mesh;
+        let sorted = |mut e: Vec<(DVec3, DVec3)>| {
+            e.sort_by(|a, b| {
+                let key = |s: &(DVec3, DVec3)| [s.0.x, s.0.y, s.0.z, s.1.x, s.1.y, s.1.z];
+                key(a).partial_cmp(&key(b)).expect("no NaN")
+            });
+            e
+        };
+        for at in [
+            DVec3::new(3.0, 4.0, 0.0),
+            DVec3::new(41.5, -17.25, 3.0),
+            DVec3::new(-80.0, 120.0, 0.5),
+        ] {
+            let mesh = creabim_geom::scene::edit_mesh_to_tri(&shape, at);
+            assert!(creabim_geom::scene::placed_shape(mesh.fingerprint()).is_some());
+            let placed = sorted(feature_edges_cached(&mesh).to_vec());
+            let found = sorted(feature_edges(&mesh));
+            assert_eq!(placed.len(), found.len());
+            assert!(placed.len() > 500);
+            // the same edges, to within what a mesh's own rounding is
+            // (its positions are single precision: microns at 100 m)
+            for p in &placed {
+                assert!(found
+                    .iter()
+                    .any(|f| p.0.distance(f.0) < 1e-4 && p.1.distance(f.1) < 1e-4));
+            }
+        }
+    }
+
+    #[test]
+    fn a_snap_from_the_screen_cells_is_the_snap_from_looking_at_everything() {
+        // the starter house in 3D: every point of a grid of pointer places,
+        // from two views, with and without a point to draw from
+        let scene = creabim_geom::build_scene(&creabim_core::starter::starter_house());
+        let snapper = Snapper::from_scene(&scene, &[]);
+        assert!(snapper.points.len() + snapper.segments.len() > 20_000);
+        let cfg = SnapSettings::default();
+        let views: [Box<dyn Fn(DVec3) -> Option<Pos2>>; 2] = [
+            // from above, 30 pixels a metre
+            Box::new(|p: DVec3| {
+                Some(Pos2::new(
+                    200.0 + p.x as f32 * 30.0,
+                    500.0 - p.y as f32 * 30.0,
+                ))
+            }),
+            // an oblique view; nothing behind the eye is placed
+            Box::new(|p: DVec3| {
+                let depth = 40.0 - (p.x * 0.5 + p.y * 0.7 - p.z * 0.2);
+                (depth > 1.0).then(|| {
+                    let k = 900.0 / depth as f32;
+                    Pos2::new(
+                        400.0 + (p.x * 0.8 - p.y * 0.5) as f32 * k,
+                        300.0 - (p.z + (p.x + p.y) * 0.2) as f32 * k,
+                    )
+                })
+            }),
+        ];
+        let mut snapped = 0;
+        for project in &views {
+            let project: &dyn Fn(DVec3) -> Option<Pos2> = project.as_ref();
+            for from in [None, Some(DVec3::new(1.0, 2.0, 0.0))] {
+                for ix in 0..13 {
+                    for iy in 0..10 {
+                        let cursor = Pos2::new(40.0 + ix as f32 * 53.3, 30.0 + iy as f32 * 57.1);
+                        let free = Some(DVec3::new(ix as f64 * 1.2, iy as f64 * 1.2, 0.0));
+                        LOOK_AT_ALL.with(|l| l.set(true));
+                        let all = snapper.snap(&cfg, cursor, project, from, free);
+                        LOOK_AT_ALL.with(|l| l.set(false));
+                        // (twice: the first sees the view, the second uses the cells)
+                        let _ = snapper.snap(&cfg, cursor, project, from, free);
+                        assert!(snapper.near_cursor(cursor, project).is_some());
+                        let near = snapper.snap(&cfg, cursor, project, from, free);
+                        assert_eq!(
+                            all.map(|s| (s.p, s.kind, s.host)),
+                            near.map(|s| (s.p, s.kind, s.host)),
+                            "at {cursor:?} from {from:?}"
+                        );
+                        snapped += usize::from(all.is_some_and(|s| s.host.is_some()));
+                    }
+                }
+            }
+        }
+        // (the pointer was on the model often enough for this to mean something)
+        assert!(snapped > 30, "{snapped}");
+    }
+
+    #[test]
+    fn edges_warmed_by_a_worker_are_the_edges_found_on_the_spot() {
+        let scene = creabim_geom::build_scene(&creabim_core::sample::sample_house());
+        assert!(scene.len() > 10);
+        warm_edges(&scene);
+        // a second time finds nothing left to do, and changes nothing
+        warm_edges(&scene);
+        // (edges that start at the same point come in no set order)
+        let sorted = |mut e: Vec<(DVec3, DVec3)>| {
+            e.sort_by(|a, b| {
+                let key = |s: &(DVec3, DVec3)| [s.0.x, s.0.y, s.0.z, s.1.x, s.1.y, s.1.z];
+                key(a).partial_cmp(&key(b)).expect("no NaN")
+            });
+            e
+        };
+        for item in &scene {
+            assert_eq!(
+                sorted(feature_edges_cached(&item.mesh).to_vec()),
+                sorted(feature_edges(&item.mesh))
+            );
+        }
+    }
+
     use super::*;
     use creabim_core::{EditMesh, Element, ElementKind, FreeMesh, Transaction};
 
@@ -2311,6 +3186,51 @@ mod tests {
     }
 
     const ALL: SnapSettings = SnapSettings::ALL;
+
+    /// In a perspective view the point snapped on a long guide is the one
+    /// seen under the pointer, also when the guide runs on behind the eye
+    /// (MU137: the guide snap landed by the car, metres away).
+    #[test]
+    fn a_long_guide_snaps_where_the_pointer_is_in_perspective() {
+        use super::*;
+        // an eye at the origin looking along +y, the screen 600 px wide
+        let project = |p: DVec3| -> Option<Pos2> {
+            (p.y > 0.05).then(|| {
+                Pos2::new(
+                    300.0 + (p.x / p.y * 500.0) as f32,
+                    300.0 - (p.z / p.y * 500.0) as f32,
+                )
+            })
+        };
+        for (a, b) in [
+            // all in front, 1 m to 100 m away
+            (DVec3::new(1.0, 1.0, -1.5), DVec3::new(1.0, 100.0, -1.5)),
+            // and one running on 60 m behind the eye
+            (DVec3::new(1.0, -60.0, -1.5), DVec3::new(1.0, 60.0, -1.5)),
+        ] {
+            let mut s = Snapper::new();
+            s.add_segment(a, b, Source::Guide, None);
+            for y in [2.0, 5.0, 12.0] {
+                let want = DVec3::new(1.0, y, -1.5);
+                // a pixel off the guide's picture, across it
+                let (w0, w1) = (
+                    project(want).unwrap(),
+                    project(want + DVec3::Y * 0.01).unwrap(),
+                );
+                let along = (w1 - w0).normalized();
+                let cursor = w0 + egui::vec2(-along.y, along.x);
+                let hit = s
+                    .snap(&ALL, cursor, &project, None, None)
+                    .expect("the guide is under the pointer");
+                assert_eq!(hit.kind, SnapKind::Guide);
+                assert!(
+                    hit.p.distance(want) < 0.05,
+                    "snapped {:?}, the pointer is over {want:?}",
+                    hit.p
+                );
+            }
+        }
+    }
 
     #[test]
     fn corners_beat_edges_and_midpoints_are_found() {
@@ -2547,6 +3467,45 @@ mod tests {
         (model, id, plan)
     }
 
+    /// An object's middle snaps as a Centre, and its two centre lines,
+    /// front to back and side to side, as Centre lines, a little past its
+    /// footprint too; they add no points of their own (MU142).
+    #[test]
+    fn an_object_snaps_at_its_middle_and_along_its_centre_lines() {
+        let model = creabim_core::ridgeline::ridgeline_house();
+        let sofa = model
+            .iter()
+            .find(|e| e.name.starts_with("Sofa") && matches!(e.kind, ElementKind::Object(_)))
+            .unwrap();
+        let ElementKind::Object(o) = &sofa.kind else {
+            panic!()
+        };
+        let (lo, hi) = creabim_core::objects::type_of(&model, sofa)
+            .unwrap()
+            .bounds();
+        let mid = (lo.truncate() + hi.truncate()) / 2.0;
+        let mut s = Snapper::new();
+        s.add_object_centres(&model, Some(o.level), 0.6);
+        let c = o.to_plan(mid);
+        let hit = s.snap(&ALL, at(c.x, c.y), &flat, None, None).unwrap();
+        assert_eq!(hit.kind, SnapKind::Center);
+        assert!(hit.p.truncate().distance(c) < 1e-6);
+        // along its side-to-side line, past its end
+        let side = o.to_plan(mid + DVec2::X * ((hi.x - lo.x) / 2.0 + 0.4));
+        let hit = s.snap(&ALL, at(side.x, side.y), &flat, None, None).unwrap();
+        assert_eq!(hit.kind, SnapKind::CentreLine, "{:?}", hit.kind);
+        // its far end is no point to snap to
+        let end = o.to_plan(mid + DVec2::X * ((hi.x - lo.x) / 2.0 + 0.6));
+        let hit = s.snap(&ALL, at(end.x, end.y), &flat, None, None).unwrap();
+        assert_ne!(hit.kind, SnapKind::Endpoint);
+        // with centres switched off, none of it
+        let mut off = ALL;
+        off.center = false;
+        assert!(s
+            .snap(&off, at(c.x, c.y), &flat, None, None)
+            .is_none_or(|h| h.kind == SnapKind::Grid));
+    }
+
     #[test]
     fn a_plan_over_an_underlay_snaps_to_its_faces_and_centrelines() {
         let mut model = creabim_core::sample::sample_house();
@@ -2716,5 +3675,24 @@ mod tests {
         assert!(centres
             .iter()
             .any(|c| c.distance(DVec3::new(0.0, 0.0, 1.0)) < 1e-6));
+    }
+    #[test]
+    fn alignments_follow_the_plane_drawn_on_and_go_back_to_x_and_y() {
+        let line = |along_x| Line {
+            at: DVec3::new(1.0, 2.0, 3.0),
+            along_x,
+            through: Through::Start,
+        };
+        assert_eq!(line(false).axis(), DVec3::Y);
+        {
+            // a wall's face: along the wall, and straight up
+            let _on = TrackAxes::on(DVec3::X, DVec3::Z);
+            assert_eq!(line(true).axis(), DVec3::X);
+            assert_eq!(line(false).axis(), DVec3::Z);
+            // the point above the line's own, in line with it
+            let foot = line(false).foot(DVec3::new(1.4, 2.0, 7.0));
+            assert!(foot.distance(DVec3::new(1.0, 2.0, 7.0)) < 1e-12);
+        }
+        assert_eq!(line(false).axis(), DVec3::Y);
     }
 }

@@ -304,6 +304,7 @@ impl Build {
                 parts: std::mem::take(&mut self.parts),
                 symbol: std::mem::take(&mut self.symbol),
                 catalogue: Some(key),
+                light: None,
             },
             materials: std::mem::take(&mut self.materials),
         }

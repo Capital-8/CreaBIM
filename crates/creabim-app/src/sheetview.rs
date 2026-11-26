@@ -425,7 +425,11 @@ fn sheet_move(
             error = put(doc, by);
             if response.clicked() {
                 state.moving = None;
-                plan.status = Some(format!("Moved {:.0}, {:.0} mm on the sheet.", by.x, by.y));
+                plan.status = Some(format!(
+                    "Moved {}, {} on the sheet.",
+                    crate::units::paper_text(by.x),
+                    crate::units::paper_text(by.y)
+                ));
             }
         }
         _ => {}
@@ -501,6 +505,23 @@ fn outline_items(
     }
 }
 
+/// Lay a master's paper (colour and texture) on a sheet `size` mm drawn
+/// about `center` at `zoom` points a millimetre inside `rect`.
+pub fn paint_paper(
+    painter: &egui::Painter,
+    rect: Rect,
+    center: DVec2,
+    zoom: f32,
+    size: DVec2,
+    stock: &creabim_geom::sheetpaper::SheetPaper,
+) {
+    let mut c = EguiCanvas {
+        painter,
+        xf: PaperXf { rect, center, zoom },
+    };
+    creabim_geom::sheetpaper::draw_paper(&mut c, size, stock);
+}
+
 /// Sheet millimetres (y up) to screen points.
 #[derive(Clone, Copy)]
 struct PaperXf {
@@ -536,10 +557,32 @@ fn gray(g: f64) -> Color32 {
 }
 
 impl EguiCanvas<'_> {
+    /// `pts` filled in `color`, triangulated.
+    fn mesh(&mut self, pts: &[DVec2], color: Color32) {
+        let mut mesh = egui::Mesh::default();
+        for p in pts {
+            mesh.colored_vertex(self.xf.to_screen(*p), color);
+        }
+        for [a, b, c] in triangulate(pts) {
+            mesh.add_triangle(a as u32, b as u32, c as u32);
+        }
+        self.painter.add(egui::Shape::mesh(mesh));
+    }
+
     fn line_in(&mut self, pts: &[DVec2], s: Stroke, color: Color32) {
         let pts: Vec<Pos2> = pts.iter().map(|p| self.xf.to_screen(*p)).collect();
         let stroke = egui::Stroke::new((s.width as f32 * self.xf.zoom).max(0.5), color);
         match s.dash {
+            Some([a, b]) if s.dots > 0 => {
+                let z = self.xf.zoom;
+                let (long, gap) = ((a as f32 * z).max(4.0), (b as f32 * z).max(1.5));
+                let mut dashes = vec![long];
+                dashes.extend(std::iter::repeat_n(gap, s.dots as usize));
+                let gaps = vec![gap; dashes.len()];
+                self.painter.extend(egui::Shape::dashed_line_with_offset(
+                    &pts, stroke, &dashes, &gaps, 0.0,
+                ));
+            }
             Some([a, b]) => {
                 let z = self.xf.zoom;
                 self.painter.extend(egui::Shape::dashed_line(
@@ -566,10 +609,10 @@ impl Canvas for EguiCanvas<'_> {
     }
 
     fn fill_rgb(&mut self, pts: &[DVec2], rgb: [f32; 3]) {
-        let pts: Vec<Pos2> = pts.iter().map(|p| self.xf.to_screen(*p)).collect();
-        let c = crate::annotate::color32(rgb);
-        self.painter
-            .add(egui::Shape::convex_polygon(pts, c, egui::Stroke::NONE));
+        // triangulated, not as a convex polygon: a cropped fill can be
+        // concave or have points doubled along the crop's edge, and egui's
+        // feathered edge then shoots thin spikes far past the crop
+        self.mesh(pts, crate::annotate::color32(rgb));
     }
 
     fn styled_text(
@@ -581,9 +624,6 @@ impl Canvas for EguiCanvas<'_> {
         look: &creabim_geom::annotation::TextLook,
     ) {
         let px = look.size as f32 * self.xf.zoom;
-        if px < 3.0 {
-            return;
-        }
         let color = look.rgb.map_or(Color32::BLACK, crate::annotate::color32);
         crate::annotate::text(
             self.painter,
@@ -598,19 +638,22 @@ impl Canvas for EguiCanvas<'_> {
     }
 
     fn fill(&mut self, pts: &[DVec2], g: f64) {
-        let mut mesh = egui::Mesh::default();
-        for p in pts {
-            mesh.colored_vertex(self.xf.to_screen(*p), gray(g));
-        }
-        for [a, b, c] in triangulate(pts) {
-            mesh.add_triangle(a as u32, b as u32, c as u32);
-        }
-        self.painter.add(egui::Shape::mesh(mesh));
+        self.mesh(pts, gray(g));
     }
 
     fn text_angle(&mut self, at: DVec2, size: f64, text: &str, anchor: Anchor, angle: f64) {
         let px = size as f32 * self.xf.zoom;
         if px < 3.0 {
+            crate::annotate::greek(
+                self.painter,
+                self.xf.to_screen(at),
+                text,
+                px,
+                anchor,
+                angle,
+                Color32::BLACK,
+                None,
+            );
             return;
         }
         let galley = self.painter.layout_no_wrap(
@@ -676,9 +719,6 @@ pub fn draw_fit(painter: &egui::Painter, rect: Rect, d: &creabim_geom::PlanView)
     paper::draw(&mut canvas, d, &map);
 }
 
-/// The scales a view is usually drawn at on a sheet, as denominators.
-pub const SCALES: [f64; 10] = [1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0];
-
 /// Where a viewport's centre goes when its view's scale changes from
 /// `old` to `new` (denominators), so that the drawing grows or shrinks
 /// about `mid`, the middle of what it shows (drawing coordinates), and not
@@ -688,35 +728,136 @@ pub fn rescaled_center(vp: &creabim_core::Viewport, mid: DVec2, old: f64, new: f
     vp.center + at(old) - at(new)
 }
 
-/// A dropdown of the usual scales and a box for any other: the new
-/// denominator when one is picked or typed.
+/// Keep the project's drawing standard for this frame's pickers.
+pub fn set_standard(ctx: &egui::Context, s: creabim_core::standards::DrawingStandard) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("creabim.standard"), std::sync::Arc::new(s)));
+}
+
+/// The project's drawing standard, as this frame keeps it.
+pub fn standard(ctx: &egui::Context) -> creabim_core::standards::DrawingStandard {
+    ctx.data(|d| {
+        d.get_temp::<std::sync::Arc<creabim_core::standards::DrawingStandard>>(egui::Id::new(
+            "creabim.standard",
+        ))
+    })
+    .map_or_else(creabim_core::standards::iso, |s| (*s).clone())
+}
+
+/// A paper size list: the standard's sizes, then the other standards'
+/// under *Show all* (standards plan: nobody sees fifty sizes). The size
+/// picked, if one was.
+pub fn paper_menu(
+    ui: &mut egui::Ui,
+    std: &creabim_core::standards::DrawingStandard,
+    current: &str,
+) -> Option<creabim_core::standards::PaperSize> {
+    let mut out = None;
+    let row = |ui: &mut egui::Ui, p: &creabim_core::standards::PaperSize, out: &mut Option<_>| {
+        let size = if std.name == "US" || p.name.starts_with("AR") || p.name.starts_with("AN") {
+            format!("{} × {} in", trim(p.w / 25.4), trim(p.h / 25.4))
+        } else {
+            format!("{:.0} × {:.0} mm", p.w, p.h)
+        };
+        if ui
+            .selectable_label(current == p.name, format!("{}  ·  {size}", p.name))
+            .clicked()
+        {
+            *out = Some(p.clone());
+        }
+    };
+    for p in &std.sheets {
+        row(ui, p, &mut out);
+    }
+    ui.separator();
+    ui.menu_button("Show all", |ui| {
+        for other in creabim_core::standards::shipped() {
+            if other.name == std.name {
+                continue;
+            }
+            ui.label(egui::RichText::new(&other.name).weak().size(10.5));
+            for p in &other.sheets {
+                row(ui, p, &mut out);
+            }
+        }
+    });
+    out
+}
+
+fn trim(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+/// A dropdown of the standard's scales, written its way (`1/4" = 1'-0"`),
+/// the other standards' under *Show all*, and a box for any other: the
+/// new denominator when one is picked or typed.
 pub fn scale_picker(ui: &mut egui::Ui, salt: ElementId, scale: f64) -> Option<f64> {
     let mut out = None;
+    let std = standard(ui.ctx());
     // a Properties row like the rest, sized to the panel: a fixed-width
     // pair here stretched the whole column past a narrow panel's edge
     crate::props::row(ui, "Scale", |ui| {
-        let standard = SCALES.iter().any(|s| (s - scale).abs() < 1e-6);
+        let standard = std.offers(scale)
+            || creabim_core::standards::shipped()
+                .iter()
+                .any(|s| s.offers(scale));
         let h = ui.spacing().interact_size.y;
         let typed = 56.0_f32.min(ui.available_width() * 0.4);
         let gap = ui.spacing().item_spacing.x;
-        egui::ComboBox::from_id_salt(("scale", salt))
-            .width((ui.available_width() - typed - gap).max(30.0))
-            .icon(crate::props::combo_icon)
-            .selected_text(if standard {
-                format!("1:{scale:.0}")
-            } else {
-                format!("1:{scale:.0} (custom)")
-            })
-            .show_ui(ui, |ui| {
-                for s in SCALES {
-                    if ui
-                        .selectable_label((s - scale).abs() < 1e-6, format!("1:{s:.0}"))
-                        .clicked()
-                    {
-                        out = Some(s);
-                    }
-                }
-            });
+        let combo_w = (ui.available_width() - typed - gap).max(30.0);
+        // the combo in a box of its own width: egui cuts its text against
+        // the room the row has left, so "1:192 (custom)" pushed the typed
+        // box out of the card (MU84)
+        ui.allocate_ui_with_layout(
+            egui::vec2(combo_w, h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_max_width(combo_w);
+                egui::ComboBox::from_id_salt(("scale", salt))
+                    .width(combo_w)
+                    // a long US scale (6" = 1'-0") is cut with …, never widening the
+                    // card past the panel (MU78)
+                    .truncate()
+                    .icon(crate::props::combo_icon)
+                    .selected_text(if standard {
+                        std.scale_label(scale)
+                    } else {
+                        format!("1:{scale:.0} (custom)")
+                    })
+                    .show_ui(ui, |ui| {
+                        for s in &std.scales {
+                            if ui
+                                .selectable_label((s.ratio - scale).abs() < 1e-6, &s.label)
+                                .clicked()
+                            {
+                                out = Some(s.ratio);
+                            }
+                        }
+                        ui.separator();
+                        ui.menu_button("Show all", |ui| {
+                            for other in creabim_core::standards::shipped() {
+                                if other.name == std.name {
+                                    continue;
+                                }
+                                ui.label(egui::RichText::new(&other.name).weak().size(10.5));
+                                for s in &other.scales {
+                                    if ui
+                                        .selectable_label((s.ratio - scale).abs() < 1e-6, &s.label)
+                                        .clicked()
+                                    {
+                                        out = Some(s.ratio);
+                                    }
+                                }
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(std.scale_label(scale));
+            },
+        );
         let mut v = scale;
         if ui
             .add_sized(
@@ -848,9 +989,17 @@ pub fn show(
         Color32::from_gray(150),
     );
     painter.rect_filled(paper_rect, 0.0, Color32::WHITE);
-    let mut canvas = EguiCanvas {
+    let mut plain_canvas = EguiCanvas {
         painter: &painter,
         xf,
+    };
+    // the master's paper: its colour and texture, the palette's ink on
+    // its frame (pens stage 7)
+    let stock = creabim_geom::sheetpaper::sheet_paper(doc.model(), &s, info.print_white);
+    creabim_geom::sheetpaper::draw_paper(&mut plain_canvas, size, &stock);
+    let mut canvas = creabim_geom::sheetpaper::OnPaper {
+        inner: &mut plain_canvas,
+        paper: stock,
     };
     sheet::draw_frame(
         &mut canvas,
@@ -862,7 +1011,12 @@ pub fn show(
     );
     for v in views {
         if state.active != Some(v.viewport) {
-            paper::draw_looks(&mut canvas, &v.drawing, &v.map, &v.looks);
+            paper::draw_looks(
+                &mut canvas,
+                &v.drawing,
+                &v.map,
+                &sheet::on_white(&v.looks, info.print_white),
+            );
         }
         sheet::draw_view_title(&mut canvas, v);
         if selection.contains(v.viewport) && state.active.is_none() {
@@ -1052,7 +1206,7 @@ pub fn show(
                 painter.text(
                     q + Vec2::new(10.0, -10.0),
                     egui::Align2::LEFT_BOTTOM,
-                    format!("{at:.1} mm"),
+                    crate::units::paper_text(at),
                     egui::FontId::proportional(11.0),
                     guide_ink,
                 );
@@ -1175,6 +1329,171 @@ pub fn show(
             }
         }
     }
+    // a note picked or under the pointer shows its block as a dashed box,
+    // as trace images do (MU88)
+    let mut boxes: Vec<(ElementId, bool)> =
+        selection.all().into_iter().map(|id| (id, true)).collect();
+    if let Some(h) = lit {
+        boxes.push((h, false));
+    }
+    for (id, picked) in boxes {
+        let pts: Vec<DVec2> = note_items
+            .iter()
+            .filter(|it| matches!(it, creabim_geom::PlanItem::Annotation { id: i, .. } if *i == id))
+            .flat_map(|it| it.extent())
+            .collect();
+        let Some(first) = pts.first().copied() else {
+            continue;
+        };
+        let (mut lo, mut hi) = pts
+            .iter()
+            .fold((first, first), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        // the block as set: its wrap width and, with a height, its foot,
+        // so the box shows the block, not only the text (MU89)
+        let note = match doc.model().get(id).map(|e| &e.kind) {
+            Some(ElementKind::Note(n)) if n.view == sheet_id && n.symbol.is_none() => {
+                Some(n.clone())
+            }
+            _ => None,
+        };
+        if let Some(n) = &note {
+            if let Some(w) = n.width {
+                hi.x = hi.x.max(n.at.x + w);
+            }
+            if let Some(h) = n.height {
+                lo.y = hi.y - h;
+            }
+        }
+        let r = xf.rect_of(lo, hi).expand(4.0);
+        let c = if picked {
+            interaction_ink()
+        } else {
+            interaction_ink().gamma_multiply(0.5)
+        };
+        let corners = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        for seg in corners.windows(2) {
+            painter.extend(egui::Shape::dashed_line(
+                seg,
+                egui::Stroke::new(1.2, c),
+                6.0,
+                4.0,
+            ));
+        }
+        // a picked block: grips on its four sides and four corners (MU90):
+        // left and right set where it starts and its wrap width, top and
+        // foot its height, corners both
+        let Some(n) = note.filter(|_| picked) else {
+            continue;
+        };
+        let (left, right, top, foot) = (lo.x, hi.x, hi.y, lo.y);
+        // which sides a grip moves: (x: -1 left, 1 right, 0 none; y: 1 top, -1 foot)
+        let grips: [(i8, i8, Pos2); 8] = [
+            (-1, 0, r.left_center()),
+            (1, 0, r.right_center()),
+            (0, 1, r.center_top()),
+            (0, -1, r.center_bottom()),
+            (-1, 1, r.left_top()),
+            (1, 1, r.right_top()),
+            (-1, -1, r.left_bottom()),
+            (1, -1, r.right_bottom()),
+        ];
+        for (k, (gx, gy, at)) in grips.into_iter().enumerate() {
+            let size = if gx != 0 && gy != 0 {
+                Vec2::splat(8.0)
+            } else if gx != 0 {
+                Vec2::new(6.0, 12.0)
+            } else {
+                Vec2::new(12.0, 6.0)
+            };
+            let grip = Rect::from_center_size(at, size);
+            let resp = ui.interact(
+                grip.expand(3.0),
+                egui::Id::new(("note.grip", id, k)),
+                Sense::drag(),
+            );
+            let hot = resp.hovered() || resp.dragged();
+            painter.rect_filled(grip, 1.5, if hot { c } else { c.gamma_multiply(0.75) });
+            if hot {
+                ui.ctx().set_cursor_icon(match (gx, gy) {
+                    (0, _) => egui::CursorIcon::ResizeVertical,
+                    (_, 0) => egui::CursorIcon::ResizeHorizontal,
+                    (1, 1) | (-1, -1) => egui::CursorIcon::ResizeNeSw,
+                    _ => egui::CursorIcon::ResizeNwSe,
+                });
+                resp.clone().on_hover_text(match (gx, gy) {
+                    (0, _) => {
+                        "Drag: the block's height. The text stops there when the note is Continued"
+                    }
+                    (_, 0) => "Drag: the block's width. Its lines wrap to it",
+                    _ => "Drag: the block's width and height",
+                });
+            }
+            if !resp.dragged() {
+                continue;
+            }
+            let Some(p) = resp.interact_pointer_pos().map(|p| xf.to_paper(p)) else {
+                continue;
+            };
+            let snap = |v: f64| (v * 2.0).round() / 2.0;
+            let _ = doc.edit_merged(id, "Note box", |e| {
+                let ElementKind::Note(m) = &mut e.kind else {
+                    return;
+                };
+                match gx {
+                    1 => m.width = Some(snap((p.x - left).max(5.0))),
+                    -1 => {
+                        let w = (right - p.x).max(5.0);
+                        m.at.x = right - w;
+                        m.width = Some(snap(w));
+                    }
+                    _ => {}
+                }
+                match gy {
+                    -1 => m.height = Some(snap((top - p.y).clamp(5.0, 2000.0))),
+                    1 => {
+                        let h = (p.y - foot).clamp(5.0, 2000.0);
+                        m.at.y += foot + h - top;
+                        m.height = Some(snap(h));
+                    }
+                    _ => {}
+                }
+            });
+        }
+        let _ = n;
+    }
+    // more text than the blocks hold: a red pill at the foot of the last
+    // one with how many lines, on screen only (MU90: a bare + read as a
+    // button)
+    for e in doc.model().iter() {
+        let ElementKind::Note(n) = &e.kind else {
+            continue;
+        };
+        if n.view != sheet_id || n.height.is_none() {
+            continue;
+        }
+        let past = creabim_geom::annotate::note_runs_past(doc.model(), e.id);
+        if past == 0 {
+            continue;
+        }
+        let foot = DVec2::new(n.at.x, n.at.y - n.height.unwrap_or(0.0));
+        let at = xf.to_screen(foot);
+        let red = Color32::from_rgb(214, 72, 59);
+        let text = format!("+{past} lines");
+        let g = painter.layout_no_wrap(text, egui::FontId::proportional(10.5), Color32::WHITE);
+        let b = Rect::from_min_size(at + Vec2::new(0.0, 6.0), g.size() + Vec2::new(10.0, 4.0));
+        painter.rect_filled(b, 4.0, red);
+        painter.galley(b.min + Vec2::new(5.0, 2.0), g, Color32::WHITE);
+        let hit = ui.interact(b, egui::Id::new(("note.past", e.id)), Sense::hover());
+        hit.on_hover_text(format!(
+            "{past} line(s) don't fit: make the block taller, or Continue it in another block (its Properties)"
+        ));
+    }
     if let Some((_, (lo, hi))) = mark_boxes.iter().find(|(id, _)| Some(*id) == lit) {
         painter.rect_stroke(
             xf.rect_of(*lo, *hi).expand(3.0),
@@ -1206,7 +1525,8 @@ pub fn show(
         .find(|v| selection.contains(v.viewport) && state.active.is_none());
     if let Some(v) = selected {
         let crop = match doc.model().get(v.viewport).map(|e| &e.kind) {
-            Some(ElementKind::Viewport(vp)) => vp.crop,
+            // as it shows now, following its stair or not
+            Some(ElementKind::Viewport(vp)) => sheet::viewport_frame(doc.model(), vp).0,
             _ => None,
         };
         let full = crop.or_else(|| v.drawing.bounds().map(|(a, b)| [a, b]));
@@ -1259,9 +1579,15 @@ pub fn show(
                         2 => lo.y = snap(m.y).min(hi.y - 0.2),
                         _ => hi.y = snap(m.y).max(lo.y + 0.2),
                     }
+                    let pinned = v.map.model;
                     let r = doc.edit_merged(id, "Crop view", |e| {
                         if let ElementKind::Viewport(vp) = &mut e.kind {
                             vp.crop = Some([lo, hi]);
+                            // cropped by hand: it stops following its stair,
+                            // pinned where it shows now
+                            if vp.fit.take().is_some() {
+                                vp.target = pinned;
+                            }
                         }
                     });
                     error = r.err().map(|e| e.to_string());
@@ -1779,10 +2105,8 @@ pub fn show(
             views.iter().rev().find(|v| contains(v, p))
         });
         if let (Some(v), Some(p)) = (hit, press) {
-            let center = match doc.model().get(v.viewport).map(|e| &e.kind) {
-                Some(ElementKind::Viewport(vp)) => vp.center,
-                _ => v.map.paper,
-            };
+            // where it is shown: an arranged schedule is not at its centre
+            let center = v.map.paper;
             state.drag = Some((v.viewport, center, xf.to_paper(p)));
             selection.only(v.viewport);
         }
@@ -1838,6 +2162,8 @@ pub fn show(
             let r = doc.edit_merged(id, "Move view on sheet", |e| {
                 if let ElementKind::Viewport(vp) = &mut e.kind {
                     vp.center = moved;
+                    // moved by hand: it stays there, arranged sheet or not
+                    vp.pinned = true;
                 }
             });
             error = r.err().map(|e| e.to_string());
@@ -1923,6 +2249,8 @@ mod tests {
             center: DVec2::new(100.0, 100.0),
             target: DVec2::ZERO,
             crop: None,
+            fit: None,
+            pinned: false,
         };
         let mid = DVec2::new(10.0, 5.0);
         let map = |c: DVec2, s: f64| c + (mid - vp.target) * (1000.0 / s);
@@ -1938,6 +2266,7 @@ mod tests {
         // pinned by its middle: the pin doesn't move
         let pinned = creabim_core::Viewport { target: mid, ..vp };
         assert_eq!(rescaled_center(&pinned, mid, 100.0, 50.0), vp.center);
-        assert!(SCALES.contains(&50.0) && SCALES.contains(&1.0) && SCALES.contains(&500.0));
+        let iso = creabim_core::standards::iso();
+        assert!(iso.offers(50.0) && iso.offers(1.0) && iso.offers(500.0));
     }
 }

@@ -81,6 +81,11 @@ pub struct CropBox {
     /// What shows of what lies outside it.
     #[serde(default, skip_serializing_if = "Outside::is_default")]
     pub outside: Outside,
+    /// A stair the box is kept round, from a little under its foot to
+    /// above its head, as the stair moves or grows (a stair sheet's 3D
+    /// view). Resizing the box by hand lets go of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<ElementId>,
 }
 
 fn yes() -> bool {
@@ -109,6 +114,7 @@ impl CropBox {
             frame_hidden: false,
             except: vec![],
             outside: Outside::GhostSelected,
+            fit: None,
         }
     }
 
@@ -156,6 +162,8 @@ impl CropBox {
     /// Move face `i` to `value` along its axis, keeping the box at least
     /// [`MIN_SIZE`] across.
     pub fn set_face(&mut self, i: usize, value: f64) {
+        // moved by hand: no longer kept round a stair
+        self.fit = None;
         let axis = i / 2;
         if i % 2 == 0 {
             self.min[axis] = value.min(self.max[axis] - MIN_SIZE);

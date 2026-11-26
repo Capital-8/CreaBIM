@@ -79,6 +79,17 @@ pub fn shape(ctx: &egui::Context) -> Shape {
     ctx.data(|d| d.get_temp(shape_id())).unwrap_or_default()
 }
 
+/// The shape as the panes last drew it, for what has no context at
+/// hand (the Drafting family's panel ticks the shape in use).
+static LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn last_shape() -> Shape {
+    Shape::ALL
+        .get(LAST.load(std::sync::atomic::Ordering::Relaxed) as usize)
+        .copied()
+        .unwrap_or_default()
+}
+
 /// The Line / Arc / Circle row in a pane's corner and the L, A and C keys.
 /// Keeps `draft` drawing the chosen shape; returns a hint when it changes.
 pub fn shape_controls(
@@ -105,7 +116,7 @@ pub fn shape_controls(
     if !crate::slabtool::options_in_top_bar(&ctx) {
         egui::Area::new(egui::Id::new(("sketch shapes", pane)))
             .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
-            .order(egui::Order::Foreground)
+            .order(crate::app::overlay_order())
             .show(&ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -137,6 +148,10 @@ pub fn shape_controls(
         ctx.data_mut(|d| d.insert_temp(shape_id(), chosen));
         msg = Some(hint(chosen, draft.as_deref()));
     }
+    LAST.store(
+        Shape::ALL.iter().position(|s| *s == chosen).unwrap_or(0) as u8,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     if let Some(d) = draft {
         if d.shape != chosen {
             d.arc_end = None;
@@ -402,9 +417,12 @@ impl SketchDraft {
             width: u1 - u0,
             height: z1 - z0,
             material: None,
-            frame: Default::default(),
+            frame: creabim_core::OpeningFrame::for_kind(creabim_core::OpeningKind::Hole),
             flip_hand: false,
             flip_facing: false,
+            roof_at: None,
+            roof_build: Default::default(),
+            arrangement: None,
         };
         let e = Element::new("Opening", ElementKind::Opening(o));
         let id = e.id;
@@ -419,7 +437,7 @@ impl SketchDraft {
             return Ok(None);
         }
         let sketch = self.placed(doc, closed);
-        let e = Element::new("Sketch", ElementKind::Sketch(sketch));
+        let e = Element::new("Shape", ElementKind::Sketch(sketch));
         let id = e.id;
         doc.commit(Transaction::new("Draw sketch").insert(e))?;
         Ok(Some(id))
@@ -651,7 +669,14 @@ pub fn extrude(
     if distance.abs() < 1e-6 {
         return Err("Set a distance to extrude by.".into());
     }
-    let name = if s.closed { "Mass" } else { "Surface" };
+    // it keeps the name it was given; one never named is a Shape (MU43)
+    let name = doc.model().get(id).map_or("Shape".to_string(), |e| {
+        if e.name.is_empty() || e.name.starts_with("Sketch") {
+            "Shape".to_string()
+        } else {
+            e.name.clone()
+        }
+    });
     let mass = Element::new(
         name,
         ElementKind::FreeMesh(FreeMesh::new(s.level, s.plane.origin, s.extrude(distance))),
@@ -716,23 +741,26 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
         }
         None => {
             let n = sk.segment_count();
-            crate::props::note(
-                ui,
-                format!(
-                    "{n} segment{}{}, {}",
-                    if n == 1 { "" } else { "s" },
-                    match arcs {
-                        0 => String::new(),
-                        1 => " (1 arc)".into(),
-                        k => format!(" ({k} arcs)"),
-                    },
-                    if sk.closed { "closed" } else { "open" }
-                ),
-            );
+            let mut worked = vec![crate::props::Worked::new("Segments", n.to_string())];
+            if arcs > 0 {
+                worked.push(crate::props::Worked::new("Arcs", arcs.to_string()));
+            }
+            crate::props::worked_out(ui, "sketch-outline", &worked);
             let mut closed = sk.closed;
             if sk.can_close() && crate::props::switch(ui, &mut closed, "Closed").changed() {
                 sk.set_closed(closed);
                 edit = Edit::Done("Close sketch");
+            }
+            // a closed outline is a face; off, it is a wire: lines only,
+            // and Pull gives walls (MU46)
+            let mut face = !sk.wire;
+            if sk.closed && crate::props::switch(ui, &mut face, "Face").changed() {
+                sk.wire = !face;
+                edit = Edit::Done(if face {
+                    "Make it a face"
+                } else {
+                    "Make it a wire"
+                });
             }
         }
     }
@@ -768,7 +796,10 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
         ui.label(format!("{}", sk.constraints.len()))
     });
     if sk.constraints.is_empty() {
-        crate::props::note(ui, "None yet. Add one below; the sketch moves to meet it.");
+        crate::props::empty(
+            ui,
+            "No dimensions yet. Add one below; the sketch moves to meet it.",
+        );
     }
     let mut remove = None;
     for i in 0..sk.constraints.len() {
@@ -910,9 +941,9 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
     }
     ui.data_mut(|d| d.insert_temp(id, form));
     if !sk.constraints.is_empty() {
-        crate::props::note(
+        crate::props::howto(
             ui,
-            "Drag a value or type it; the sketch follows. Its first corner stays put.",
+            "Sketch dimensions: drag a value or type it and the sketch follows; its first corner stays put.",
         );
     }
     edit
@@ -921,7 +952,10 @@ pub fn properties(ui: &mut egui::Ui, sk: &mut Sketch) -> Edit {
 // ---- constraint marks on the sketch ----------------------------------------
 
 const MARK_COLOR: Color32 = Color32::from_rgb(40, 70, 140);
-const SELECTED_COLOR: Color32 = Color32::from_rgb(242, 140, 51);
+/// The selection's colour, as everywhere else (MU72).
+fn selected_color() -> Color32 {
+    crate::planview::accent_selected()
+}
 
 /// A small label with a pale backing, centred on `at`.
 fn tag(painter: &egui::Painter, at: Pos2, text: &str, color: Color32) {
@@ -960,7 +994,7 @@ pub fn draw_marks(
             .map_or(0.0, |l| l.elevation);
         let at = |p: DVec2| project(sk.plane.to_model(p) + DVec3::Z * z);
         let color = if selection == Some(e.id) {
-            SELECTED_COLOR
+            selected_color()
         } else {
             MARK_COLOR
         };
@@ -1037,7 +1071,7 @@ pub fn draw_marks_in_pane(
             for (a, b) in sk.segments() {
                 let (a, b) = (project(a + DVec3::Z * z), project(b + DVec3::Z * z));
                 if let (Some(a), Some(b)) = (a, b) {
-                    painter.line_segment([a, b], Stroke::new(2.0, SELECTED_COLOR));
+                    painter.line_segment([a, b], Stroke::new(2.0, selected_color()));
                 }
             }
         }

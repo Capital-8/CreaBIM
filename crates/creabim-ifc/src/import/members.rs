@@ -68,6 +68,10 @@ impl Importer<'_> {
             _ => "Railing",
         };
         let element = Element {
+            ratings: None,
+            documents: Vec::new(),
+            phase: Default::default(),
+            on_site: false,
             mark: None,
             source: None,
             of_type: self.type_ref(id),

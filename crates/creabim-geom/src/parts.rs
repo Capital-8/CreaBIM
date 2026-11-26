@@ -7,7 +7,9 @@ use crate::scene::{slab_mesh_with_holes, SceneItem, PLAIN_SURFACE};
 use crate::triangulate::triangulate;
 use crate::TriMesh;
 use creabim_core::parts::{Form, Part};
-use creabim_core::site::{Pattern, PlantForm, Site, SiteForm};
+use creabim_core::site::{
+    GroundLineKind, GroundState, Pattern, PlantForm, Site, SiteForm, SiteView,
+};
 use creabim_core::{members, Element, ElementId, ElementKind, Model};
 use glam::{DVec2, DVec3};
 use std::f64::consts::{PI, TAU};
@@ -17,9 +19,20 @@ const PART_COLOR: [f32; 3] = [0.80, 0.76, 0.70];
 const VOID_COLOR: [f32; 3] = [0.85, 0.45, 0.25];
 const GROUND_COLOR: [f32; 3] = [0.50, 0.62, 0.38];
 const AREA_COLOR: [f32; 3] = [0.74, 0.72, 0.68];
-const LEAF_COLOR: [f32; 3] = [0.36, 0.53, 0.29];
+/// Painted lines on a car park, and its accessible bays' blue.
+const MARKING_COLOR: [f32; 3] = [0.96, 0.96, 0.93];
+const ACCESSIBLE_COLOR: [f32; 3] = [0.20, 0.42, 0.78];
+/// A car park's raised walkway.
+const WALKWAY_COLOR: [f32; 3] = [0.84, 0.83, 0.80];
+const ROAD_COLOR: [f32; 3] = [0.42, 0.42, 0.44];
+const ENVELOPE_COLOR: [f32; 3] = [0.45, 0.62, 0.85];
+const LEAF_COLOR: [f32; 3] = [0.36, 0.58, 0.34];
+/// A crown's clumps in shade and in the light, either side of its green.
+const LEAF_DARK: [f32; 3] = [0.25, 0.44, 0.27];
+const LEAF_LIGHT: [f32; 3] = [0.53, 0.72, 0.45];
+/// A conifer's upper skirts.
+const NEEDLE_LIGHT: [f32; 3] = [0.28, 0.48, 0.31];
 const NEEDLE_COLOR: [f32; 3] = [0.22, 0.40, 0.26];
-const FROND_COLOR: [f32; 3] = [0.42, 0.60, 0.30];
 const TRUNK_COLOR: [f32; 3] = [0.45, 0.33, 0.22];
 
 // ---- parts ----
@@ -204,102 +217,53 @@ fn signed_area(p: &[DVec2]) -> f64 {
 
 // ---- site ----
 
-/// The triangles of a terrain's top surface, in model coordinates.
+/// The triangles of a terrain's top surface as drawn, in model
+/// coordinates (see [`crate::ground`]).
 pub fn terrain_top(model: &Model, s: &Site) -> Vec<[DVec3; 3]> {
-    let SiteForm::Terrain {
-        boundary, points, ..
-    } = &s.form
-    else {
-        return vec![];
-    };
     let z = members::elevation(model, s.level);
-    let inside: Vec<DVec2> = points
-        .iter()
-        .map(|p| p.truncate())
-        .filter(|p| creabim_core::polygon::contains(boundary, *p))
-        .collect();
-    let (verts, tris) = refine(boundary, &inside);
-    tris.iter()
-        .map(|t| t.map(|i| verts[i].extend(z + s.ground_at(verts[i]))))
-        .collect()
+    crate::earth::shaped(model, s).map_or(vec![], |g| g.ground.triangles(z))
 }
 
-/// A triangulation of `boundary` with `inner` points added as corners,
-/// its edges flipped towards a Delaunay triangulation.
-fn refine(boundary: &[DVec2], inner: &[DVec2]) -> (Vec<DVec2>, Vec<[usize; 3]>) {
-    let mut verts = boundary.to_vec();
-    let mut tris = triangulate(boundary);
-    let n0 = verts.len();
-    let ccw = |t: &[usize; 3], v: &[DVec2]| (v[t[1]] - v[t[0]]).perp_dot(v[t[2]] - v[t[0]]) > 0.0;
-    for t in tris.iter_mut() {
-        if !ccw(t, &verts) {
-            t.swap(1, 2);
-        }
-    }
-    for p in inner {
-        let Some(i) = tris.iter().position(|t| {
-            let [a, b, c] = t.map(|i| verts[i]);
-            (b - a).perp_dot(*p - a) >= 0.0
-                && (c - b).perp_dot(*p - b) >= 0.0
-                && (a - c).perp_dot(*p - c) >= 0.0
-        }) else {
-            continue;
-        };
-        if verts.iter().any(|v| v.distance(*p) < 1e-3) {
-            continue;
-        }
-        let k = verts.len();
-        verts.push(*p);
-        let [a, b, c] = tris[i];
-        tris[i] = [a, b, k];
-        tris.push([b, c, k]);
-        tris.push([c, a, k]);
-    }
-    // Lawson flips: an interior edge whose opposite corner falls inside
-    // the other triangle's circumcircle is swapped
-    let in_circle = |a: DVec2, b: DVec2, c: DVec2, d: DVec2| {
-        let (ax, ay) = (a.x - d.x, a.y - d.y);
-        let (bx, by) = (b.x - d.x, b.y - d.y);
-        let (cx, cy) = (c.x - d.x, c.y - d.y);
-        (ax * ax + ay * ay) * (bx * cy - cx * by) - (bx * bx + by * by) * (ax * cy - cx * ay)
-            + (cx * cx + cy * cy) * (ax * by - bx * ay)
-            > 1e-12
+/// The ground a shaped terrain is drawn and built from: its proposed
+/// ground. None for a flat terrain nothing is worked into, which is a
+/// plain slab of earth.
+fn shaped_ground(model: &Model, s: &Site) -> Option<std::sync::Arc<crate::ground::Ground>> {
+    let g = crate::earth::shaped(model, s)?;
+    (creabim_core::site::surveyed(model, s) || g.changed()).then(|| g.ground.clone())
+}
+
+/// A terrain read as its plan shows it: its shading's bands with their
+/// areas, and how many low points water gathers in (when its flow is
+/// shown). None when it is not read or is a flat slab.
+pub fn ground_reading(
+    model: &Model,
+    s: &Site,
+    sv: &SiteView,
+) -> Option<(crate::analysis::Shading, usize)> {
+    let SiteForm::Terrain {
+        boundary,
+        contour,
+        data,
+        ..
+    } = &s.form
+    else {
+        return None;
     };
-    let boundary_edge =
-        |a: usize, b: usize| a < n0 && b < n0 && ((a + 1) % n0 == b || (b + 1) % n0 == a);
-    for _ in 0..8 * tris.len().max(1) {
-        let mut flipped = false;
-        'outer: for i in 0..tris.len() {
-            for e in 0..3 {
-                let (a, b, c) = (tris[i][e], tris[i][(e + 1) % 3], tris[i][(e + 2) % 3]);
-                if boundary_edge(a, b) {
-                    continue;
-                }
-                // the triangle across edge a-b runs b-a
-                let Some((j, d)) = tris.iter().enumerate().find_map(|(j, t)| {
-                    (j != i)
-                        .then(|| (0..3).find(|&f| t[f] == b && t[(f + 1) % 3] == a))
-                        .flatten()
-                        .map(|f| (j, t[(f + 2) % 3]))
-                }) else {
-                    continue;
-                };
-                let (pa, pb, pc, pd) = (verts[a], verts[b], verts[c], verts[d]);
-                // only a convex quad can flip
-                let convex = (pd - pc).perp_dot(pa - pc) * (pd - pc).perp_dot(pb - pc) < 0.0;
-                if convex && in_circle(pa, pb, pc, pd) {
-                    tris[i] = [c, a, d];
-                    tris[j] = [d, b, c];
-                    flipped = true;
-                    break 'outer;
-                }
-            }
-        }
-        if !flipped {
-            break;
-        }
+    let look = sv.look_on(*contour, data);
+    if look.shade.is_none() && !look.flow {
+        return None;
     }
-    (verts, tris)
+    let g = shaped_ground(model, s)?;
+    let north = model.project_info().map_or(0.0, |(_, p)| p.true_north);
+    let base = members::elevation(model, s.level);
+    let sh = crate::analysis::shade(&g, look.shade, north, base, look.interval);
+    let lows = if look.flow {
+        let spacing = crate::analysis::flow_spacing(boundary);
+        crate::analysis::flow(&g, boundary, spacing).1.len()
+    } else {
+        0
+    };
+    Some((sh, lows))
 }
 
 /// A terrain's solid: its top surface, sides down to a flat underside
@@ -310,39 +274,91 @@ fn terrain_mesh(model: &Model, s: &Site) -> TriMesh {
         boundary,
         top,
         thickness,
-        points,
         ..
     } = &s.form
     else {
         return TriMesh::default();
     };
     let z = members::elevation(model, s.level);
-    if points.is_empty() {
+    let Some(g) = shaped_ground(model, s) else {
         let holes = creabim_core::site::ground_holes(model, s);
         return slab_mesh_with_holes(boundary, &holes, z + top, *thickness);
+    };
+    ground_solid(&g, z, *thickness)
+}
+
+/// A terrain's solid as it was surveyed, before its works: none when the
+/// works change nothing or it is a flat slab.
+pub fn terrain_mesh_before(model: &Model, s: &Site) -> Option<TriMesh> {
+    let SiteForm::Terrain { thickness, .. } = &s.form else {
+        return None;
+    };
+    let sh = crate::earth::shaped(model, s)?;
+    sh.changed()
+        .then(|| ground_solid(&sh.existing, members::elevation(model, s.level), *thickness))
+}
+
+/// The surveyed ground's surface where a terrain's works moved it, for
+/// showing it see-through over the ground as built. None where nothing
+/// moved.
+pub fn ground_moved_mesh(model: &Model, s: &Site) -> Option<TriMesh> {
+    let sh = crate::earth::shaped(model, s)?;
+    if !sh.changed() {
+        return None;
     }
-    let tops = terrain_top(model, s);
+    let up = DVec3::Z * members::elevation(model, s.level);
+    let g = &sh.existing;
     let mut m = TriMesh::default();
-    for t in &tops {
-        m.add_polygon(t, &[[0, 1, 2]], (t[1] - t[0]).cross(t[2] - t[0]));
+    for t in &g.fine.tris {
+        let p = t.map(|i| g.fine.verts[i as usize]);
+        let moved = p.iter().any(|q| {
+            sh.ground
+                .height(q.truncate())
+                .is_some_and(|z| (z - q.z).abs() > 0.02)
+        });
+        if !moved {
+            continue;
+        }
+        let p = p.map(|q| q + up);
+        let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or(DVec3::Z);
+        m.add_polygon(&p, &[[0, 1, 2]], n);
     }
-    let low = tops
-        .iter()
-        .flatten()
-        .map(|p| p.z)
-        .fold(f64::INFINITY, f64::min)
-        - thickness;
-    let tris = triangulate(boundary);
-    let under: Vec<DVec3> = boundary.iter().map(|p| p.extend(low)).collect();
-    m.add_polygon(&under, &tris, -DVec3::Z);
-    let n = boundary.len();
-    for i in 0..n {
-        let (a, b) = (boundary[i], boundary[(i + 1) % n]);
-        let (za, zb) = (z + s.ground_at(a), z + s.ground_at(b));
-        let e = (b - a).normalize_or_zero();
+    (!m.is_empty()).then_some(m)
+}
+
+/// A ground's solid: its surface `z` up, down to `thickness` under its
+/// lowest point.
+fn ground_solid(g: &crate::ground::Ground, z: f64, thickness: f64) -> TriMesh {
+    let up = DVec3::Z * z;
+    let mut m = TriMesh::default();
+    // the top: rounded where the ground is smooth, each triangle its own
+    // face along a break line and on a faceted ground
+    let normals = g.normals();
+    for t in &g.fine.tris {
+        let p = t.map(|i| g.fine.verts[i as usize] + up);
+        let flat = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or(DVec3::Z);
+        let base = m.positions.len() as u32;
+        for (i, q) in t.iter().zip(p) {
+            m.positions.push(q.as_vec3().to_array());
+            m.normals
+                .push(normals[*i as usize].unwrap_or(flat).as_vec3().to_array());
+        }
+        m.indices.extend([base, base + 1, base + 2]);
+    }
+    let low = z + g.range().0 - thickness;
+    // the underside: the surface's own triangles laid flat, so its edge
+    // meets the sides corner for corner
+    for t in &g.fine.tris {
+        let p = t.map(|i| g.fine.verts[i as usize].truncate().extend(low));
+        m.add_polygon(&[p[0], p[2], p[1]], &[[0, 1, 2]], -DVec3::Z);
+    }
+    // the sides, under the surface's own edge so they meet it exactly
+    for (a, b) in g.rim() {
+        let (a, b) = (a + up, b + up);
+        let e = (b - a).truncate().normalize_or_zero();
         let out = DVec3::new(e.y, -e.x, 0.0);
         m.add_polygon(
-            &[a.extend(low), b.extend(low), b.extend(zb), a.extend(za)],
+            &[a.truncate().extend(low), b.truncate().extend(low), b, a],
             &[[0, 1, 2], [0, 2, 3]],
             out,
         );
@@ -358,61 +374,243 @@ fn plant_meshes(model: &Model, s: &Site) -> Vec<(TriMesh, [f32; 3], bool)> {
         form,
         canopy,
         height,
+        ..
     } = &s.form
     else {
         return vec![];
     };
-    let z0 = members::elevation(model, s.level) + base;
+    let _ = base;
+    let z0 = crate::earth::plant_z(model, s);
+    if let Some(shape) = s.tree_shape() {
+        // grown once and kept; here only moved to where it stands
+        let g = crate::tree::grow(shape, *canopy, *height);
+        let at = position.extend(z0).as_vec3();
+        let moved = |m: &TriMesh| {
+            let mut m = m.clone();
+            for p in &mut m.positions {
+                *p = (glam::Vec3::from(*p) + at).to_array();
+            }
+            m
+        };
+        // in leaf, or not, in its month; south of the equator its year
+        // runs six months on
+        let southern = model
+            .project_info()
+            .and_then(|(_, p)| p.latitude)
+            .is_some_and(|l| l < 0.0);
+        // the project's month, or the tree's own
+        let project = model.project_info().map_or(7, |(_, p)| p.season());
+        let mut shape = shape.clone();
+        shape.month = shape.month_in(project);
+        let shape = &shape;
+        let leaf = shape.leaf_state(southern).leaf;
+        // its twigs show once its crown thins
+        let wood = if leaf < 0.75 && !g.twigs.is_empty() {
+            let mut w = g.wood.clone();
+            w.append(&g.twigs);
+            w
+        } else {
+            g.wood.clone()
+        };
+        return vec![
+            (moved(&wood), TRUNK_COLOR, false),
+            (
+                moved(&g.foliage_at(leaf)),
+                shape.foliage_colour(southern),
+                true,
+            ),
+        ];
+    }
     let (r, h) = (canopy / 2.0, *height);
     let at = |dz: f64| position.extend(z0 + dz);
-    let trunk = |top: f64, radius: f64| {
-        (
-            crate::scene::slab_mesh(&circle(*position, radius, 10), z0 + top, top),
-            TRUNK_COLOR,
-            false,
-        )
-    };
+    // a turn of its own from where it stands, so a row is not stamped
+    let turn = plant_turn(*position);
+    let round =
+        |a: f64, out: f64, dz: f64| at(dz) + (DVec2::from_angle(turn + a) * out).extend(0.0);
+    let mut parts: Vec<(TriMesh, [f32; 3], bool)> = vec![];
+    let mut tones = [TriMesh::default(), TriMesh::default(), TriMesh::default()];
     match form {
+        // a crown of clumps, dark below and light on top, over a
+        // tapered trunk with two limbs running up into it
         PlantForm::Tree => {
             let stem = (h * 0.4).min(h - 0.3).max(h * 0.2);
-            vec![
-                trunk(stem + 0.2, (r * 0.08).clamp(0.06, 0.35)),
-                (
-                    ellipsoid(
-                        at(stem + (h - stem) / 2.0),
-                        DVec3::new(r, r, (h - stem) / 2.0),
-                    ),
-                    LEAF_COLOR,
-                    true,
-                ),
-            ]
-        }
-        PlantForm::Conifer => {
-            let stem = h * 0.12;
-            vec![
-                trunk(stem + 0.1, (r * 0.1).clamp(0.05, 0.3)),
-                (cone(at(stem), r, h - stem), NEEDLE_COLOR, true),
-            ]
-        }
-        PlantForm::Palm => {
-            let crown = (h - r * 0.4).max(h * 0.6);
-            let mut fronds = TriMesh::default();
-            let count = 9;
-            for i in 0..count {
-                let a = TAU * i as f64 / count as f64 + 0.3 * (i % 2) as f64;
-                fronds.append(&frond(at(crown), DVec2::from_angle(a), r, r * 0.45));
+            let tr = (r * 0.08).clamp(0.06, 0.35);
+            let (cz, ch) = (stem + (h - stem) / 2.0, (h - stem) / 2.0);
+            let mut wood = limb(at(0.0), at(stem + ch * 0.5), tr, tr * 0.6);
+            for (a, out) in [(0.4, 0.45), (3.3, 0.4)] {
+                wood.append(&limb(
+                    at(stem * 0.72),
+                    round(a, r * out, cz - ch * 0.35),
+                    tr * 0.55,
+                    tr * 0.3,
+                ));
             }
-            vec![
-                trunk(crown + 0.05, (r * 0.05).clamp(0.1, 0.25)),
-                (fronds, FROND_COLOR, true),
-            ]
+            parts.push((wood, TRUNK_COLOR, false));
+            for k in 0..5 {
+                let a = TAU * k as f64 / 5.0;
+                tones[0].append(&clump(
+                    round(a, r * 0.52, cz - ch * 0.28),
+                    DVec3::new(r * 0.48, r * 0.48, ch * 0.58),
+                ));
+            }
+            tones[1].append(&clump(
+                at(cz + ch * 0.02),
+                DVec3::new(r * 0.72, r * 0.72, ch * 0.8),
+            ));
+            for k in 0..4 {
+                let a = 0.6 + TAU * k as f64 / 4.0;
+                tones[1].append(&clump(
+                    round(a, r * 0.5, cz + ch * 0.22),
+                    DVec3::new(r * 0.44, r * 0.44, ch * 0.5),
+                ));
+            }
+            for a in [1.1, 3.2, 5.3] {
+                tones[2].append(&clump(
+                    round(a, r * 0.26, cz + ch * 0.55),
+                    DVec3::new(r * 0.42, r * 0.42, ch * 0.44),
+                ));
+            }
         }
-        PlantForm::Shrub => vec![(
-            ellipsoid(at(h / 2.0), DVec3::new(r, r, h / 2.0)),
-            LEAF_COLOR,
-            true,
-        )],
+        // four skirts, each wider than the one above, on a trunk that
+        // runs up into the lowest
+        PlantForm::Conifer => {
+            let stem = h * 0.14;
+            let body = h - stem;
+            parts.push((
+                limb(
+                    at(0.0),
+                    at(stem + body * 0.3),
+                    (r * 0.09).clamp(0.05, 0.3),
+                    (r * 0.05).clamp(0.03, 0.2),
+                ),
+                TRUNK_COLOR,
+                false,
+            ));
+            for (k, (base, tall, wide)) in [
+                (0.0, 0.42, 1.0),
+                (0.22, 0.40, 0.8),
+                (0.44, 0.38, 0.6),
+                (0.64, 0.36, 0.4),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                tones[if k < 2 { 0 } else { 1 }].append(&cone(
+                    at(stem + body * base),
+                    r * wide,
+                    body * tall,
+                ));
+            }
+        }
+        // feathered fronds arching up, out and down from the head of a
+        // straight trunk with a flared foot
+        PlantForm::Palm => {
+            let head = (h - r * 0.85).max(h * 0.5);
+            let tr = (r * 0.06).clamp(0.09, 0.22);
+            let mut wood = limb(at(0.0), at(head * 0.12), tr * 1.7, tr);
+            wood.append(&limb(at(head * 0.12), at(head), tr, tr * 0.8));
+            parts.push((wood, TRUNK_COLOR, false));
+            // (how many, its curve's control and tip as (out, up) of its
+            // reach, which tone)
+            #[allow(clippy::type_complexity)]
+            let rings: [(usize, (f64, f64), (f64, f64), usize); 4] = [
+                (3, (0.42, 0.0), (0.5, -0.66), 0),
+                (4, (0.65, 0.27), (0.9, -0.42), 0),
+                (4, (0.5, 0.62), (1.0, 0.24), 1),
+                (3, (0.14, 0.68), (0.45, 0.85), 2),
+            ];
+            for (ring, (count, ctrl, tip, tone)) in rings.into_iter().enumerate() {
+                for i in 0..count {
+                    let a = turn + TAU * i as f64 / count as f64 + ring as f64 * 0.7;
+                    let d = DVec2::from_angle(a);
+                    let p = |q: (f64, f64)| at(head) + (d * r * q.0).extend(r * q.1);
+                    tones[tone].append(&frond(at(head), p(ctrl), p(tip), r * 0.2));
+                }
+            }
+        }
+        // a low cluster of clumps that sits on the ground all round
+        PlantForm::Shrub => {
+            for a in [0.0, 2.1, 4.2] {
+                tones[0].append(&clump(
+                    round(a, r * 0.38, h * 0.3),
+                    DVec3::new(r * 0.6, r * 0.6, h * 0.34),
+                ));
+            }
+            tones[1].append(&clump(at(h * 0.5), DVec3::new(r * 0.66, r * 0.66, h * 0.5)));
+            for a in [1.0, 3.6] {
+                tones[2].append(&clump(
+                    round(a, r * 0.28, h * 0.72),
+                    DVec3::new(r * 0.36, r * 0.36, h * 0.28),
+                ));
+            }
+        }
     }
+    let greens = if *form == PlantForm::Conifer {
+        [NEEDLE_COLOR, NEEDLE_LIGHT, NEEDLE_LIGHT]
+    } else {
+        [LEAF_DARK, LEAF_COLOR, LEAF_LIGHT]
+    };
+    for (m, c) in tones.into_iter().zip(greens) {
+        if !m.is_empty() {
+            parts.push((m, c, true));
+        }
+    }
+    parts
+}
+
+/// A turn of a plant's own, from where it stands.
+fn plant_turn(p: DVec2) -> f64 {
+    let v = (p.x * 12.9898 + p.y * 78.233).sin() * 43758.5453;
+    (v - v.floor()) * TAU
+}
+
+/// A clump of foliage: a coarse faceted ellipsoid.
+fn clump(c: DVec3, r: DVec3) -> TriMesh {
+    ellipsoid_of(c, r, 6, 12)
+}
+
+/// A tapered round limb from `a` (radius `ra`) to `b` (radius `rb`).
+fn limb(a: DVec3, b: DVec3, ra: f64, rb: f64) -> TriMesh {
+    let axis = (b - a).normalize_or_zero();
+    let u = if axis.z.abs() < 0.9 {
+        axis.cross(DVec3::Z)
+    } else {
+        axis.cross(DVec3::X)
+    }
+    .normalize_or_zero();
+    let v = axis.cross(u);
+    let n = 8;
+    let ring = |c: DVec3, r: f64, i: usize| {
+        let t = TAU * i as f64 / n as f64;
+        c + (u * t.cos() + v * t.sin()) * r
+    };
+    let mut m = TriMesh::default();
+    for i in 0..n {
+        let q = [
+            ring(a, ra, i),
+            ring(a, ra, i + 1),
+            ring(b, rb, i + 1),
+            ring(b, rb, i),
+        ];
+        let out = (q[0] + q[1] + q[2] + q[3]) / 4.0 - (a + b) / 2.0;
+        let out = out - axis * out.dot(axis);
+        // wound so its face looks outward
+        if (q[1] - q[0]).cross(q[2] - q[0]).dot(out) >= 0.0 {
+            m.add_quad(q, out);
+        } else {
+            m.add_quad([q[1], q[0], q[3], q[2]], out);
+        }
+    }
+    for (c, r, dir) in [(a, ra, -axis), (b, rb, axis)] {
+        let cap: Vec<DVec3> = (0..n).map(|i| ring(c, r, i)).collect();
+        let mut cap = cap;
+        if (cap[1] - cap[0]).cross(cap[2] - cap[0]).dot(dir) < 0.0 {
+            cap.reverse();
+        }
+        let tris: Vec<[usize; 3]> = (1..n - 1).map(|i| [0, i, i + 1]).collect();
+        m.add_polygon(&cap, &tris, dir);
+    }
+    m
 }
 
 fn circle(c: DVec2, r: f64, n: usize) -> Vec<DVec2> {
@@ -421,9 +619,8 @@ fn circle(c: DVec2, r: f64, n: usize) -> Vec<DVec2> {
         .collect()
 }
 
-/// A faceted ellipsoid about `c` with semi-axes `r`.
-fn ellipsoid(c: DVec3, r: DVec3) -> TriMesh {
-    let (rings, segs) = (7, 14);
+/// [`ellipsoid`] of `rings` bands and `segs` facets round.
+fn ellipsoid_of(c: DVec3, r: DVec3, rings: usize, segs: usize) -> TriMesh {
     let p = |i: usize, j: usize| {
         let lat = -PI / 2.0 + PI * i as f64 / rings as f64;
         let lon = TAU * j as f64 / segs as f64;
@@ -466,42 +663,104 @@ fn cone(c: DVec3, r: f64, h: f64) -> TriMesh {
     m
 }
 
-/// A palm frond from `at` out along `dir`, `length` long and `droop` lower
-/// at its tip: a thin leaf, a little thicker along its rib.
-fn frond(at: DVec3, dir: DVec2, length: f64, droop: f64) -> TriMesh {
-    let side = DVec2::new(-dir.y, dir.x);
-    let w = (length * 0.18).max(0.08);
-    let p = |t: f64, s: f64, up: f64| {
-        let drop = droop * t * t;
-        (at.truncate() + dir * length * t + side * s).extend(at.z - drop + up)
-    };
-    let t = 0.03;
-    // a diamond: base, two shoulders, tip; top and bottom faces
-    let top = [p(0.0, 0.0, t), p(0.4, w, t), p(1.0, 0.0, t), p(0.4, -w, t)];
-    let bottom = [
-        p(0.0, 0.0, -t),
-        p(0.4, w, -t),
-        p(1.0, 0.0, -t),
-        p(0.4, -w, -t),
-    ];
+/// A feathered palm frond along the curve from `p0` by `p1` (its control)
+/// to `p2`, `width` across at its widest: its leaflets hang from its rib
+/// either side, so it reads as a feather from the side and from above.
+fn frond(p0: DVec3, p1: DVec3, p2: DVec3, width: f64) -> TriMesh {
+    let steps = 10;
+    // each cut across it: its rib, and the foot of the leaflets each side
+    let mut cuts: Vec<[DVec3; 3]> = vec![];
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let p = p0 * (1.0 - t) * (1.0 - t) + p1 * 2.0 * (1.0 - t) * t + p2 * t * t;
+        let tan = ((p1 - p0) * (1.0 - t) + (p2 - p1) * t).normalize_or_zero();
+        let flat = tan.truncate().normalize_or_zero();
+        let flat = if flat == DVec2::ZERO { DVec2::X } else { flat };
+        let side = DVec3::new(-flat.y, flat.x, 0.0);
+        // widest a third of the way out, toothed along its edge
+        let mut w =
+            width * ((PI * (t * 1.15).min(1.0)).sin().max(0.0)).powf(0.7) * (1.0 - 0.35 * t);
+        if i % 2 == 1 {
+            w *= 0.6;
+        }
+        let w = w.max(0.004);
+        let hang = DVec3::Z * w * 0.85;
+        cuts.push([p, p + side * w * 0.6 - hang, p - side * w * 0.6 - hang]);
+    }
     let mut m = TriMesh::default();
-    for (pts, up) in [(top, 1.0), (bottom, -1.0)] {
-        for tri in [[0, 1, 2], [0, 2, 3]] {
-            let q = tri.map(|i| pts[i]);
-            let n = (q[1] - q[0]).cross(q[2] - q[0]);
-            let n = if n.z * up < 0.0 { -n } else { n };
-            m.add_polygon(&q, &[[0, 1, 2]], n);
+    for i in 0..steps {
+        let (a, b) = (cuts[i], cuts[i + 1]);
+        let core = (a[0] + a[1] + a[2] + b[0] + b[1] + b[2]) / 6.0;
+        for (j, k) in [(0, 1), (2, 0), (1, 2)] {
+            let q = [a[j], a[k], b[k], b[j]];
+            let out = (q[0] + q[1] + q[2] + q[3]) / 4.0 - core;
+            if (q[1] - q[0]).cross(q[2] - q[0]).dot(out) >= 0.0 {
+                m.add_quad(q, out);
+            } else {
+                m.add_quad([q[1], q[0], q[3], q[2]], out);
+            }
         }
     }
-    for i in 0..4 {
-        let j = (i + 1) % 4;
-        let e = (top[j] - top[i]).truncate().normalize_or_zero();
-        m.add_quad(
-            [bottom[i], bottom[j], top[j], top[i]],
-            DVec3::new(e.y, -e.x, 0.0),
-        );
-    }
     m
+}
+
+/// A car park's painted markings at height `z`: the bays' lines (their
+/// sides and back, the aisle side open), and the accessible bays' zones
+/// hatched and their outlines.
+fn car_park_marks(lay: &creabim_core::carpark::Layout, z: f64) -> (TriMesh, TriMesh) {
+    use creabim_core::carpark::BayKind;
+    let (mut white, mut blue) = (TriMesh::default(), TriMesh::default());
+    let ribbon = |m: &mut TriMesh, a: DVec2, b: DVec2, half: f64| {
+        let len = a.distance(b);
+        if len < 1e-6 {
+            return;
+        }
+        let side = (b - a).perp() / len * half;
+        let quad = [
+            (a - side).extend(z),
+            (b - side).extend(z),
+            (b + side).extend(z),
+            (a + side).extend(z),
+        ];
+        m.add_polygon(&quad, &[[0, 1, 2], [0, 2, 3]], DVec3::Z);
+    };
+    for b in &lay.bays {
+        let m = if b.kind == BayKind::Accessible {
+            &mut blue
+        } else {
+            &mut white
+        };
+        for k in 1..4 {
+            ribbon(m, b.corners[k], b.corners[(k + 1) % 4], 0.05);
+        }
+    }
+    for zc in &lay.zones {
+        for (a, b) in zone_hatch(zc) {
+            ribbon(&mut blue, a, b, 0.05);
+        }
+        for k in 0..4 {
+            ribbon(&mut blue, zc[k], zc[(k + 1) % 4], 0.04);
+        }
+    }
+    (white, blue)
+}
+
+/// The slanted lines hatching an accessible bay's access zone.
+fn zone_hatch(c: &[DVec2; 4]) -> Vec<(DVec2, DVec2)> {
+    // c[0]-c[1] is its open end; c[1]-c[2] runs its length
+    let (across, along) = (c[0] - c[1], c[2] - c[1]);
+    let (w, l) = (across.length(), along.length());
+    if w < 1e-6 || l < 1e-6 {
+        return vec![];
+    }
+    let dir = along / l;
+    let mut out = vec![];
+    let mut d = 0.3;
+    while d + w <= l + 1e-6 {
+        out.push((c[1] + dir * d, c[0] + dir * (d + w)));
+        d += 0.6;
+    }
+    out
 }
 
 /// The solids of a site element, each with its default colour and
@@ -517,14 +776,295 @@ pub fn site_meshes(model: &Model, s: &Site) -> Vec<(TriMesh, [f32; 3], bool)> {
             ..
         } => {
             let z = members::elevation(model, s.level) + top;
-            vec![(
+            let mut out = vec![(
                 slab_mesh_with_holes(boundary, holes, z, *thickness),
                 AREA_COLOR,
                 true,
-            )]
+            )];
+            // a car park's markings, painted on it
+            if let Some(lay) = s.car_park_layout(model) {
+                let (white, blue) = car_park_marks(&lay, z + 0.015);
+                if !white.indices.is_empty() {
+                    out.push((white, MARKING_COLOR, false));
+                }
+                if !blue.indices.is_empty() {
+                    out.push((blue, ACCESSIBLE_COLOR, false));
+                }
+                // its edge strips: a walkway or planting, a kerb's height
+                // proud; a clearance is level with it
+                for (_, ring, what) in &lay.strips {
+                    use creabim_core::carpark::StripUse;
+                    let ccw = |mut r: Vec<DVec2>| {
+                        if creabim_core::polygon::signed_area2(&r) < 0.0 {
+                            r.reverse();
+                        }
+                        r
+                    };
+                    match what {
+                        StripUse::Walkway => out.push((
+                            slab_mesh_with_holes(&ccw(ring.clone()), &[], z + 0.125, 0.125),
+                            WALKWAY_COLOR,
+                            false,
+                        )),
+                        // a planted bed in the ground's own green, behind a
+                        // kerb along the car park's side (owner: a flat
+                        // dark green band read as a fault)
+                        StripUse::Planting => {
+                            let (a, b, bi, ai) = (ring[0], ring[1], ring[2], ring[3]);
+                            let deep = ai.distance(a).max(1e-6);
+                            let t = (0.125 / deep).min(0.5);
+                            let (ak, bk) = (ai.lerp(a, t), bi.lerp(b, t));
+                            out.push((
+                                slab_mesh_with_holes(&ccw(vec![a, b, bk, ak]), &[], z + 0.1, 0.1),
+                                GROUND_COLOR,
+                                false,
+                            ));
+                            out.push((
+                                slab_mesh_with_holes(
+                                    &ccw(vec![ak, bk, bi, ai]),
+                                    &[],
+                                    z + 0.125,
+                                    0.125,
+                                ),
+                                WALKWAY_COLOR,
+                                false,
+                            ));
+                        }
+                        StripUse::Clear => {}
+                    }
+                }
+                // its islands: kerbed and planted, a kerb's height proud
+                for c in &lay.islands {
+                    let mut ring = c.to_vec();
+                    if creabim_core::polygon::signed_area2(&ring) < 0.0 {
+                        ring.reverse();
+                    }
+                    out.push((
+                        slab_mesh_with_holes(&ring, &[], z + 0.125, 0.125),
+                        GROUND_COLOR,
+                        false,
+                    ));
+                }
+            }
+            out
+        }
+        // an earthwork is the ground's shape, drawn by its terrain; only
+        // a pad's base course is a thing of its own
+        SiteForm::Pad {
+            boundary,
+            top,
+            base,
+            depth,
+            ..
+        } => {
+            if *depth > 0.0 {
+                return vec![];
+            }
+            let z = members::elevation(model, s.level) + top;
+            if *base < 0.005 {
+                // no base course: a thin skin all the same, so the pad
+                // reads as a made platform and not as more grass
+                return vec![(
+                    crate::scene::slab_mesh(boundary, z + PAD_SKIN, PAD_SKIN),
+                    PAD_COLOR,
+                    true,
+                )];
+            }
+            vec![(crate::scene::slab_mesh(boundary, z, *base), PAD_COLOR, true)]
         }
         SiteForm::Plant { .. } => plant_meshes(model, s),
+        // a lot is lines on the ground; its envelope is drawn apart
+        SiteForm::Property { .. } => vec![],
+        SiteForm::Road(r) => {
+            let base = members::elevation(model, s.level);
+            let mut out = vec![(crate::road::mesh(r, base), ROAD_COLOR, true)];
+            if let Some(g) = crate::services::gully_meshes(model, s, r) {
+                out.push((g, crate::services::GULLY_COLOR, false));
+            }
+            out
+        }
+        SiteForm::Drain(d) => crate::services::drain_meshes(model, s, d),
+        SiteForm::Tank(t) => crate::services::tank_meshes(model, s, t),
+        SiteForm::Walk(w) => crate::walk::walk_meshes(model, s, w),
+        SiteForm::Investigation(p) => crate::investigation::probe_meshes(model, s, p),
+        // ground data: the terrain it lies on shows what it does
+        SiteForm::Spot { .. } | SiteForm::Line(_) => vec![],
     }
+}
+
+/// A bank's ticks in plan: from its top down the slope, long and short in
+/// turn, one every [`TICK_STEP`] along the top, so they keep their spacing
+/// round a corner (fanning about a hip) whatever the bank was sampled at.
+fn bank_ticks(out: &mut Vec<PlanItem>, id: ElementId, bank: &crate::earth::Bank) {
+    let n = bank.len();
+    // each sample's top and foot: a dug bank's top is where it meets the
+    // ground, a made-up one's the pad's edge
+    let tops: Vec<(DVec2, DVec2, bool)> = bank
+        .iter()
+        .map(|(a, d)| {
+            let (top, foot) = if d.z > a.z { (d, a) } else { (a, d) };
+            (
+                top.truncate(),
+                foot.truncate(),
+                a.truncate().distance(d.truncate()) > 0.05,
+            )
+        })
+        .collect();
+    let mut k = 0usize;
+    let mut carry = 0.0;
+    for i in 0..n {
+        let (t0, f0, w0) = tops[i];
+        let (t1, f1, w1) = tops[(i + 1) % n];
+        if !(w0 && w1) {
+            carry = 0.0;
+            continue;
+        }
+        let seg = t0.distance(t1);
+        let mut s = carry;
+        while s <= seg {
+            let u = if seg > 1e-9 { s / seg } else { 0.0 };
+            let (t, f) = (t0.lerp(t1, u), f0.lerp(f1, u));
+            let reach = if k % 2 == 0 { 0.85 } else { 0.42 };
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Contour,
+                a: t,
+                b: t.lerp(f, reach),
+            });
+            k += 1;
+            s += TICK_STEP;
+        }
+        carry = s - seg;
+    }
+}
+
+/// How far apart a bank's ticks are along its top, in metres.
+const TICK_STEP: f64 = 0.45;
+
+/// Does the contour piece `a`–`b` lie on an upright cut? There the
+/// contours of every height stack along the cut's line: in 3D a ribbon
+/// would stand up the face as a fin, in plan they pile up into a band
+/// (owner, site polish 6). Steeper than 3 in 1 across it is a cut.
+fn on_a_cut(g: &crate::ground::Ground, a: DVec2, b: DVec2) -> bool {
+    steeper_than(g, a, b, 3.0)
+}
+
+/// Is the ground across `a`–`b` steeper than `rise` in 1?
+fn steeper_than(g: &crate::ground::Ground, a: DVec2, b: DVec2, rise: f64) -> bool {
+    let m = (a + b) / 2.0;
+    let across = (b - a).perp().normalize_or_zero();
+    if across == DVec2::ZERO {
+        return false;
+    }
+    // close in, so a low upright face (a cut running out at its ends)
+    // is caught as well as a tall one; and wider, for a bank
+    [0.02, 0.1].iter().any(
+        |d| match (g.height(m + across * *d), g.height(m - across * *d)) {
+            (Some(p), Some(q)) => (p - q).abs() > 2.0 * d * rise,
+            _ => false,
+        },
+    )
+}
+
+/// A terrain's contours as thin ribbons lying on it, for the 3D view: the
+/// heavier lines wider. None for flat ground or with contours off.
+fn ground_lines(model: &Model, s: &Site) -> Option<TriMesh> {
+    let SiteForm::Terrain { contour, data, .. } = &s.form else {
+        return None;
+    };
+    let g = shaped_ground(model, s)?;
+    let base = members::elevation(model, s.level);
+    // 3D has no view of its own to ask: as the first plan that set its
+    // contours, or as the terrain says
+    let look = creabim_core::site::look_in_3d(model, *contour, data);
+    let every = look.major_every() as i64;
+    // none on the works at all, floors and banks: there the ribbons of
+    // a bank stack into steps and a dug floor's mirror the ground above
+    // it (owner, cut test); the works' own edges say where they are
+    let rings: Vec<Vec<DVec2>> = crate::earth::shaped(model, s)
+        .filter(|sh| std::sync::Arc::ptr_eq(&sh.ground, &g))
+        .map_or(vec![], |sh| {
+            sh.banks
+                .iter()
+                .map(|b| b.iter().map(|(_, d)| d.truncate()).collect())
+                .collect()
+        });
+    let on_works = |p: DVec2| rings.iter().any(|r| creabim_core::polygon::contains(r, p));
+    let mut m = TriMesh::default();
+    for c in g.contours(look.interval, base) {
+        let half = if every > 0 && c.index.rem_euclid(every) == 0 {
+            0.075
+        } else {
+            0.035
+        };
+        // lying on the slope, a little proud of it so it never fights
+        // with the surface
+        let on = |p: DVec2| p.extend(base + g.height(p).unwrap_or(c.z).max(c.z) + 0.015);
+        let n = c.points.len();
+        let last = if c.closed { n } else { n.saturating_sub(1) };
+        for i in 0..last {
+            let (a, b) = (c.points[i], c.points[(i + 1) % n]);
+            let side = (b - a).perp().normalize_or_zero() * half;
+            // none on a bank steeper than 1 in 1 either: in 3D the ribbons
+            // of a steep bank stack into steps (owner, site polish 6); its
+            // own edges say where it is, and plans still draw them
+            if side == DVec2::ZERO || steeper_than(&g, a, b, 1.0) || on_works((a + b) / 2.0) {
+                continue;
+            }
+            let q = [on(a - side), on(b - side), on(b + side), on(a + side)];
+            let up = (q[1] - q[0]).cross(q[3] - q[0]).normalize_or(DVec3::Z);
+            m.add_polygon(&q, &[[0, 1, 2], [0, 2, 3]], up);
+        }
+    }
+    (!m.is_empty()).then_some(m)
+}
+
+/// The colour a lot's lines are drawn in, in plan and 3D.
+const LOT_COLOR: [f32; 3] = [0.85, 0.45, 0.13];
+
+/// A closed line lying on the ground as a ribbon `half` wide each side,
+/// a little proud of it; `dash` (on, off) breaks it into dashes. Where no
+/// ground lies under it, it lies at `level`.
+fn lot_lines(
+    model: &Model,
+    ring: &[DVec2],
+    half: f64,
+    dash: Option<(f64, f64)>,
+    level: f64,
+) -> TriMesh {
+    let mut m = TriMesh::default();
+    let n = ring.len();
+    if n < 2 {
+        return m;
+    }
+    let ground = crate::earth::ground_sampler(model);
+    let on = |p: DVec2| p.extend(ground(p).unwrap_or(level) + 0.03);
+    let mut gone = 0.0;
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + 1) % n]);
+        let len = a.distance(b);
+        if len < 1e-6 {
+            continue;
+        }
+        let side = (b - a).perp() / len * half;
+        let k = (len / 0.5).ceil().max(1.0) as usize;
+        for j in 0..k {
+            let (p, q) = (
+                a.lerp(b, j as f64 / k as f64),
+                a.lerp(b, (j + 1) as f64 / k as f64),
+            );
+            let mid = gone + len * (j as f64 + 0.5) / k as f64;
+            if let Some((d_on, d_off)) = dash {
+                if mid.rem_euclid(d_on + d_off) > d_on {
+                    continue;
+                }
+            }
+            let quad = [on(p - side), on(q - side), on(q + side), on(p + side)];
+            m.add_polygon(&quad, &[[0, 1, 2], [0, 2, 3]], DVec3::Z);
+        }
+        gone += len;
+    }
+    m
 }
 
 /// The whole mesh and default colour of a part or a site element.
@@ -570,10 +1110,70 @@ pub fn scene_items(model: &Model, e: &Element) -> Vec<SceneItem> {
             Some(m) => vec![item(m, look(PART_COLOR, true), false)],
             None => vec![],
         },
+        // a lot's envelope: a see-through outline in 3D, never drawn
+        ElementKind::Site(creabim_core::Site {
+            form:
+                SiteForm::Property {
+                    boundary,
+                    edges,
+                    rules,
+                },
+            ..
+        }) => {
+            let level = match &e.kind {
+                ElementKind::Site(st) => members::elevation(model, st.level),
+                _ => 0.0,
+            };
+            let mut out: Vec<SceneItem> = crate::planning::envelope_mesh(boundary, edges, rules)
+                .map(|m| {
+                    let mut it = item(m, (ENVELOPE_COLOR, PLAIN_SURFACE), true);
+                    it.finish = Some(crate::scene::LOT_ENVELOPE);
+                    vec![it]
+                })
+                .unwrap_or_default();
+            // its boundary and setback lying on the ground, in the plan's
+            // colour: never printed or exported (owner, cut test)
+            let mut lines = lot_lines(model, boundary, 0.07, None, level);
+            if rules.has_setbacks {
+                if let Some(inner) = creabim_core::lot::buildable(boundary, edges, rules) {
+                    lines.append(&lot_lines(model, &inner, 0.045, Some((0.9, 0.6)), level));
+                }
+            }
+            if !lines.is_empty() {
+                let mut it = item(lines, (LOT_COLOR, [PLAIN_SURFACE[0], 0.0, 0.95]), true);
+                it.finish = Some(crate::scene::LOT_LINES);
+                out.push(it);
+            }
+            out
+        }
+        // a plant's crown draws as its outline in elevations and sections
         ElementKind::Site(s) => site_meshes(model, s)
             .into_iter()
             .filter(|(m, ..)| !m.is_empty())
-            .map(|(m, color, own)| item(m, look(color, own), false))
+            .map(|(m, color, own)| SceneItem {
+                finish: if is_pad_skin(s) {
+                    Some(crate::scene::PAD_SKIN)
+                } else {
+                    s.is_plant().then_some(if own {
+                        crate::tree::FOLIAGE
+                    } else if s.tree_shape().is_some_and(|t| !t.solid) {
+                        crate::tree::HOLLOW_WOOD
+                    } else {
+                        crate::tree::WOOD
+                    })
+                },
+                // a generated crown's own leaf colour, which turns with
+                // its month, over its material's
+                ..item(m, look(color, own && s.tree_shape().is_none()), false)
+            })
+            .chain(ground_lines(model, s).map(|m| {
+                // the contours, drawn on the ground in a darker shade of it
+                let (c, surface) = look(GROUND_COLOR, true);
+                SceneItem {
+                    finish: Some(crate::scene::GROUND_LINES),
+                    ..item(m, (c.map(|v| v * 0.42), surface), false)
+                }
+            }))
             .collect(),
         _ => vec![],
     }
@@ -760,39 +1360,353 @@ fn loop_lines(out: &mut Vec<PlanItem>, id: ElementId, pen: Pen, pts: &[DVec2]) {
     }
 }
 
+/// The ground read: shaded by slope, aspect or height, and with which
+/// way water runs off it and where it gathers.
+#[allow(clippy::too_many_arguments)]
+fn ground_analysis(
+    model: &Model,
+    out: &mut Vec<PlanItem>,
+    id: ElementId,
+    g: &crate::ground::Ground,
+    boundary: &[DVec2],
+    look: &creabim_core::GroundLook,
+    base: f64,
+) {
+    let north = model.project_info().map_or(0.0, |(_, p)| p.true_north);
+    let sh = crate::analysis::shade(g, look.shade, north, base, look.interval);
+    for (t, k) in &sh.tris {
+        out.push(PlanItem::Tint {
+            id,
+            points: t.to_vec(),
+            rgb: sh.bands[*k].rgb,
+        });
+    }
+    if !look.flow {
+        return;
+    }
+    let spacing = crate::analysis::flow_spacing(boundary);
+    let (arrows, lows) = crate::analysis::flow(g, boundary, spacing);
+    let len = spacing * 0.7;
+    for (p, d) in arrows {
+        let (a, b) = (p - d * len / 2.0, p + d * len / 2.0);
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Symbol,
+            a,
+            b,
+        });
+        let side = d.perp() * len * 0.18;
+        for s in [side, -side] {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Symbol,
+                a: b,
+                b: b - d * len * 0.3 + s,
+            });
+        }
+    }
+    for p in lows {
+        out.push(PlanItem::Arc {
+            id,
+            pen: Pen::Symbol,
+            center: p,
+            radius: spacing * 0.3,
+            start: 0.0,
+            end: std::f64::consts::TAU,
+        });
+    }
+}
+
 /// A site element in plan: ground with its contours and spot heights, an
 /// area with its pattern, a plant's symbol.
 fn site_plan(model: &Model, id: ElementId, s: &Site) -> Vec<PlanItem> {
+    site_plan_with(model, id, s, &SiteView::default())
+}
+
+/// The colour of ground dug `d` deep (negative) or made up (positive):
+/// orange for cut, teal for fill, deeper for more.
+pub(crate) fn cut_fill_rgb(d: f64) -> [f32; 3] {
+    let (base, paper) = if d < 0.0 {
+        ([0.85_f32, 0.42, 0.20], [0.98_f32, 0.90, 0.84])
+    } else {
+        ([0.18_f32, 0.60, 0.58], [0.85_f32, 0.94, 0.93])
+    };
+    let t = (d.abs() / 1.5).clamp(0.15, 1.0) as f32;
+    [0, 1, 2].map(|k| paper[k] + (base[k] - paper[k]) * t)
+}
+
+/// A site element in plan as view `sv` shows the site: the ground
+/// before or after its works, and each kind of site information on or
+/// off.
+pub fn site_plan_with(model: &Model, id: ElementId, s: &Site, sv: &SiteView) -> Vec<PlanItem> {
     let mut out = vec![];
+    let before = sv.ground == GroundState::Before;
+    // how this view draws the ground: its own look, or the terrain's
+    let look = match &s.form {
+        SiteForm::Terrain { contour, data, .. } => sv.look_on(*contour, data),
+        _ => creabim_core::GroundLook::default(),
+    };
     match &s.form {
         SiteForm::Terrain {
             boundary,
             points,
-            contour,
+            contour: _,
+            data,
             ..
         } => {
             loop_lines(&mut out, id, Pen::Projection, boundary);
-            if *contour > 0.0 && !points.is_empty() {
-                let base = members::elevation(model, s.level);
-                for (a, b) in contours(&terrain_top(model, s), *contour, base) {
-                    out.push(PlanItem::Line {
+            let base = members::elevation(model, s.level);
+            let sh = crate::earth::shaped(model, s);
+            let shown = if before {
+                sh.as_ref()
+                    .filter(|_| creabim_core::site::surveyed(model, s))
+                    .map(|sh| sh.existing.clone())
+            } else {
+                shaped_ground(model, s)
+            };
+            // what the works did, coloured by depth
+            if let Some(sh) = sh
+                .as_ref()
+                .filter(|sh| sv.cut_fill && !before && sh.changed())
+            {
+                for t in &sh.ground.fine.tris {
+                    let q = t.map(|i| sh.ground.fine.verts[i as usize]);
+                    let c = (q[0] + q[1] + q[2]).truncate() / 3.0;
+                    let z = (q[0].z + q[1].z + q[2].z) / 3.0;
+                    let Some(e) = sh.existing.height(c) else {
+                        continue;
+                    };
+                    let d = z - e;
+                    if d.abs() < 0.02 {
+                        continue;
+                    }
+                    out.push(PlanItem::Tint {
                         id,
-                        pen: Pen::Symbol,
-                        a,
-                        b,
+                        points: q.iter().map(|p| p.truncate()).collect(),
+                        rgb: cut_fill_rgb(d),
                     });
                 }
             }
-            // spot heights as small crosses
+            // the ground as it was, dashed, where the works changed it
+            if let Some(sh) = sh
+                .as_ref()
+                .filter(|sh| sv.ground == GroundState::Both && sv.contours && sh.changed())
+            {
+                let moved = |p: DVec2| match (sh.ground.height(p), sh.existing.height(p)) {
+                    (Some(a), Some(b)) => (a - b).abs() > 0.02,
+                    _ => false,
+                };
+                for c in sh.existing.contours(look.interval, base) {
+                    let n = c.points.len();
+                    let last = if c.closed { n } else { n.saturating_sub(1) };
+                    for i in 0..last {
+                        let (a, b) = (c.points[i], c.points[(i + 1) % n]);
+                        if moved((a + b) / 2.0) {
+                            out.push(PlanItem::Line {
+                                id,
+                                pen: Pen::Existing,
+                                a,
+                                b,
+                            });
+                        }
+                    }
+                }
+            }
+            if let Some(g) = shown {
+                ground_analysis(model, &mut out, id, &g, boundary, &look, base);
+                let every = look.major_every() as i64;
+                // under a road the ground is its formation: no contours
+                let roads: Vec<Vec<DVec2>> = if before {
+                    vec![]
+                } else {
+                    crate::earth::road_pads(model, s)
+                        .into_iter()
+                        .map(|p| p.outline)
+                        .collect()
+                };
+                let under_road = |a: DVec2, b: DVec2| {
+                    let m = (a + b) / 2.0;
+                    roads.iter().any(|r| creabim_core::polygon::contains(r, m))
+                };
+                // nor over a pit's or a trench's floor: it follows the
+                // ground above it, so its contours read as the ground's
+                // own heights where the ground is lower (owner, cut test)
+                let dug: Vec<Vec<DVec2>> = if before {
+                    vec![]
+                } else {
+                    crate::earth::works(model, s)
+                        .into_iter()
+                        .filter(|p| p.depth > 0.0)
+                        .map(|p| p.outline)
+                        .collect()
+                };
+                let on_dug = |a: DVec2, b: DVec2| {
+                    let m = (a + b) / 2.0;
+                    dug.iter().any(|r| creabim_core::polygon::contains(r, m))
+                };
+                // nor on a bank drawn hatched: the ticks say its slope, and
+                // its contours with them read as a ladder (owner,
+                // Mockup_Site_Earthworks); unhatched, they are its drawing
+                let hatched: Vec<(Vec<DVec2>, Vec<DVec2>)> = match sh.as_ref() {
+                    Some(sh) if sv.banks && !before => sh
+                        .banks
+                        .iter()
+                        .map(|b| {
+                            (
+                                b.iter().map(|(a, _)| a.truncate()).collect(),
+                                b.iter().map(|(_, d)| d.truncate()).collect(),
+                            )
+                        })
+                        .collect(),
+                    _ => vec![],
+                };
+                let on_bank = |a: DVec2, b: DVec2| {
+                    let m = (a + b) / 2.0;
+                    hatched.iter().any(|(edge, ring)| {
+                        creabim_core::polygon::contains(ring, m)
+                            && !creabim_core::polygon::contains(edge, m)
+                    })
+                };
+                let contours = if sv.contours {
+                    g.contours(look.interval, base)
+                } else {
+                    vec![]
+                };
+                for c in contours {
+                    let major = c.index.rem_euclid(every) == 0;
+                    let pen = if major {
+                        Pen::ContourHeavy
+                    } else {
+                        Pen::Contour
+                    };
+                    let n = c.points.len();
+                    let last = if c.closed { n } else { n.saturating_sub(1) };
+                    for i in 0..last {
+                        let (a, b) = (c.points[i], c.points[(i + 1) % n]);
+                        if under_road(a, b) || on_dug(a, b) || on_bank(a, b) || on_a_cut(&g, a, b) {
+                            continue;
+                        }
+                        out.push(PlanItem::Line { id, pen, a, b });
+                    }
+                    if major && look.heights && sv.levels {
+                        if let Some(at) = contour_label_at(&c.points)
+                            .filter(|p| !under_road(*p, *p) && !on_dug(*p, *p) && !on_bank(*p, *p))
+                        {
+                            out.push(ground_text(id, at, contour_level(model, base + c.z)));
+                        }
+                    }
+                }
+                // break lines, as the surveyor drew them
+                for l in data
+                    .lines
+                    .iter()
+                    .filter(|l| l.kind == GroundLineKind::Break)
+                {
+                    let n = l.points.len();
+                    let last = if l.closed { n } else { n - 1 };
+                    for i in 0..last {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Hidden,
+                            a: l.points[i].truncate(),
+                            b: l.points[(i + 1) % n].truncate(),
+                        });
+                    }
+                }
+            }
+            // the works: each pad's edge, the line where its bank meets
+            // the ground, and the bank hatched from its top, long and short
+            if let Some(sh) = sh.as_ref().filter(|_| !before) {
+                // the limit of works: round where the banks meet the ground
+                if sv.limit {
+                    for bank in &sh.banks {
+                        let n = bank.len();
+                        for i in 0..n {
+                            let (a, b) = (bank[i].1.truncate(), bank[(i + 1) % n].1.truncate());
+                            if a.distance(b) > 1e-6 {
+                                out.push(PlanItem::Line {
+                                    id,
+                                    pen: Pen::Hidden,
+                                    a,
+                                    b,
+                                });
+                            }
+                        }
+                    }
+                }
+                // each bank: its edge heavy, the line where it meets the
+                // ground fine, and (hatched) ticks from its top, long and
+                // short, evenly along it (owner, Mockup_Site_Earthworks)
+                for bank in &sh.banks {
+                    let n = bank.len();
+                    let wide = |i: usize| {
+                        let (a, d) = bank[i % n];
+                        a.truncate().distance(d.truncate()) > 0.05
+                    };
+                    if !(0..n).any(wide) {
+                        continue;
+                    }
+                    for i in 0..n {
+                        let ((a0, d0), (a1, d1)) = (bank[i], bank[(i + 1) % n]);
+                        if a0.truncate().distance(a1.truncate()) > 1e-6 {
+                            out.push(PlanItem::Line {
+                                id,
+                                pen: Pen::ContourHeavy,
+                                a: a0.truncate(),
+                                b: a1.truncate(),
+                            });
+                        }
+                        if wide(i) && wide(i + 1) && d0.truncate().distance(d1.truncate()) > 1e-6 {
+                            out.push(PlanItem::Line {
+                                id,
+                                pen: Pen::Contour,
+                                a: d0.truncate(),
+                                b: d1.truncate(),
+                            });
+                        }
+                    }
+                    if !sv.banks {
+                        continue;
+                    }
+                    bank_ticks(&mut out, id, bank);
+                }
+            }
+            // spot heights: a small cross with its level, where the view
+            // shows levels. Left out where the works moved the ground (the
+            // level there is gone), under buildings, and where they would
+            // crowd each other.
+            let mut placed: Vec<DVec2> = vec![];
+            let gone = |c: DVec2| {
+                !before
+                    && sh.as_ref().is_some_and(|sh| {
+                        match (sh.existing.height(c), sh.ground.height(c)) {
+                            (Some(a), Some(b)) => (a - b).abs() > 0.02,
+                            _ => false,
+                        }
+                    })
+            };
             for p in points {
                 let c = p.truncate();
-                for d in [DVec2::new(0.15, 0.15), DVec2::new(0.15, -0.15)] {
-                    out.push(PlanItem::Line {
+                if !(look.spots && sv.levels) || gone(c) || under_building(model, c) {
+                    continue;
+                }
+                if placed.iter().all(|q| q.distance(c) > 2.5) {
+                    placed.push(c);
+                    for d in [DVec2::new(0.15, 0.15), DVec2::new(0.15, -0.15)] {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Symbol,
+                            a: c - d,
+                            b: c + d,
+                        });
+                    }
+                    out.push(level_tag(
+                        model,
                         id,
-                        pen: Pen::Symbol,
-                        a: c - d,
-                        b: c + d,
-                    });
+                        c,
+                        creabim_core::site_level(model, base + p.z),
+                        sv,
+                    ));
                 }
             }
         }
@@ -811,9 +1725,175 @@ fn site_plan(model: &Model, id: ElementId, s: &Site) -> Vec<PlanItem> {
             for (a, b) in pattern_lines(pattern, &loops) {
                 out.push(PlanItem::Line {
                     id,
-                    pen: Pen::Fine,
+                    pen: Pen::Pattern,
                     a,
                     b,
+                });
+            }
+            // a car park: its bays, their sides and back (the aisle side
+            // open), numbered; accessible zones hatched
+            if let Some(lay) = s.car_park_layout(model) {
+                let numbers = s.as_car_park().is_some_and(|c| c.numbers);
+                for b in &lay.bays {
+                    for k in 1..4 {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Symbol,
+                            a: b.corners[k],
+                            b: b.corners[(k + 1) % 4],
+                        });
+                    }
+                    let mark = b.kind.mark();
+                    let text = match (numbers, mark) {
+                        // an accessible bay's number already says it
+                        (true, "A") => b.label.clone(),
+                        (true, "") => b.label.clone(),
+                        (true, m) => format!("{m} {}", b.label),
+                        (false, m) => m.to_string(),
+                    };
+                    if !text.is_empty() {
+                        let mut t = ground_text(id, b.middle(), text);
+                        if let PlanItem::Text { size, bold, .. } = &mut t {
+                            *size = 1.8;
+                            *bold = !mark.is_empty();
+                        }
+                        out.push(t);
+                    }
+                }
+                // edge strips: their inner line (a kerb, or a fine line for
+                // a clearance), a walkway's joints, planting's hatch
+                for (_, ring, what) in &lay.strips {
+                    use creabim_core::carpark::StripUse;
+                    let (a, b, bi, ai) = (ring[0], ring[1], ring[2], ring[3]);
+                    let pen = if *what == StripUse::Clear {
+                        Pen::Fine
+                    } else {
+                        Pen::Projection
+                    };
+                    out.push(PlanItem::Line {
+                        id,
+                        pen,
+                        a: ai,
+                        b: bi,
+                    });
+                    let len = a.distance(b);
+                    let (step, lean) = match what {
+                        StripUse::Walkway => (0.6, 0.0),
+                        StripUse::Planting => (1.0, 0.5),
+                        StripUse::Clear => continue,
+                    };
+                    if len < 1e-6 {
+                        continue;
+                    }
+                    // square across it (a walkway's joints) or leaning
+                    // (planting), kept between its mitred ends
+                    let d = (b - a) / len;
+                    let deep = (ai - a).dot(d.perp());
+                    let (lo, hi) = ((ai - a).dot(d), (bi - a).dot(d));
+                    let k = (len / step).floor() as usize;
+                    for j in 1..=k {
+                        let at = j as f64 * step;
+                        let to = at + lean;
+                        if at >= len || to <= lo || to >= hi {
+                            continue;
+                        }
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Fine,
+                            a: a + d * at,
+                            b: a + d * to + d.perp() * deep,
+                        });
+                    }
+                }
+                // islands as kerbed outlines; turning heads crossed, kept clear
+                for c in &lay.islands {
+                    loop_lines(&mut out, id, Pen::Projection, c);
+                }
+                for c in &lay.heads {
+                    loop_lines(&mut out, id, Pen::Fine, c);
+                    for (a, b) in [(c[0], c[2]), (c[1], c[3])] {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Fine,
+                            a,
+                            b,
+                        });
+                    }
+                }
+                // a one-way aisle's arrow on each of its stretches
+                for l in lay.lines.iter().filter(|l| l.one_way) {
+                    for s in l.path.windows(2) {
+                        let len = s[0].distance(s[1]);
+                        if len < 4.0 {
+                            continue;
+                        }
+                        let d = (s[1] - s[0]) / len;
+                        let mid = (s[0] + s[1]) / 2.0;
+                        let (tail, head) = (mid - d * 1.2, mid + d * 1.2);
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Symbol,
+                            a: tail,
+                            b: head,
+                        });
+                        for w in [d.perp(), -d.perp()] {
+                            out.push(PlanItem::Line {
+                                id,
+                                pen: Pen::Symbol,
+                                a: head,
+                                b: head - d * 0.6 + w * 0.3,
+                            });
+                        }
+                    }
+                }
+                for z in &lay.zones {
+                    for k in 0..4 {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Fine,
+                            a: z[k],
+                            b: z[(k + 1) % 4],
+                        });
+                    }
+                    for (a, b) in zone_hatch(z) {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen: Pen::Fine,
+                            a,
+                            b,
+                        });
+                    }
+                }
+            }
+        }
+        // an earthwork: its outline, which is what a click takes it by
+        // (as a symbol, so it wins over the ground it is worked into);
+        // its banks and its floor are the terrain's to draw
+        SiteForm::Pad {
+            boundary,
+            depth,
+            retained,
+            ..
+        } => {
+            // a pad's platform, tinted apart from the ground round it
+            if *depth <= 0.0 && !before {
+                out.push(PlanItem::Tint {
+                    id,
+                    points: boundary.clone(),
+                    rgb: PAD_COLOR,
+                });
+            }
+            for k in 0..boundary.len() {
+                out.push(PlanItem::Line {
+                    id,
+                    // an edge held by a retaining wall: a heavy line
+                    pen: if retained.contains(&k) {
+                        Pen::Cut
+                    } else {
+                        Pen::Symbol
+                    },
+                    a: boundary[k],
+                    b: boundary[(k + 1) % boundary.len()],
                 });
             }
         }
@@ -821,46 +1901,765 @@ fn site_plan(model: &Model, id: ElementId, s: &Site) -> Vec<PlanItem> {
             position,
             form,
             canopy,
+            height,
             ..
-        } => plant_symbol(&mut out, id, *position, *form, canopy / 2.0),
+        } => match s.tree_shape() {
+            Some(shape) => {
+                let g = crate::tree::grow(shape, *canopy, *height);
+                crate::tree::plan_symbol(&mut out, id, *position, &g, shape)
+            }
+            None => plant_symbol(&mut out, id, *position, *form, canopy / 2.0),
+        },
+        SiteForm::Property {
+            boundary,
+            edges,
+            rules,
+        } => {
+            if sv.legal {
+                lot_plan(
+                    model,
+                    &mut out,
+                    id,
+                    boundary,
+                    edges,
+                    rules,
+                    (sv.setbacks_of(rules), sv.bearings_of(rules), sv.along),
+                )
+            }
+        }
+        SiteForm::Road(r) => {
+            if sv.roads && !before {
+                road_plan(model, &mut out, id, s, r, sv);
+                crate::services::gullies_plan(model, &mut out, id, s, r, sv.levels);
+            }
+        }
+        SiteForm::Drain(d) => {
+            if sv.services && !before {
+                crate::services::drain_plan(model, &mut out, id, s, d, sv.levels)
+            }
+        }
+        SiteForm::Tank(t) => {
+            if sv.services && !before {
+                crate::services::tank_plan(model, &mut out, id, s, t, sv.levels)
+            }
+        }
+        SiteForm::Walk(w) => {
+            if sv.roads && !before {
+                crate::walk::walk_plan(&mut out, id, w, sv.levels)
+            }
+        }
+        // where the report looked is drawn on the ground as it was
+        SiteForm::Investigation(p) => {
+            if sv.investigation {
+                crate::investigation::probe_plan(model, &mut out, id, s, p, sv.levels)
+            }
+        }
+        // a spot level: a small cross with its level, in views that show
+        // levels. It is what a click takes it by
+        SiteForm::Spot { position, height } => {
+            if sv.levels {
+                for d in [DVec2::new(0.15, 0.15), DVec2::new(0.15, -0.15)] {
+                    out.push(PlanItem::Line {
+                        id,
+                        pen: Pen::Symbol,
+                        a: *position - d,
+                        b: *position + d,
+                    });
+                }
+                let base = members::elevation(model, s.level);
+                out.push(level_tag(
+                    model,
+                    id,
+                    *position,
+                    creabim_core::site_level(model, base + height),
+                    sv,
+                ));
+            }
+        }
+        // a line drawn on the ground: a contour as it was traced, in
+        // views that show contours; a break line dashed, as a survey's
+        SiteForm::Line(l) => {
+            if sv.contours {
+                let pen = match l.kind {
+                    GroundLineKind::Contour => Pen::Symbol,
+                    GroundLineKind::Break => Pen::Hidden,
+                };
+                let n = l.points.len();
+                let last = if l.closed { n } else { n.saturating_sub(1) };
+                for i in 0..last {
+                    out.push(PlanItem::Line {
+                        id,
+                        pen,
+                        a: l.points[i].truncate(),
+                        b: l.points[(i + 1) % n].truncate(),
+                    });
+                }
+            }
+        }
     }
     out
 }
 
-/// Contour lines every `interval` of height (heights from `base`), where
-/// they cross the triangles.
-pub fn contours(tris: &[[DVec3; 3]], interval: f64, base: f64) -> Vec<(DVec2, DVec2)> {
-    let mut out = vec![];
-    if interval <= 0.0 {
-        return out;
+/// A road in plan: its carriageway tinted between its kerbs, the
+/// footpaths' backs, its centreline, its ends, its bays; along it, an
+/// arrow down each stretch with its grade, and the level at each point.
+fn road_plan(
+    model: &Model,
+    out: &mut Vec<PlanItem>,
+    id: ElementId,
+    s: &Site,
+    r: &creabim_core::road::Road,
+    sv: &SiteView,
+) {
+    if r.path.len() < 2 {
+        return;
     }
-    for t in tris {
-        let (lo, hi) = t
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-                (a.min(p.z), b.max(p.z))
+    let plan = r.plan();
+    let half = r.width / 2.0;
+    let line = |out: &mut Vec<PlanItem>, pen: Pen, pts: &[DVec2]| {
+        for w in pts.windows(2) {
+            out.push(PlanItem::Line {
+                id,
+                pen,
+                a: w[0],
+                b: w[1],
             });
-        let mut k = ((lo - base) / interval).ceil();
-        // a cap on how many lines one triangle gives
-        let mut guard = 0;
-        while base + k * interval < hi && guard < 200 {
-            let h = base + k * interval;
-            let mut pts = vec![];
-            for i in 0..3 {
-                let (a, b) = (t[i], t[(i + 1) % 3]);
-                if (a.z - h) * (b.z - h) < 0.0 {
-                    let s = (h - a.z) / (b.z - a.z);
-                    pts.push((a + (b - a) * s).truncate());
-                }
-            }
-            if pts.len() == 2 {
-                out.push((pts[0], pts[1]));
-            }
-            k += 1.0;
-            guard += 1;
+        }
+    };
+    let (l, rt) = (r.side_line(half), r.side_line(-half));
+    let mut carriageway = rt.clone();
+    carriageway.extend(l.iter().rev());
+    // a tight bend gathers an edge onto one point several times; the
+    // fill took them as a broken outline and left gaps (owner, cut test)
+    let once = |mut ring: Vec<DVec2>| {
+        ring.dedup_by(|b, a| a.distance(*b) < 1e-6);
+        while ring.len() > 3 && ring[0].distance(ring[ring.len() - 1]) < 1e-6 {
+            ring.pop();
+        }
+        ring
+    };
+    let carriageway = once(carriageway);
+    out.push(PlanItem::Tint {
+        id,
+        points: carriageway,
+        rgb: [0.72, 0.72, 0.74],
+    });
+    let n = plan.len();
+    let mut backs = (l.clone(), rt.clone());
+    if r.footpath > 0.0 {
+        let (bl, br) = (
+            r.side_line(half + r.footpath),
+            r.side_line(-half - r.footpath),
+        );
+        for (edge, back) in [(&l, &bl), (&rt, &br)] {
+            let mut path = edge.clone();
+            path.extend(back.iter().rev());
+            out.push(PlanItem::Tint {
+                id,
+                points: once(path),
+                rgb: [0.86, 0.85, 0.82],
+            });
+        }
+        line(out, Pen::Projection, &bl);
+        line(out, Pen::Projection, &br);
+        backs = (bl, br);
+    }
+    line(out, Pen::Projection, &l);
+    line(out, Pen::Projection, &rt);
+    // a kerb's back, a kerb's width behind its face
+    if r.kerb > 0.0 {
+        line(out, Pen::Fine, &r.side_line(half + 0.125));
+        line(out, Pen::Fine, &r.side_line(-half - 0.125));
+    }
+    line(out, Pen::Grid, &plan);
+    for i in [0, n - 1] {
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Projection,
+            a: backs.0[i],
+            b: backs.1[i],
+        });
+    }
+    for b in r.bays() {
+        for k in 1..4 {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Symbol,
+                a: b[k],
+                b: b[(k + 1) % 4],
+            });
         }
     }
-    out
+    // its grades and levels
+    if !sv.levels {
+        return;
+    }
+    let base = members::elevation(model, s.level);
+    for (i, g) in r.grades().iter().enumerate() {
+        let (a, b) = (plan[i], plan[i + 1]);
+        let len = a.distance(b);
+        if len < 1.0 || g.abs() < 1e-4 {
+            continue;
+        }
+        // the arrow points down the slope
+        let down = if *g > 0.0 {
+            (a - b) / len
+        } else {
+            (b - a) / len
+        };
+        let mid = (a + b) / 2.0;
+        let reach = (len * 0.3).min(4.0);
+        let side = down.perp() * (half * 0.45);
+        let (t, h) = (
+            mid + side - down * reach / 2.0,
+            mid + side + down * reach / 2.0,
+        );
+        out.push(PlanItem::Line {
+            id,
+            pen: Pen::Symbol,
+            a: t,
+            b: h,
+        });
+        for w in [down.perp(), -down.perp()] {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Symbol,
+                a: h,
+                b: h - down * 0.5 + w * 0.25,
+            });
+        }
+        let text = if g.abs() >= 0.01 {
+            format!("1:{:.0}  {:.1}%", 1.0 / g.abs(), g.abs() * 100.0)
+        } else {
+            format!("{:.1}%", g.abs() * 100.0)
+        };
+        out.push(ground_text(id, mid - side, text));
+    }
+    // each level on its path: a tag over a small cross where it is read,
+    // as a spot level is (MU142)
+    for p in &r.path {
+        let c = p.truncate();
+        for d in [DVec2::new(0.15, 0.15), DVec2::new(0.15, -0.15)] {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Symbol,
+                a: c - d,
+                b: c + d,
+            });
+        }
+        out.push(level_tag(
+            model,
+            id,
+            c,
+            creabim_core::site_level(model, base + p.z),
+            sv,
+        ));
+    }
+}
+
+/// A level read on the ground in a plan, as a tag (MU142, owner: one tag
+/// language): its words alone, in the tag text style and the annotation
+/// colour, just over the point `at` it reads ([`fit_ground_text`] puts
+/// them there for the drawing's scale), moved and its leader bent as the
+/// view `sv` keeps them; a leader back once its words are away.
+fn level_tag(model: &Model, id: ElementId, at: DVec2, text: String, sv: &SiteView) -> PlanItem {
+    let mut look = crate::annotate::look_of(model, None, None);
+    look.shape = creabim_core::TagShape::TextOnly;
+    let moved = sv.spot_tag(id, at);
+    PlanItem::Tag {
+        id,
+        anchor: at,
+        at: at + moved.map_or(DVec2::ZERO, |m| m.by),
+        elbow: moved.and_then(|m| m.elbow).map(|e| at + e),
+        text,
+        round: false,
+        look,
+    }
+}
+
+/// How far over its point a plan level tag's words sit: half their box
+/// and a little air, so no leader shows while they are home.
+pub fn level_tag_lift(look: &crate::annotation::TextLook, mm: f64) -> f64 {
+    (2.2 * look.size / crate::annotate::TEXT + 0.6) * mm
+}
+
+/// A lot in plan: its boundary in long dashes, each edge's bearing and
+/// length along it outside, and the setback lines dashed round a lightly
+/// tinted buildable area, each setback written between.
+fn lot_plan(
+    model: &Model,
+    out: &mut Vec<PlanItem>,
+    id: ElementId,
+    boundary: &[DVec2],
+    edges: &[creabim_core::LotEdge],
+    rules: &creabim_core::PlanningRules,
+    (setbacks, bearings, along): (bool, bool, bool),
+) {
+    use creabim_core::lot;
+    let n = boundary.len();
+    loop_lines(out, id, Pen::Boundary, boundary);
+    let units = model.units();
+    let length = |d: f64| {
+        if units.is_imperial() {
+            units.length(d)
+        } else {
+            format!("{d:.2} m")
+        }
+    };
+    let north = model.project_info().map_or(0.0, |(_, p)| p.true_north);
+    let buildable = setbacks
+        .then(|| lot::buildable(boundary, edges, rules))
+        .flatten();
+    // easements: their strips hatched and named
+    for e in &rules.easements {
+        let Some(strip) = lot::easement_outline(boundary, e) else {
+            continue;
+        };
+        loop_lines(out, id, Pen::Hidden, &strip);
+        let hatch = creabim_core::site::Pattern::Lines {
+            spacing: 0.5,
+            angle: 45.0,
+        };
+        for (a, b) in pattern_lines(&hatch, std::slice::from_ref(&strip)) {
+            out.push(PlanItem::Line {
+                id,
+                pen: Pen::Fine,
+                a,
+                b,
+            });
+        }
+        let mid = strip.iter().copied().sum::<DVec2>() / strip.len() as f64;
+        out.push(lot_text(id, mid, format!("{} {}", e.name, length(e.width))));
+    }
+    if let Some(b) = &buildable {
+        out.push(PlanItem::Tint {
+            id,
+            points: b.clone(),
+            // a soft green, a notch above the site's own (Site polish 5)
+            rgb: [0.82, 0.86, 0.80],
+        });
+        loop_lines(out, id, Pen::Setback, b);
+    }
+    for i in 0..n {
+        let (a, b) = (boundary[i], boundary[(i + 1) % n]);
+        let d = b - a;
+        if d.length() < 1e-6 {
+            continue;
+        }
+        let mid = (a + b) / 2.0;
+        let inward = d.normalize().perp();
+        // along the edge: its direction, turned to read from below or the
+        // right, never upside down
+        let turn = if along { readable(d) } else { 0.0 };
+        if bearings {
+            let text = format!(
+                "{}  {}",
+                lot::bearing_text(lot::azimuth(d, north)),
+                length(d.length())
+            );
+            let mut t = lot_text(id, mid - inward * 0.6, text);
+            if let PlanItem::Text { align, angle, .. } = &mut t {
+                *angle = turn;
+                // level beside an upright edge, the text runs away from
+                // it, outside
+                if !along && inward.x.abs() > 0.7 {
+                    *align = if inward.x > 0.0 {
+                        crate::paper::Anchor::End
+                    } else {
+                        crate::paper::Anchor::Start
+                    };
+                }
+            }
+            out.push(t);
+        }
+        let setback = rules.setback_at(edges, i, n);
+        if buildable.is_some() && setback > 0.0 {
+            // the setback names its kind of edge; a note goes on the line
+            // below it, or where it was dragged, a leader back (MU98_06)
+            let name = lot::edge_kind(edges, i, n).label();
+            let at = mid + inward * (setback / 2.0);
+            let mut t = lot_text(id, at, format!("{name} {}", length(setback)));
+            if let PlanItem::Text { angle, .. } = &mut t {
+                *angle = turn;
+            }
+            out.push(t);
+            if let Some(note) = rules.note_at(i) {
+                let off = rules.note_off(i).unwrap_or(DVec2::ZERO);
+                let mut t = lot_text(id, at + off, note.to_string());
+                if let PlanItem::Text { angle, size, .. } = &mut t {
+                    *angle = turn;
+                    *size = LOT_NOTE_MM;
+                }
+                out.push(t);
+                if off.length() > 1e-6 {
+                    // a leader from the setback line it belongs to, clear
+                    // of the setback's own label
+                    out.push(PlanItem::Line {
+                        id,
+                        pen: Pen::Fine,
+                        a: mid + inward * setback,
+                        b: at + off,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Is `s` a pad drawn with only its thin skin (no base course)?
+fn is_pad_skin(s: &Site) -> bool {
+    matches!(s.form, SiteForm::Pad { depth, base, .. } if depth <= 0.0 && base < 0.005)
+}
+
+/// A pad's platform: the light grey of a formation, apart from grass.
+pub const PAD_COLOR: [f32; 3] = [0.80, 0.79, 0.75];
+/// How thick the skin a pad without a base course is drawn with, metres.
+const PAD_SKIN: f64 = 0.012;
+
+/// The size of a terrain's own text (contour heights, spot levels) on
+/// paper, millimetres.
+pub const GROUND_TEXT_MM: f64 = 2.8;
+
+/// The size of a lot's own text (bearings, setbacks) on paper, mm.
+pub const LOT_TEXT_MM: f64 = 3.5;
+/// A lot edge's note, on paper: a step smaller than its setback, and set
+/// the line below it at every scale ([`fit_ground_text`]).
+pub const LOT_NOTE_MM: f64 = 3.0;
+
+/// A bearing or a setback written on a lot, sized on paper as
+/// [`ground_text`] is.
+/// The angle, in radians counter-clockwise, at which text along `d`
+/// reads from below or from the right: never upside down.
+pub fn readable(d: DVec2) -> f64 {
+    let mut a = d.y.atan2(d.x);
+    let half = std::f64::consts::FRAC_PI_2;
+    if a > half + 1e-9 {
+        a -= std::f64::consts::PI;
+    } else if a <= -half + 1e-9 {
+        a += std::f64::consts::PI;
+    }
+    a
+}
+
+fn lot_text(id: ElementId, at: DVec2, text: String) -> PlanItem {
+    match ground_text(id, at, text) {
+        PlanItem::Text {
+            id,
+            at,
+            text,
+            align,
+            mm,
+            rgb,
+            ..
+        } => PlanItem::Text {
+            angle: 0.0,
+            id,
+            at,
+            text,
+            size: LOT_TEXT_MM,
+            align,
+            mm,
+            rgb,
+            bold: false,
+        },
+        it => it,
+    }
+}
+
+/// A height written on a terrain. Drawn for a 1:100 drawing until
+/// [`fit_ground_text`] sizes it for its view.
+pub(crate) fn ground_text(id: ElementId, at: DVec2, text: String) -> PlanItem {
+    PlanItem::Text {
+        angle: 0.0,
+        id,
+        at,
+        text,
+        size: GROUND_TEXT_MM,
+        align: crate::paper::Anchor::Middle,
+        mm: 0.1,
+        rgb: None,
+        bold: false,
+    }
+}
+
+/// Where a contour carries its height: the middle of its straightest
+/// stretch, well inside the line. None for a line too short to carry one.
+fn contour_label_at(pts: &[DVec2]) -> Option<DVec2> {
+    let total: f64 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if total < 4.0 {
+        return None;
+    }
+    // candidates along the middle half, the one where the line turns least
+    let at = |d: f64| {
+        let mut run = 0.0;
+        for w in pts.windows(2) {
+            let len = w[0].distance(w[1]);
+            if run + len >= d && len > 0.0 {
+                return w[0] + (w[1] - w[0]) * ((d - run) / len);
+            }
+            run += len;
+        }
+        pts[pts.len() - 1]
+    };
+    (0..=8)
+        .map(|i| total * (0.25 + 0.0625 * i as f64))
+        .map(|d| {
+            let (a, m, b) = (at(d - 0.8), at(d), at(d + 0.8));
+            // how far the middle sits off the chord, and off centre
+            let bend = (b - a).perp_dot(m - a).abs() / (b - a).length().max(1e-9);
+            (bend + (d / total - 0.5).abs() * 0.05, m)
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+        .map(|x| x.1)
+}
+
+/// The least a surface pattern's lines stand apart on paper, in mm. Closer
+/// than this they print as a grey or black patch and not as a pattern
+/// (2 mm was tried and still read as dense, owner MU125).
+pub const PATTERN_MIN_MM: f64 = 4.0;
+
+/// The least a surface pattern's lines stand apart on screen, in pixels.
+pub const PATTERN_MIN_PX: f64 = 8.0;
+
+/// The distance between a pattern's closest lines, in metres.
+pub fn pattern_step(pattern: &Pattern) -> f64 {
+    match *pattern {
+        Pattern::None => f64::INFINITY,
+        Pattern::Units { size, .. } => size.min_element(),
+        Pattern::Lines { spacing, .. } | Pattern::Stipple { spacing } => spacing,
+    }
+}
+
+/// `pattern` opened up by a whole number of its own steps, the fewest
+/// that put its lines at least `least` metres apart.
+fn opened(pattern: &Pattern, least: f64) -> Pattern {
+    let step = pattern_step(pattern);
+    if !step.is_finite() || step <= 0.0 || step >= least {
+        return *pattern;
+    }
+    let n = (least / step - 1e-9).ceil().max(1.0);
+    match *pattern {
+        Pattern::None => Pattern::None,
+        Pattern::Units {
+            size,
+            stagger,
+            angle,
+        } => Pattern::Units {
+            size: size * n,
+            stagger,
+            angle,
+        },
+        Pattern::Lines { spacing, angle } => Pattern::Lines {
+            spacing: spacing * n,
+            angle,
+        },
+        Pattern::Stipple { spacing } => Pattern::Stipple {
+            spacing: spacing * n,
+        },
+    }
+}
+
+/// What a plan shows of `pattern` on screen at `px` pixels a metre, when
+/// its drawing holds it as `drawn` (the pattern at the view's scale):
+/// `None` where the drawing's own lines stand far enough apart to be
+/// painted as they are; otherwise the lines to paint in their place,
+/// opened up to [`PATTERN_MIN_PX`]. None are left when the surface is too
+/// small on screen to hold two courses of them: its tint says it then.
+pub fn pattern_on_screen(
+    drawn: &Pattern,
+    loops: &[Vec<DVec2>],
+    px: f64,
+) -> Option<Vec<(DVec2, DVec2)>> {
+    let step = pattern_step(drawn);
+    if !step.is_finite() || px <= 0.0 || step * px >= PATTERN_MIN_PX {
+        return None;
+    }
+    let shown = opened(drawn, PATTERN_MIN_PX / px);
+    let outline = loops.first()?;
+    let (mut lo, mut hi) = (DVec2::splat(f64::INFINITY), DVec2::splat(f64::NEG_INFINITY));
+    for p in outline {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    if (hi - lo).min_element() < 2.0 * pattern_step(&shown) {
+        return Some(vec![]);
+    }
+    Some(pattern_lines(&shown, loops))
+}
+
+/// `pattern` as a drawing at 1:`scale` shows it: itself where its lines
+/// stand at least [`PATTERN_MIN_MM`] apart on paper, and otherwise drawn
+/// with every second, third… joint, the fewest left out that open it up.
+/// Block paving at 1:50 shows every block; at 1:200 it shows the bond
+/// with a few courses to the mark, as a draughtsman would hatch it.
+pub fn pattern_at_scale(pattern: &Pattern, scale: f64) -> Pattern {
+    opened(pattern, PATTERN_MIN_MM * scale / 1000.0)
+}
+
+/// Open up the patterns of paved and planted areas for a drawing at
+/// 1:`scale`: where an area's pattern would print too fine, its lines give
+/// way to those of [`pattern_at_scale`]. The area itself is not changed.
+pub fn fit_site_patterns(model: &Model, items: &mut Vec<PlanItem>, scale: f64) {
+    let mut done: Vec<ElementId> = vec![];
+    let mut i = 0;
+    while i < items.len() {
+        let id = items[i].id();
+        i += 1;
+        if done.contains(&id) {
+            continue;
+        }
+        let Some(ElementKind::Site(Site {
+            form:
+                SiteForm::Area {
+                    boundary,
+                    holes,
+                    pattern,
+                    ..
+                },
+            ..
+        })) = model.get(id).map(|e| &e.kind)
+        else {
+            continue;
+        };
+        done.push(id);
+        let shown = pattern_at_scale(pattern, scale);
+        if shown == *pattern {
+            continue;
+        }
+        let mut loops = vec![boundary.clone()];
+        loops.extend(holes.iter().cloned());
+        // its own lines, as the plan drew them, go...
+        let mut first = None;
+        let mut k = 0;
+        items.retain(|it| {
+            let at = k;
+            k += 1;
+            let own = matches!(it, PlanItem::Line { id: of, pen: Pen::Pattern, .. } if *of == id);
+            if own {
+                first.get_or_insert(at);
+            }
+            !own
+        });
+        // ...and the opened ones come in their place
+        let Some(at) = first else {
+            continue;
+        };
+        let fresh: Vec<PlanItem> = pattern_lines(&shown, &loops)
+            .into_iter()
+            .map(|(a, b)| PlanItem::Line {
+                id,
+                pen: Pen::Pattern,
+                a,
+                b,
+            })
+            .collect();
+        let at = at.min(items.len());
+        items.splice(at..at, fresh);
+        i = 0;
+    }
+}
+
+/// Size the heights written on terrains for a drawing at 1:`scale`, and
+/// break the contours where a height sits on them.
+pub fn fit_ground_text(model: &Model, items: &mut Vec<PlanItem>, scale: f64) {
+    let mm = scale / 1000.0;
+    let terrain = |id: ElementId| {
+        matches!(
+            model.get(id).map(|e| &e.kind),
+            Some(ElementKind::Site(Site {
+                form: SiteForm::Terrain { .. }
+                    | SiteForm::Property { .. }
+                    | SiteForm::Road(_)
+                    | SiteForm::Drain(_)
+                    | SiteForm::Tank(_)
+                    | SiteForm::Investigation(_),
+                ..
+            }))
+        )
+    };
+    let mut gaps: Vec<(ElementId, DVec2, f64)> = vec![];
+    for it in items.iter_mut() {
+        if let PlanItem::Text {
+            id,
+            at,
+            text,
+            size,
+            mm: m,
+            angle,
+            ..
+        } = it
+        {
+            if terrain(*id) && *size == LOT_NOTE_MM {
+                // a lot's note: the line below its setback, at this scale
+                *m = mm;
+                let down = DVec2::new(angle.sin(), -angle.cos());
+                *at += down * (LOT_TEXT_MM * 1.25 * mm);
+                continue;
+            }
+            if terrain(*id) && (*size == GROUND_TEXT_MM || *size == LOT_TEXT_MM) {
+                *m = mm;
+                // a label's half width, with a little air
+                let half = (text.chars().count() as f64 * 0.3 + 0.35) * *size * mm;
+                gaps.push((*id, *at, half));
+            }
+        }
+        // a level tag on the ground: its words lifted just over the point
+        // it reads, for this scale (MU142), the contours broken under them
+        if let PlanItem::Tag {
+            id, at, text, look, ..
+        } = it
+        {
+            if matches!(model.get(*id).map(|e| &e.kind), Some(ElementKind::Site(_))) {
+                *at += DVec2::new(0.0, level_tag_lift(look, mm));
+                let half = (look.width(text) / 2.0 + 0.35 * look.size) * mm;
+                gaps.push((*id, *at, half));
+            }
+        }
+    }
+    if gaps.is_empty() {
+        return;
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for it in items.drain(..) {
+        let PlanItem::Line {
+            id,
+            pen: pen @ (Pen::Contour | Pen::ContourHeavy),
+            a,
+            b,
+        } = it
+        else {
+            out.push(it);
+            continue;
+        };
+        // the stretches of the line clear of every label on its terrain
+        let mut keep: Vec<(f64, f64)> = vec![(0.0, 1.0)];
+        let d = b - a;
+        let len2 = d.length_squared();
+        for (_, at, half) in gaps.iter().filter(|g| g.0 == id && len2 > 0.0) {
+            // where the line is within `half` of the label
+            let t0 = (*at - a).dot(d) / len2;
+            let off2 = (a + d * t0).distance_squared(*at);
+            if off2 >= half * half {
+                continue;
+            }
+            let reach = ((half * half - off2) / len2).sqrt();
+            let (lo, hi) = (t0 - reach, t0 + reach);
+            keep = keep
+                .into_iter()
+                .flat_map(|(s, e)| [(s, e.min(lo)), (s.max(hi), e)])
+                .filter(|(s, e)| e - s > 1e-9)
+                .collect();
+        }
+        for (s, e) in keep {
+            out.push(PlanItem::Line {
+                id,
+                pen,
+                a: a + d * s,
+                b: a + d * e,
+            });
+        }
+    }
+    *items = out;
 }
 
 /// The parts of the line `a`–`b` inside the region bounded by `loops`
@@ -999,95 +2798,369 @@ pub fn pattern_lines(pattern: &Pattern, loops: &[Vec<DVec2>]) -> Vec<(DVec2, DVe
     out
 }
 
-/// A plant's plan symbol, `r` its canopy's radius.
+/// A plant's plan symbol, `r` its canopy's radius: a scalloped crown for
+/// a tree, a toothed one for a conifer, feathered fronds for a palm, an
+/// uneven cloud for a shrub (Site plants proposal, round 2).
 pub fn plant_symbol(out: &mut Vec<PlanItem>, id: ElementId, c: DVec2, form: PlantForm, r: f64) {
     let line = |out: &mut Vec<PlanItem>, pen, a, b| out.push(PlanItem::Line { id, pen, a, b });
-    match form {
-        PlantForm::Tree | PlantForm::Shrub => {
-            // a scalloped crown
-            let lobes = ((TAU * r / if form == PlantForm::Tree { 0.9 } else { 0.4 }).round()
-                as usize)
-                .clamp(7, 28);
-            let step = TAU / lobes as f64;
-            let lobe = r * (step / 2.0).sin() * 1.15;
+    let turn = plant_turn(c);
+    let dot = |out: &mut Vec<PlanItem>, radius: f64| {
+        out.push(PlanItem::Arc {
+            id,
+            pen: Pen::Projection,
+            center: c,
+            radius,
+            start: 0.0,
+            end: TAU,
+        })
+    };
+    // a ring of outward arcs through points round `c`, `uneven` of 1
+    let scallops =
+        |out: &mut Vec<PlanItem>, pen: Pen, radius: f64, lobes: usize, uneven: f64, rot: f64| {
+            let at = |k: usize| {
+                let a = rot + TAU * k as f64 / lobes as f64;
+                let wob = ((k % lobes) as f64 * 2.399 + turn).sin() * uneven;
+                c + DVec2::from_angle(a) * radius * (1.0 + wob)
+            };
             for k in 0..lobes {
-                let a = step * k as f64;
-                let centre = c + DVec2::from_angle(a) * (r - lobe);
+                let (p, q) = (at(k), at(k + 1));
+                let chord = p.distance(q);
+                let rho = chord * 0.6;
+                let mid = (p + q) / 2.0;
+                let away = (mid - c).normalize_or_zero();
+                let o = mid - away * (rho * rho - chord * chord / 4.0).max(0.0).sqrt();
+                let start = (p - o).to_angle();
+                let mut end = (q - o).to_angle();
+                while end <= start {
+                    end += TAU;
+                }
                 out.push(PlanItem::Arc {
                     id,
-                    pen: Pen::Projection,
-                    center: centre,
-                    radius: lobe,
-                    start: a - PI / 2.0 - 0.35,
-                    end: a + PI / 2.0 + 0.35,
+                    pen,
+                    center: o,
+                    radius: rho,
+                    start,
+                    end,
                 });
             }
-            if form == PlantForm::Tree {
-                // its trunk, and a cross on it
-                out.push(PlanItem::Arc {
-                    id,
-                    pen: Pen::Symbol,
-                    center: c,
-                    radius: (r * 0.08).clamp(0.06, 0.35),
-                    start: 0.0,
-                    end: TAU,
-                });
-                let d = r * 0.25;
-                line(out, Pen::Symbol, c - DVec2::X * d, c + DVec2::X * d);
-                line(out, Pen::Symbol, c - DVec2::Y * d, c + DVec2::Y * d);
+        };
+    match form {
+        PlantForm::Tree => {
+            let lobes = ((TAU * r / 1.1).round() as usize).clamp(8, 18);
+            scallops(out, Pen::Projection, r * 0.93, lobes, 0.03, turn);
+            // a finer ring inside, and a few forked branches
+            if r > 0.9 {
+                scallops(out, Pen::Fine, r * 0.56, 7, 0.05, turn + 0.4);
+                for a in [0.3, 1.5, 2.7, 3.9, 5.2] {
+                    let d = DVec2::from_angle(turn + a);
+                    let tip = c + d * r * 0.5;
+                    let fork = c + d * r * 0.32;
+                    line(out, Pen::Fine, c, tip);
+                    for s in [0.7_f64, -0.7] {
+                        line(
+                            out,
+                            Pen::Fine,
+                            fork,
+                            fork + DVec2::from_angle(turn + a + s) * r * 0.15,
+                        );
+                    }
+                }
+            }
+            dot(out, (r * 0.08).clamp(0.06, 0.35));
+        }
+        PlantForm::Shrub => {
+            let lobes = ((TAU * r / 0.55).round() as usize).clamp(6, 12);
+            scallops(out, Pen::Projection, r * 0.92, lobes, 0.1, turn);
+            // a few short arcs inside: its clumps
+            if r > 0.5 {
+                for (a, far) in [(0.6, 0.3), (2.9, 0.28), (4.6, 0.22)] {
+                    let o = c + DVec2::from_angle(turn + a) * r * far;
+                    out.push(PlanItem::Arc {
+                        id,
+                        pen: Pen::Fine,
+                        center: o,
+                        radius: r * 0.26,
+                        start: turn + a - 1.1,
+                        end: turn + a + 1.3,
+                    });
+                }
             }
         }
         PlantForm::Conifer => {
-            out.push(PlanItem::Arc {
-                id,
-                pen: Pen::Projection,
-                center: c,
-                radius: r,
-                start: 0.0,
-                end: TAU,
-            });
-            // needles: spokes with a zigzag edge
-            let n = 12;
-            for k in 0..n {
-                let a = TAU * k as f64 / n as f64;
-                line(out, Pen::Symbol, c, c + DVec2::from_angle(a) * r * 0.9);
-                let tip = c + DVec2::from_angle(a) * r;
-                let next = c + DVec2::from_angle(a + TAU / n as f64) * r;
-                let mid = c + DVec2::from_angle(a + PI / n as f64) * r * 0.8;
-                line(out, Pen::Symbol, tip, mid);
-                line(out, Pen::Symbol, mid, next);
-            }
-        }
-        PlantForm::Palm => {
-            // fronds radiating from the head, each with a few leaflets
-            let n = 9;
-            for k in 0..n {
-                let a = TAU * k as f64 / n as f64 + 0.3 * (k % 2) as f64;
-                let d = DVec2::from_angle(a);
-                let s = DVec2::new(-d.y, d.x);
-                let tip = c + d * r;
-                line(out, Pen::Projection, c, tip);
-                for t in [0.35, 0.55, 0.75] {
-                    let p = c + d * r * t;
-                    let w = r * 0.18 * (1.0 - t * 0.6);
-                    line(out, Pen::Symbol, p, p + d * w * 0.8 + s * w);
-                    line(out, Pen::Symbol, p, p + d * w * 0.8 - s * w);
+            let toothed =
+                |out: &mut Vec<PlanItem>, pen: Pen, tip: f64, root: f64, teeth: usize, rot: f64| {
+                    let p = |k: usize| {
+                        let rr = if k % 2 == 0 { tip } else { root };
+                        c + DVec2::from_angle(rot + PI * k as f64 / teeth as f64) * rr
+                    };
+                    for k in 0..teeth * 2 {
+                        out.push(PlanItem::Line {
+                            id,
+                            pen,
+                            a: p(k),
+                            b: p(k + 1),
+                        });
+                    }
+                };
+            let teeth = ((TAU * r / 0.55).round() as usize).clamp(9, 18);
+            toothed(out, Pen::Projection, r, r * 0.83, teeth, turn);
+            if r > 0.9 {
+                toothed(out, Pen::Fine, r * 0.54, r * 0.42, 7, turn + 0.2);
+                for k in 0..7 {
+                    line(
+                        out,
+                        Pen::Fine,
+                        c,
+                        c + DVec2::from_angle(turn + 0.2 + TAU * k as f64 / 7.0) * r * 0.36,
+                    );
                 }
             }
-            out.push(PlanItem::Arc {
-                id,
-                pen: Pen::Symbol,
-                center: c,
-                radius: (r * 0.06).clamp(0.1, 0.25),
-                start: 0.0,
-                end: TAU,
-            });
+            dot(out, (r * 0.07).clamp(0.05, 0.3));
+        }
+        PlantForm::Palm => {
+            // feathered fronds fanning from the trunk, long and short
+            let n = 9;
+            for k in 0..n {
+                let a = turn + TAU * k as f64 / n as f64;
+                let reach = if k % 2 == 0 { r } else { r * 0.84 };
+                let tip = c + DVec2::from_angle(a) * reach;
+                let ctrl = c + DVec2::from_angle(a + 0.16) * reach * 0.55;
+                let steps = 10;
+                let mut left = vec![];
+                let mut right = vec![];
+                let mut rib = vec![];
+                for i in 0..=steps {
+                    let t = i as f64 / steps as f64;
+                    let p = c * (1.0 - t) * (1.0 - t) + ctrl * 2.0 * (1.0 - t) * t + tip * t * t;
+                    let tan = ((ctrl - c) * (1.0 - t) + (tip - ctrl) * t).normalize_or_zero();
+                    let side = tan.perp();
+                    let mut w = r
+                        * 0.15
+                        * ((PI * (t * 1.15).min(1.0)).sin().max(0.0)).powf(0.7)
+                        * (1.0 - 0.35 * t);
+                    if i % 2 == 1 {
+                        w *= 0.55;
+                    }
+                    left.push(p + side * w);
+                    right.push(p - side * w);
+                    rib.push(p);
+                }
+                for w in left.windows(2).chain(right.windows(2)) {
+                    line(out, Pen::Projection, w[0], w[1]);
+                }
+                for w in rib.windows(2) {
+                    line(out, Pen::Fine, w[0], w[1]);
+                }
+            }
+            dot(out, (r * 0.07).clamp(0.1, 0.25));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// MU142 (Mockup_Tags_And_Splay_REV00, A on all: ground levels in the
+    /// site plan are tags the same way): each level read on the ground is
+    /// a tag, in the annotation colour, its words alone just over the
+    /// point with no leader while home; moved by hand in the view, drawn
+    /// there with a leader back to its point. None is plain text.
+    #[test]
+    fn site_plan_levels_are_tags() {
+        use crate::section::view_drawing;
+        let mut m = creabim_core::ridgeline::ridgeline_house();
+        let view = m.iter().find(|e| e.name == "Site plan").unwrap().id;
+        let (scale, sv) = match &m.get(view).unwrap().kind {
+            ElementKind::View(v) => (v.scale, v.site.clone()),
+            _ => unreachable!(),
+        };
+        let mm = scale / 1000.0;
+        let site = |m: &Model, id: ElementId| {
+            matches!(m.get(id).map(|e| &e.kind), Some(ElementKind::Site(_)))
+        };
+        let tags = |m: &Model| -> Vec<(
+            ElementId,
+            DVec2,
+            DVec2,
+            String,
+            crate::annotation::TextLook,
+            Option<DVec2>,
+        )> {
+            view_drawing(m, view)
+                .unwrap()
+                .items
+                .into_iter()
+                .filter_map(|i| match i {
+                    PlanItem::Tag {
+                        id,
+                        anchor,
+                        at,
+                        text,
+                        look,
+                        elbow,
+                        ..
+                    } if site(m, id) => Some((id, anchor, at, text, look, elbow)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let all = tags(&m);
+        assert!(!all.is_empty(), "the site plan reads levels");
+        for (_, anchor, at, text, look, elbow) in &all {
+            assert!(look.rgb.is_none(), "{text}: the annotation colour");
+            assert_eq!(look.shape, creabim_core::TagShape::TextOnly);
+            // its words over its point; no leader while home
+            assert!(at.y > anchor.y, "{text}");
+            let g = crate::annotate::tag_geometry(*anchor, *at, *elbow, text, false, look, mm);
+            let home = (*at - *anchor - DVec2::new(0.0, level_tag_lift(look, mm))).length() < 1e-9;
+            assert!(!home || g.leader.is_empty(), "{text}: a leader at home");
+        }
+        // levels are no longer plain text
+        let d = view_drawing(&m, view).unwrap();
+        assert!(!d
+            .items
+            .iter()
+            .any(|i| matches!(i, PlanItem::Text { text, id, .. }
+            if site(&m, *id) && all.iter().any(|t| &t.3 == text))));
+        // moved by hand in this view: drawn there, a leader back
+        let (id, anchor, ..) = all[0].clone();
+        let v = m.get(view).unwrap().clone();
+        let mut moved = v.clone();
+        if let ElementKind::View(x) = &mut moved.kind {
+            x.site.set_spot_move(id, anchor, Some(DVec2::new(3.0, 2.0)));
+        }
+        creabim_core::Transaction::new("move")
+            .replace(v, moved)
+            .apply(&mut m)
+            .unwrap();
+        let now = tags(&m);
+        let (_, a2, at2, text, look, elbow) = now
+            .iter()
+            .find(|t| t.0 == id && t.1.distance(anchor) < 1e-9)
+            .unwrap();
+        assert!(
+            at2.distance(*a2 + DVec2::new(3.0, 2.0)) < 1.0,
+            "moved: {at2} from {a2}"
+        );
+        let g = crate::annotate::tag_geometry(*a2, *at2, *elbow, text, false, look, mm);
+        assert_eq!(
+            g.leader.last().copied(),
+            Some(*a2),
+            "a leader back to its point"
+        );
+        let _ = sv;
+    }
+
+    #[test]
+    fn a_view_shows_the_ground_before_or_after_its_works() {
+        use creabim_core::{GroundState, Level, Pad, SiteView};
+        let lv = Element::new(
+            "Ground",
+            ElementKind::Level(Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let mut t = Site::terrain(
+            lv.id,
+            creabim_core::polygon::rectangle(DVec2::ZERO, DVec2::new(40.0, 40.0)),
+            0.0,
+            1.0,
+        );
+        if let SiteForm::Terrain {
+            points,
+            data,
+            contour,
+            ..
+        } = &mut t.form
+        {
+            for i in 0..=8 {
+                for j in 0..=8 {
+                    let (x, y) = (i as f64 * 5.0, j as f64 * 5.0);
+                    points.push(DVec3::new(x, y, y * 0.1));
+                }
+            }
+            data.survey = true;
+            data.faceted = true;
+            *contour = 0.25;
+            data.pads.push(Pad::new(
+                creabim_core::polygon::rectangle(DVec2::new(15.0, 15.0), DVec2::new(25.0, 25.0)),
+                2.0,
+            ));
+        }
+        let te = Element::new("Terrain", ElementKind::Site(t.clone()));
+        let id = te.id;
+        let m = Model::from_elements([lv, te]).unwrap();
+        let count = |sv: &SiteView, f: &dyn Fn(&PlanItem) -> bool| {
+            site_plan_with(&m, id, &t, sv)
+                .iter()
+                .filter(|i| f(i))
+                .count()
+        };
+        let existing = |i: &PlanItem| {
+            matches!(
+                i,
+                PlanItem::Line {
+                    pen: Pen::Existing,
+                    ..
+                }
+            )
+        };
+        let tint = |i: &PlanItem| matches!(i, PlanItem::Tint { .. });
+        let heavy = |i: &PlanItem| {
+            matches!(
+                i,
+                PlanItem::Line {
+                    pen: Pen::ContourHeavy,
+                    ..
+                }
+            )
+        };
+        let after = SiteView::default();
+        assert_eq!(count(&after, &existing), 0);
+        assert_eq!(count(&after, &tint), 0);
+        let both = SiteView {
+            ground: GroundState::Both,
+            cut_fill: true,
+            ..after.clone()
+        };
+        // the old contours dashed where the pad changed them, and the
+        // ground coloured where it was dug and made up
+        assert!(count(&both, &existing) > 0);
+        assert!(count(&both, &tint) > 0);
+        // before: the survey alone, no banks and no colours
+        let before = SiteView {
+            ground: GroundState::Before,
+            cut_fill: true,
+            ..after.clone()
+        };
+        assert_eq!(count(&before, &tint), 0);
+        assert!(count(&before, &heavy) < count(&after, &heavy));
+        // no contours: only the works' own edges stay heavy (a work's edge
+        // is always drawn, Mockup_Site_Earthworks)
+        let bare = SiteView {
+            contours: false,
+            banks: false,
+            ..after.clone()
+        };
+        assert!(count(&bare, &heavy) > 0);
+        assert!(count(&bare, &heavy) < count(&after, &heavy));
+        let tick = |i: &PlanItem| {
+            matches!(
+                i,
+                PlanItem::Line {
+                    pen: Pen::Contour,
+                    ..
+                }
+            )
+        };
+        // and unhatched, a bank has no ticks
+        let unhatched = SiteView {
+            contours: false,
+            ..after.clone()
+        };
+        assert!(count(&bare, &tick) < count(&unhatched, &tick));
+    }
 
     #[test]
     fn a_sweep_drawn_up_a_wall_face_stands_out_of_it() {
@@ -1283,6 +3356,51 @@ mod tests {
     }
 
     #[test]
+    fn a_hill_shows_its_contours_in_3d_and_whole_in_plan() {
+        let lv = level();
+        let level_id = lv.id;
+        let mut t = Site::terrain(
+            lv.id,
+            creabim_core::polygon::rectangle(DVec2::ZERO, DVec2::new(10.0, 10.0)),
+            0.0,
+            0.5,
+        );
+        if let SiteForm::Terrain {
+            points, contour, ..
+        } = &mut t.form
+        {
+            // a hill that climbs through an ordinary plan's cut
+            points.push(DVec3::new(5.0, 5.0, 3.0));
+            *contour = 0.5;
+        }
+        let e = Element::new("Ground", ElementKind::Site(t));
+        let m = Model::from_elements([lv, e.clone()]).unwrap();
+        // the contours lie on the ground in 3D, apart from its solid, and
+        // drawings and exports leave them out
+        let items = scene_items(&m, &e);
+        assert_eq!(items.len(), 2);
+        assert!(!items[0].is_lining() && items[0].mesh.is_closed());
+        assert!(items[1].is_lining() && !items[1].mesh.is_empty());
+        let top = items[1]
+            .mesh
+            .positions
+            .iter()
+            .fold(0.0f32, |a, p| a.max(p[2]));
+        assert!(top > 2.0 && top < 3.0, "{top}");
+        // the plan's cut does not slice the hill: its whole outline is tinted
+        let plan = crate::plan::plan_view(&m, level_id, 1.2);
+        let shade: Vec<_> = plan
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                PlanItem::Shade { points, .. } if i.id() == e.id => Some(points.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shade, vec![4]);
+    }
+
+    #[test]
     fn terrain_follows_its_spot_heights() {
         let lv = level();
         let mut t = Site::terrain(
@@ -1306,10 +3424,45 @@ mod tests {
         let (mesh, _) = mesh_of(&m, &e).unwrap();
         assert!(mesh.volume() > 10.0 * 10.0 * 0.5);
         // three contours (0.5, 1.0, 1.5) between the corners and the top
-        let lines = contours(&tops, 0.5, 0.0);
-        assert!(!lines.is_empty());
+        let g = crate::ground::of(&t).unwrap();
+        let lines = g.contours(0.5, 0.0);
+        assert_eq!(lines.iter().map(|c| c.index).max(), Some(3));
+        assert!(mesh.is_closed());
         let items = plan_items(&m, &e, 1.2);
         assert!(items.len() > 4);
+        // asked for, the heavier contours carry their height, and the
+        // line breaks round it at the drawing's scale
+        if let SiteForm::Terrain { data, .. } = &mut t.form {
+            data.labels = true;
+            data.major = 2;
+        }
+        let e = Element::new("Ground", ElementKind::Site(t));
+        let m = Model::from_elements([m.iter().next().unwrap().clone(), e.clone()]).unwrap();
+        let mut items = plan_items(&m, &e, 1.2);
+        let texts = |items: &[PlanItem]| {
+            items
+                .iter()
+                .filter_map(|i| match i {
+                    PlanItem::Text { text, mm, at, .. } => Some((text.clone(), *mm, *at)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = texts(&items);
+        assert_eq!(before.len(), 1, "{before:?}");
+        fit_ground_text(&m, &mut items, 200.0);
+        let after = texts(&items);
+        assert_eq!(after[0].1, 0.2);
+        let clear = items.iter().all(|i| match i {
+            PlanItem::Line {
+                pen: Pen::ContourHeavy,
+                a,
+                b,
+                ..
+            } => ((*a + *b) / 2.0).distance(after[0].2) > 0.2,
+            _ => true,
+        });
+        assert!(clear);
     }
 
     #[test]
@@ -1458,4 +3611,23 @@ mod plan_look_tests {
         }
         assert!((volume - 0.12).abs() < 1e-4, "the solid is whole: {volume}");
     }
+}
+
+/// A contour's height as it is written along it: a site level with no
+/// trailing zeros, `100` or `99.5`.
+fn contour_level(model: &Model, z: f64) -> String {
+    let t = creabim_core::site_level(model, z);
+    if t.contains('.') && !t.ends_with('\'') {
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        t
+    }
+}
+
+/// Whether `p` is inside a building's slab, in plan.
+fn under_building(model: &Model, p: DVec2) -> bool {
+    model.iter().any(|e| match &e.kind {
+        ElementKind::Slab(sl) => crate::plan::point_in(p, &sl.boundary),
+        _ => false,
+    })
 }

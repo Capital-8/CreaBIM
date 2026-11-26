@@ -19,6 +19,8 @@ pub enum Icon {
     Mass,
     Material,
     Plan,
+    /// A plan that looks up: a reflected ceiling plan (#70).
+    CeilingPlan,
     Section,
     Elevation,
     View3d,
@@ -68,8 +70,12 @@ impl Icon {
     pub fn of(e: &Element) -> Icon {
         match &e.kind {
             ElementKind::View(v) => match &v.kind {
+                ViewKind::Plan { .. } if v.ceiling_plan => Icon::CeilingPlan,
                 ViewKind::Plan { .. } => Icon::Plan,
-                ViewKind::Section { cut: true, .. } => Icon::Section,
+                ViewKind::Section { cut: true, .. }
+                | ViewKind::LongSection { .. }
+                | ViewKind::BoreholeLog { .. }
+                | ViewKind::WalkSection { .. } => Icon::Section,
                 ViewKind::Section { cut: false, .. } => Icon::Elevation,
                 ViewKind::Axonometric { .. } => Icon::View3d,
                 ViewKind::Schedule { .. } => Icon::Schedule,
@@ -95,6 +101,7 @@ impl Icon {
             Icon::Mass => Color32::from_rgb(60, 130, 200),
             Icon::Material => Color32::from_rgb(200, 140, 40),
             Icon::Plan
+            | Icon::CeilingPlan
             | Icon::Section
             | Icon::Elevation
             | Icon::View3d
@@ -222,6 +229,17 @@ impl Icon {
                 line((0.25, 0.75), (0.75, 0.25), thin);
                 line((0.42, 0.85), (0.85, 0.42), thin);
                 line((0.15, 0.58), (0.58, 0.15), thin);
+            }
+            Icon::CeilingPlan => {
+                // a ceiling's tile grid
+                painter.rect_stroke(
+                    Rect::from_two_pos(p(0.1, 0.1), p(0.9, 0.9)),
+                    0.0,
+                    s,
+                    egui::StrokeKind::Inside,
+                );
+                line((0.5, 0.1), (0.5, 0.9), thin);
+                line((0.1, 0.5), (0.9, 0.5), thin);
             }
             Icon::Plan => {
                 painter.rect_stroke(

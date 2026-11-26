@@ -522,9 +522,105 @@ pub struct ObjectType {
     /// reuses this type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalogue: Option<String>,
+    /// The light it gives in a render. None: what its kind usually gives
+    /// when it is a light fitting ([`ObjectType::light_given`]), and no
+    /// light when it is anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<Light>,
+}
+
+/// How a fitting's light spreads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Spread {
+    /// A spot or a downlight: a tight cone.
+    Narrow,
+    /// A wider cone, as a kitchen or a display light.
+    Medium,
+    /// A pendant or a ceiling light: across the room, with a glow round it.
+    #[default]
+    Wide,
+    /// A bare bulb or a globe: the same every way.
+    AllRound,
+}
+
+impl Spread {
+    pub const ALL: [Spread; 4] = [
+        Spread::Narrow,
+        Spread::Medium,
+        Spread::Wide,
+        Spread::AllRound,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Spread::Narrow => "Narrow",
+            Spread::Medium => "Medium",
+            Spread::Wide => "Wide",
+            Spread::AllRound => "All round",
+        }
+    }
+
+    /// The beam a label names, as written in IFC; Wide for one not known.
+    pub fn from_label(s: &str) -> Spread {
+        Spread::ALL
+            .into_iter()
+            .find(|b| b.label().eq_ignore_ascii_case(s.trim()))
+            .unwrap_or_default()
+    }
+}
+
+/// The light a fitting gives: what a lamp's box says.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Light {
+    /// Off: it is drawn, and gives no light in a render.
+    pub on: bool,
+    /// Its output, lumens (a 60 W bulb of old gave about 800).
+    pub lumens: f64,
+    /// Its colour, kelvin: 2700 warm, 4000 neutral, 6500 daylight.
+    pub kelvin: f64,
+    #[serde(default)]
+    pub beam: Spread,
+    /// The group it is dimmed with in Visuals ("Kitchen downlights");
+    /// empty, its type's name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+}
+
+impl Light {
+    /// What a fitting usually gives, by how it is mounted and whether it
+    /// is a directed source (a downlight, a spot).
+    pub fn typical(mount: Mount, directed: bool) -> Light {
+        let (lumens, kelvin, beam) = match (mount, directed) {
+            (Mount::Wall, _) => (600.0, 2700.0, Spread::Wide),
+            (Mount::Ceiling, true) => (700.0, 3000.0, Spread::Narrow),
+            (Mount::Ceiling, false) => (1100.0, 2700.0, Spread::Wide),
+            (Mount::Floor, _) => (800.0, 2700.0, Spread::AllRound),
+        };
+        Light {
+            on: true,
+            lumens,
+            kelvin,
+            beam,
+            group: String::new(),
+        }
+    }
 }
 
 impl ObjectType {
+    /// Is it a light fitting by its IFC class?
+    pub fn is_light_fitting(&self) -> bool {
+        self.ifc.class == "IfcLightFixture"
+    }
+
+    /// The light it gives: its own, else a light fitting's usual one,
+    /// else none.
+    pub fn light_given(&self) -> Option<Light> {
+        self.light.clone().or_else(|| {
+            self.is_light_fitting()
+                .then(|| Light::typical(self.mount, self.ifc.predefined == "DIRECTIONSOURCE"))
+        })
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.parts.is_empty() {
             return Err("an object type needs at least one part".into());
@@ -604,10 +700,23 @@ pub struct Object {
     /// towards +y.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f64,
+    /// A size of its own, as a factor of its type's, every way (MU142,
+    /// Tool Rows and Scale REV01, decision 6: a catalogue object scaled
+    /// keeps its type as it was). 1 is its type's size.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale: f64,
 }
 
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
 }
 
 impl Object {
@@ -617,19 +726,21 @@ impl Object {
             position,
             offset: 0.0,
             rotation,
+            scale: 1.0,
         }
     }
 
-    /// From the object's own axes to plan.
+    /// From the object's own axes to plan, at its own size.
     pub fn to_plan(&self, p: DVec2) -> DVec2 {
         let (s, c) = self.rotation.to_radians().sin_cos();
+        let p = p * self.scale;
         self.position + DVec2::new(p.x * c - p.y * s, p.x * s + p.y * c)
     }
 
     /// From the object's own axes to the model's, its own floor (`z = 0`)
     /// at `base_z` (see [`base_z`]).
     pub fn to_model(&self, p: DVec3, base_z: f64) -> DVec3 {
-        self.to_plan(p.truncate()).extend(p.z + base_z)
+        self.to_plan(p.truncate()).extend(p.z * self.scale + base_z)
     }
 
     /// The way it faces in plan (its front).
@@ -902,6 +1013,7 @@ pub fn from_type(model: &Model, type_id: ElementId, key: &str) -> Option<Catalog
     let ElementKind::ElementType(ElementType {
         params: TypeParams::Object(t),
         description,
+        ..
     }) = &e.kind
     else {
         return None;
@@ -989,6 +1101,7 @@ pub fn from_meshes(
             parts,
             symbol: vec![],
             catalogue: Some(key.to_string()),
+            light: None,
         },
         materials,
     })
@@ -1295,6 +1408,7 @@ mod tests {
             parts,
             symbol: vec![],
             catalogue: None,
+            light: None,
         };
         let (lo, hi) = t.bounds();
         assert!((lo - DVec3::new(-1.0, -1.0, 0.0)).length() < 1e-9, "{lo}");

@@ -115,8 +115,18 @@ fn layer_fill(model: &Model, l: &Layer) -> (Color32, creabim_core::Hatch) {
 /// The assembly drawn as a cut strip: a wall's layers side by side
 /// (exterior on the left), a floor's or roof's stacked (top up), each
 /// in its material's colour with its cut hatch.
+/// The room left above and below a layer strip in Properties (MU58: it
+/// sat right on the layers under it).
+const STRIP_GAP: f32 = 6.0;
+
 pub(super) fn strip(ui: &mut egui::Ui, model: &Model, a: &Assembly, width: f32, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    // MU58: the orange bracket was never explained
+    resp.on_hover_text(if a.usage == AssemblyUse::Wall {
+        "The layers as cut, outside on the left. The orange bars mark the core's two faces: the layers between them carry the load, where walls join and the location line can sit"
+    } else {
+        "The layers as cut, top up. The orange bars at its ends mark the core: the layers that carry the load, where joins and the structure meet"
+    });
     let painter = ui.painter_at(rect);
     let total = a.total().max(1e-9);
     let vertical = a.usage == AssemblyUse::Wall;
@@ -165,37 +175,55 @@ pub(super) fn strip(ui: &mut egui::Ui, model: &Model, a: &Assembly, width: f32, 
             egui::StrokeKind::Inside,
         );
     }
-    // the core, bracketed
+    // the core outlined all round (MU58: a bracket on one side only read
+    // as a stray mark): the layers that carry the load
     let (i, j) = a.core();
     let spans = a.spans(1.0);
     if let (Some(s0), Some(s1)) = (spans.get(i), spans.get(j)) {
         let (k0, k1) = (s0.0 as f32, s1.1 as f32);
-        let accent = crate::theme::interaction();
-        let stroke = egui::Stroke::new(1.5, accent);
-        if vertical {
-            let (x0, x1) = (
-                rect.left() + rect.width() * k0,
-                rect.left() + rect.width() * k1,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(x0, rect.bottom() - 2.0),
-                    egui::pos2(x1, rect.bottom() - 2.0),
-                ],
-                stroke,
-            );
+        // always orange, whatever the theme or the selection colour
+        // (MU59: blue in Dark), a touch heavier so it reads
+        let accent = crate::theme::ORANGE;
+        let core = if vertical {
+            Rect::from_min_max(
+                egui::pos2(rect.left() + rect.width() * k0, rect.top()),
+                egui::pos2(rect.left() + rect.width() * k1, rect.bottom()),
+            )
         } else {
-            let (y0, y1) = (
-                rect.top() + rect.height() * k0,
-                rect.top() + rect.height() * k1,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(rect.right() - 2.0, y0),
-                    egui::pos2(rect.right() - 2.0, y1),
-                ],
-                stroke,
-            );
+            Rect::from_min_max(
+                egui::pos2(rect.left(), rect.top() + rect.height() * k0),
+                egui::pos2(rect.right(), rect.top() + rect.height() * k1),
+            )
+        };
+        // a bar at each end of the core (MU59): an outline all round hid
+        // the lines between the layers it crossed
+        let stroke = egui::Stroke::new(2.5, accent);
+        let ends = if vertical {
+            [
+                [core.left_top(), core.right_top()],
+                [core.left_bottom(), core.right_bottom()],
+            ]
+        } else {
+            [
+                [core.left_top(), core.left_bottom()],
+                [core.right_top(), core.right_bottom()],
+            ]
+        };
+        for [p, q] in ends {
+            // drawn just inside the strip, so the bar is whole
+            let inset = if vertical {
+                egui::vec2(0.0, if p.y <= rect.top() + 0.5 { 1.25 } else { -1.25 })
+            } else {
+                egui::vec2(
+                    if p.x <= rect.left() + 0.5 {
+                        1.25
+                    } else {
+                        -1.25
+                    },
+                    0.0,
+                )
+            };
+            painter.line_segment([p + inset, q + inset], stroke);
         }
     }
 }
@@ -223,18 +251,45 @@ pub(super) fn layer_table(
             .size(10.5)
             .color(weak),
     );
+    // one even line a layer (MU59: the buttons wrapped, so some rows were
+    // two lines high and the list read as cramped), with room between
     egui::Grid::new(("layers", id))
         .num_columns(5)
-        .spacing([6.0, 4.0])
+        .spacing([6.0, if compact { 4.0 } else { 8.0 }])
         .show(ui, |ui| {
             for (i, l) in edited.layers.iter_mut().enumerate() {
+                // the layer's material as a button: its card opens in place
+                // (Mockup_Material_Access_REV00; it was a 10 px strip in a
+                // wider column, the gap the owner asked about)
                 let (fill, _) = layer_fill(model, l);
-                let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 18.0), Sense::hover());
-                ui.painter().rect_filled(r, 2.0, fill);
+                let before = ui.cursor().min;
+                let r = if l.material.is_some() {
+                    if let Some(crate::matcard::CopyHere(from)) = crate::matcard::swatch(
+                        ui,
+                        model,
+                        l.material,
+                        ("layer", id, i),
+                        Vec2::new(26.0, 22.0),
+                        "this layer",
+                    ) {
+                        if let Some(e) = crate::matcard::copy_of(model, from) {
+                            l.material = Some(e.id);
+                            crate::matcard::push(crate::matcard::MatAsk::Insert(e));
+                            label = "Layer material";
+                        }
+                    }
+                    Rect::from_min_size(before, Vec2::new(26.0, 22.0))
+                } else {
+                    // air and by-type layers: their colour, nothing to open
+                    let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 22.0), Sense::hover());
+                    ui.painter().rect_filled(r, 3.0, fill);
+                    r
+                };
                 if (core0..=core1).contains(&i) {
+                    // the core's layers, marked in the strip's orange
                     ui.painter().line_segment(
                         [r.left_top(), r.left_bottom()],
-                        egui::Stroke::new(2.0, crate::theme::interaction()),
+                        egui::Stroke::new(2.5, crate::theme::ORANGE),
                     );
                 }
                 egui::ComboBox::from_id_salt(("fn", id, i))
@@ -286,7 +341,7 @@ pub(super) fn layer_table(
                     l.thickness = t.max(assembly::MIN_LAYER);
                     label = "Layer thickness";
                 }
-                crate::props::flow(ui, |ui| {
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     if ui
                         .add_enabled(i > 0, GlyphButton(Glyph::Up))
@@ -420,7 +475,8 @@ impl CreaBimApp {
     }
 
     /// The assembly picker in Properties for a wall, slab or roof: which
-    /// assembly it is built of, and its layers. True when it changed.
+    /// assembly it is built of, and its strip. Its layers read in the
+    /// Material section under it. True when it changed.
     pub(super) fn assembly_combo(
         &mut self,
         ui: &mut egui::Ui,
@@ -438,7 +494,6 @@ impl CreaBimApp {
             .map_or("None (single material)".to_string(), |x| x.1.clone());
         let mut changed = false;
         let mut create = false;
-        let mut edit = false;
         crate::props::flow(ui, |ui| {
             crate::app::helpui::combo(ui, "Assembly")
                 .selected_text(shown)
@@ -462,18 +517,11 @@ impl CreaBimApp {
                     _ => None,
                 })
         {
-            strip(
-                ui,
-                self.doc.model(),
-                &a,
-                ui.available_width().min(240.0),
-                26.0,
-            );
-            ui.label(egui::RichText::new(a.summary(self.doc.model())).weak());
-            edit = ui
-                .button("Edit layers…")
-                .on_hover_text("Change this assembly: every element built of it follows")
-                .clicked();
+            // the full width of the block, the same room above and below
+            // it, so it reads apart from the layers under it (MU58)
+            ui.add_space(STRIP_GAP);
+            strip(ui, self.doc.model(), &a, ui.available_width(), 26.0);
+            ui.add_space(STRIP_GAP);
         }
         if create {
             let a = Assembly::new(usage, vec![Layer::new(LayerFunction::Structure, None, 0.2)]);
@@ -487,9 +535,6 @@ impl CreaBimApp {
             self.report(r, "New assembly. Set its layers in the assembly editor.");
             changed = true;
         }
-        if edit {
-            self.open_assemblies(*current);
-        }
         changed
     }
 
@@ -501,7 +546,9 @@ impl CreaBimApp {
         };
         let a = a.clone();
         ui.label(egui::RichText::new(format!("For {}", a.usage.label().to_lowercase())).weak());
-        strip(ui, model, &a, ui.available_width().min(240.0), 30.0);
+        ui.add_space(STRIP_GAP);
+        strip(ui, model, &a, ui.available_width(), 30.0);
+        ui.add_space(STRIP_GAP);
         let edit = layer_table(ui, model, id, &a, true);
         let users = assembly::users(model, id).len();
         ui.label(
@@ -550,193 +597,187 @@ impl CreaBimApp {
             .current
             .filter(|c| all.iter().any(|(id, _, _)| id == c))
             .or_else(|| all.first().map(|a| a.0));
-        let height = ui.available_height().max(320.0);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(230.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("asm_list")
-                    .max_height(height - 70.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for usage in AssemblyUse::ALL {
-                            let rows: Vec<_> = all.iter().filter(|a| a.2.usage == usage).collect();
-                            // a bold heading that folds, so a long list stays
-                            // easy to scan (MU18)
-                            let head = egui::RichText::new(format!(
-                                "{}  ({})",
-                                usage.label(),
-                                rows.len()
-                            ))
-                            .size(13.0)
-                            .strong();
-                            let open = rows.iter().any(|(id, _, _)| current == Some(*id))
-                                || rows.len() <= 6;
-                            let fold = egui::CollapsingHeader::new(head)
-                                .id_salt(("asm_group", usage.label()))
-                                .default_open(open)
-                                .show(ui, |ui| {
-                            for (id, name, a) in rows {
-                                let users = assembly::users(model, *id).len();
-                                let text = format!(
-                                    "{name}  ·  {}{}",
-                                    crate::units::len(a.total()),
-                                    if users > 0 {
-                                        format!("  ·  {users}")
-                                    } else {
-                                        String::new()
-                                    }
-                                );
-                                if ui
-                                    .selectable_label(current == Some(*id), text)
-                                    .on_hover_text(a.summary(model))
-                                    .clicked()
-                                {
-                                    asks.push(AsmAsk::Pick(*id));
-                                }
+        // the group New adds to: the current assembly's, else walls
+        let usage = current
+            .and_then(|c| all.iter().find(|(id, _, _)| *id == c))
+            .map_or(AssemblyUse::Wall, |(_, _, a)| a.usage);
+        crate::library::frame(
+            ui,
+            "assemblies",
+            crate::library::LIST_WIDTH,
+            asks,
+            |ui, asks| {
+                for usage in AssemblyUse::ALL {
+                    let rows: Vec<_> = all.iter().filter(|a| a.2.usage == usage).collect();
+                    let open = crate::library::group(ui, "assemblies", usage.label(), rows.len());
+                    // the rows fold smoothly (AMD-017)
+                    crate::props::fold(ui, open, |ui| {
+                        for (id, name, a) in rows {
+                            let users = assembly::users(model, *id).len();
+                            let note = if users > 0 {
+                                format!("{} · {users}", crate::units::len(a.total()))
+                            } else {
+                                crate::units::len(a.total())
+                            };
+                            if crate::library::item(ui, current == Some(*id), name, &note, None)
+                                .on_hover_text(a.summary(model))
+                                .clicked()
+                            {
+                                asks.push(AsmAsk::Pick(*id));
                             }
-                            if ui.small_button("+ New").clicked() {
-                                asks.push(AsmAsk::New(usage));
-                            }
-                                });
-                            let _ = fold;
-                            ui.separator();
-                        }
-                        if all.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No assemblies yet. Add the starters, or make a new one.",
-                                )
-                                .weak(),
-                            );
                         }
                     });
-                crate::props::flow(ui, |ui| {
+                }
+                if all.is_empty() {
+                    crate::props::empty(
+                        ui,
+                        "No assemblies yet. Add the starters, or make a new one.",
+                    );
+                }
+            },
+            |ui, asks| {
+                if crate::library::new_button(
+                    ui,
+                    &format!("A new {} assembly", usage.label().to_lowercase()),
+                )
+                .clicked()
+                {
+                    asks.push(AsmAsk::New(usage));
+                }
+                if crate::library::duplicate_button(ui, current.is_some()).clicked() {
+                    if let Some(c) = current {
+                        asks.push(AsmAsk::Duplicate(c));
+                    }
+                }
+                if crate::library::delete_button(
+                    ui,
+                    current.is_some(),
+                    "What is built of it keeps its thickness, in one material. Ctrl+Z brings it back.",
+                )
+                .clicked()
+                {
+                    if let Some(c) = current {
+                        asks.push(AsmAsk::Delete(c));
+                    }
+                }
+                crate::library::right(ui, |ui| {
                     if ui
-                        .button("Add starters")
+                        .button("Starters…")
                         .on_hover_text("A cavity wall, a partition, a floor and a pitched roof")
                         .clicked()
                     {
                         asks.push(AsmAsk::Starters);
                     }
-                    if let Some(c) = current {
-                        if ui.button("Duplicate").clicked() {
-                            asks.push(AsmAsk::Duplicate(c));
-                        }
-                        if ui
-                            .button("Delete")
-                            .on_hover_text("What is built of it keeps its thickness, in one material. Ctrl+Z brings it back.")
-                            .clicked()
-                        {
-                            asks.push(AsmAsk::Delete(c));
-                        }
-                    }
                 });
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                let Some(id) = current else { return };
-                let Some(e) = model.get(id) else { return };
-                let ElementKind::Assembly(a) = &e.kind else {
-                    return;
-                };
-                let mut name = e.name.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut name).vertical_align(egui::Align::Center)
-                            .font(egui::TextStyle::Heading)
-                            .desired_width(320.0),
-                    )
-                    .changed()
-                {
-                    asks.push(AsmAsk::Rename(id, name));
+            },
+            |ui, asks| self.assembly_editor(ui, model, current, asks),
+        );
+    }
+
+    fn assembly_editor(
+        &self,
+        ui: &mut egui::Ui,
+        model: &Model,
+        current: Option<ElementId>,
+        asks: &mut Vec<AsmAsk>,
+    ) {
+        let Some(id) = current else { return };
+        let Some(e) = model.get(id) else { return };
+        let ElementKind::Assembly(a) = &e.kind else {
+            return;
+        };
+        let mut name = e.name.clone();
+        if ui
+            .add(
+                egui::TextEdit::singleline(&mut name)
+                    .vertical_align(egui::Align::Center)
+                    .font(egui::TextStyle::Heading)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed()
+        {
+            asks.push(AsmAsk::Rename(id, name));
+        }
+        crate::props::worked_out(
+            ui,
+            "assembly",
+            &[
+                crate::props::Worked::new("Use", a.usage.label()),
+                crate::props::Worked::new("Total", crate::units::len(a.total())),
+                crate::props::Worked::new("Exports as", "IfcMaterialLayerSet"),
+            ],
+        );
+        let mut description = a.description.clone();
+        if crate::props::text_field(
+            ui,
+            egui::TextEdit::singleline(&mut description).hint_text("Description"),
+            f32::INFINITY,
+        )
+        .changed()
+        {
+            let mut new = a.clone();
+            new.description = description;
+            asks.push(AsmAsk::Edit(id, "Assembly description", new));
+        }
+        ui.add_space(6.0);
+        strip(ui, model, a, ui.available_width().min(460.0), 44.0);
+        ui.add_space(6.0);
+        if let Some((label, new)) = layer_table(ui, model, id, a, false) {
+            asks.push(AsmAsk::Edit(id, label, new));
+        }
+        ui.add_space(6.0);
+        let (c0, c1) = a.core();
+        ui.label(
+            egui::RichText::new(format!(
+                "Core: layer{} {}{} (orange). Layers run from the {} face to the {}. {}",
+                if c0 == c1 { "" } else { "s" },
+                c0 + 1,
+                if c0 == c1 {
+                    String::new()
+                } else {
+                    format!("–{}", c1 + 1)
+                },
+                a.usage.first_face().to_lowercase(),
+                a.usage.last_face().to_lowercase(),
+                if a.usage == AssemblyUse::Wall {
+                    "Where layered walls meet at a T, the core runs on to the other wall's core. A wall's exterior is on its right as drawn (Flip in Properties swaps it)."
+                } else {
+                    ""
                 }
-                ui.label(
-                    egui::RichText::new(format!(
-                        "IfcMaterialLayerSet · {} · {} total",
-                        a.usage.label(),
-                        crate::units::len(a.total())
-                    ))
-                    .weak(),
-                );
-                let mut description = a.description.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut description).vertical_align(egui::Align::Center)
-                            .hint_text("Description")
-                            .desired_width(420.0),
-                    )
-                    .changed()
-                {
-                    let mut new = a.clone();
-                    new.description = description;
-                    asks.push(AsmAsk::Edit(id, "Assembly description", new));
-                }
-                ui.add_space(6.0);
-                strip(ui, model, a, ui.available_width().min(460.0), 44.0);
-                ui.add_space(6.0);
-                if let Some((label, new)) = layer_table(ui, model, id, a, false) {
-                    asks.push(AsmAsk::Edit(id, label, new));
-                }
-                ui.add_space(6.0);
-                let (c0, c1) = a.core();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Core: layer{} {}{} (orange). Layers run from the {} face to the {}. {}",
-                        if c0 == c1 { "" } else { "s" },
-                        c0 + 1,
-                        if c0 == c1 {
-                            String::new()
-                        } else {
-                            format!("–{}", c1 + 1)
-                        },
-                        a.usage.first_face().to_lowercase(),
-                        a.usage.last_face().to_lowercase(),
-                        if a.usage == AssemblyUse::Wall {
-                            "Where layered walls meet at a T, the core runs on to the other wall's core. A wall's exterior is on its right as drawn (Flip in Properties swaps it)."
-                        } else {
-                            ""
-                        }
-                    ))
-                    .weak(),
-                );
-                ui.add_space(6.0);
-                let users = assembly::users(model, id);
-                crate::props::flow(ui, |ui| {
-                    ui.label(match users.len() {
-                        0 => "Not used yet.".to_string(),
-                        n => format!("Used by {n} element{}.", if n == 1 { "" } else { "s" }),
-                    });
-                    if !users.is_empty() && ui.small_button("Select them").clicked() {
-                        asks.push(AsmAsk::SelectUsers(id));
-                    }
-                });
-                let fits = self
-                    .assembly_targets()
-                    .iter()
-                    .filter(|t| {
-                        model
-                            .get(**t)
-                            .is_some_and(|e| AssemblyUse::of(&e.kind) == Some(a.usage))
-                    })
-                    .count();
-                let r = ui.add_enabled(
-                    fits > 0,
-                    egui::Button::new(match fits {
-                        0 => "Assign to the selection".to_string(),
-                        1 => "Assign to the selected element".to_string(),
-                        n => format!("Assign to the {n} selected elements"),
-                    }),
-                );
-                if r.on_disabled_hover_text(format!(
-                    "Select {} first",
-                    a.usage.label().to_lowercase()
-                ))
+            ))
+            .weak(),
+        );
+        let users = assembly::users(model, id);
+        let fits = self
+            .assembly_targets()
+            .iter()
+            .filter(|t| {
+                model
+                    .get(**t)
+                    .is_some_and(|e| AssemblyUse::of(&e.kind) == Some(a.usage))
+            })
+            .count();
+        let used = match users.len() {
+            0 => "Not used yet.".to_string(),
+            n => format!("Used by {n} element{}.", if n == 1 { "" } else { "s" }),
+        };
+        crate::library::foot(ui, &used, |ui| {
+            let r = crate::library::primary(
+                ui,
+                fits > 0,
+                &match fits {
+                    0 | 1 => "Assign to the selection".to_string(),
+                    n => format!("Assign to the {n} selected"),
+                },
+            );
+            if r.on_disabled_hover_text(format!("Select {} first", a.usage.label().to_lowercase()))
                 .clicked()
-                {
-                    asks.push(AsmAsk::Assign(Some(id)));
-                }
-            });
+            {
+                asks.push(AsmAsk::Assign(Some(id)));
+            }
+            if !users.is_empty() && ui.button("Select all").clicked() {
+                asks.push(AsmAsk::SelectUsers(id));
+            }
         });
     }
 

@@ -1,0 +1,152 @@
+<title>Symbols Page</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/*FONT*/
+:root{--bg:#eceee9;--win:#f6f7f4;--paper:#fff;--ink:#1d211c;--muted:#5f665d;--rule:#d5d9d2;--field:#fff;--accent:#2f6fd6;--soft:#e7eefb;--new:#a8552a}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#151715;--win:#232622;--paper:#1d201c;--ink:#e8ebe6;--muted:#a1a89e;--rule:#383d36;--field:#151715;--accent:#6ea0f0;--soft:#22304a;--new:#e58a5c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#151715;--win:#232622;--paper:#1d201c;--ink:#e8ebe6;--muted:#a1a89e;--rule:#383d36;--field:#151715;--accent:#6ea0f0;--soft:#22304a;--new:#e58a5c;color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif;margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding-block:26px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1{font-size:24px;margin:0 0 6px;text-wrap:balance} h2{font-size:17px;margin:30px 0 6px}
+.lede{color:var(--muted);max-width:80ch;margin:0 0 16px}
+.window{background:var(--win);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.titlebar{text-align:center;padding:8px;font-size:15px;border-bottom:1px solid var(--rule)}
+.packrow{display:flex;gap:8px;align-items:center;padding:8px 12px;font-size:13px;flex-wrap:wrap}
+.packrow .f{border:1px solid var(--rule);background:var(--field);border-radius:4px;padding:2px 10px}
+.tabs{display:flex;gap:1px;padding:0 12px 10px;flex-wrap:wrap}
+.tabs span{padding:4px 18px;border:1px solid var(--rule);background:var(--field);font-size:13px}
+.tabs span:first-child{border-radius:4px 0 0 4px}.tabs span:last-child{border-radius:0 4px 4px 0}
+.tabs span.on{background:var(--soft);border-color:var(--accent)}
+.tabs .newtab::after{content:" new";font-size:10px;color:var(--new)}
+.body{display:grid;grid-template-columns:300px minmax(0,1fr);gap:12px;padding:0 12px 12px}
+@media (max-width:820px){.body{grid-template-columns:1fr}}
+.list{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:4px 0;max-height:640px;overflow:auto}
+.grp{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:6px;padding:8px 10px 2px}
+.grp::after{content:"";flex:1;border-top:1px solid var(--rule)}
+.k{display:grid;grid-template-columns:34px minmax(0,1fr);gap:8px;align-items:center;padding:4px 10px;cursor:pointer}
+.k:hover{background:var(--soft)}
+.k.on{background:var(--soft);box-shadow:inset 3px 0 var(--accent)}
+.k .g{font-family:'CreaBIM Symbols';font-size:26px;line-height:1;text-align:center}
+.k .n{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k .s{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.right{min-width:0}
+.head{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;margin:2px 0 8px}
+.head b{font-size:15px}
+.head span{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
+.tile{background:var(--paper);border:2px solid var(--rule);border-radius:6px;padding:6px;cursor:pointer;text-align:center;min-width:0}
+.tile:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--rule))}
+.tile.on{border-color:var(--accent)}
+.tile svg{width:100%;height:auto;display:block}
+.tile .nm{font-size:11.5px;line-height:1.25;margin-top:2px;min-height:2.5em}
+.tile .fam{font-size:10px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+.lower{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px;margin-top:12px}
+@media (max-width:820px){.lower{grid-template-columns:1fr}}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:10px 12px;min-width:0}
+.cap{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:8px;align-items:center;margin:5px 0;font-size:12.5px}
+.row label{text-align:right;color:var(--muted)}
+.row select{font:inherit;font-size:12.5px;height:26px;border:1px solid var(--rule);border-radius:4px;background:var(--field);color:var(--ink);width:100%}
+.chk{display:flex;gap:6px;align-items:center;margin:4px 0 4px 104px;font-size:12.5px}
+.note{font-size:11.5px;color:var(--muted)}
+table.q{border-collapse:collapse;width:100%;font-size:13px}
+table.q td,table.q th{border-top:1px solid var(--rule);padding:7px 10px 7px 0;vertical-align:top;text-align:left}
+table.q th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.pick{color:var(--accent);font-weight:600}
+</style>
+
+<div class="wrap">
+<h1>Symbols: your 150, wired into CreaBIM's marks</h1>
+<p class="lede">A new <b>Symbols</b> page in Graphic styles. Every kind of mark picks one of its ten styles, kept in the style pack like pens and patterns, so a whole project, or an office's pack, changes look in one place. Ten kinds restyle marks CreaBIM already draws. Five are new, placed with a <b>Symbol</b> tool. Marks still draw with the view's pens and fill their text slot (a grid's letter, a level's height, a tag's number). Every symbol on this page is drawn by the shipped CreaBIM Symbols font.</p>
+
+<div class="window" aria-label="Graphic styles window mockup">
+ <div class="titlebar">Graphic styles</div>
+ <div class="packrow">Style pack <span class="f">Standard ⌄</span> Name <span class="f">Standard</span></div>
+ <div class="tabs"><span>Object styles</span><span>Pens</span><span>Patterns</span><span>Templates</span><span>Tags</span><span class="on newtab">Symbols</span></div>
+ <div class="body">
+  <div class="list" id="list" role="listbox" aria-label="Kinds of mark"></div>
+  <div class="right">
+   <div class="head"><b id="kname"></b><span id="kwhat"></span></div>
+   <div class="grid" id="grid"></div>
+   <div class="lower">
+    <div class="card"><div class="cap">In a drawing, 1:50</div><div id="demo"></div></div>
+    <div class="card">
+     <div class="cap">For this kind</div>
+     <div class="row"><label>Style</label><select id="sel"></select></div>
+     <div class="row"><label>Size</label><select><option>As the text style's (2.5 mm)</option><option>Its own…</option></select></div>
+     <label class="chk"><input type="checkbox" id="follow"> Follow the line style</label>
+     <p class="note" id="follownote">Off: the style picked here. On: a Hand or Loose line style draws its Hand family symbol instead, a Technical one its pick here.</p>
+    </div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<h2>Three choices for you</h2>
+<div class="card">
+<table class="q">
+<tr><th>#</th><th>Question</th><th>A (recommended)</th><th>B</th></tr>
+<tr><td>1</td><td>The five new kinds (points, slopes, centre and break lines, material keys, fixtures)</td><td class="pick">A Symbol tool in Annotate places them, its kind and style in the options strip; they draw with the view's pens</td><td>Only restyle the ten existing marks for now</td></tr>
+<tr><td>2</td><td>Where a pick is kept</td><td class="pick">In the style pack, with a view template able to override a kind (as pen sets and line styles)</td><td>Project-wide only</td></tr>
+<tr><td>3</td><td>Follow the line style</td><td class="pick">A tick per kind, off by default: when on, Hand and Loose line styles take that kind's Hand-family symbol</td><td>Symbols never change with the line style</td></tr>
+</table>
+</div>
+</div>
+
+<script>
+const KINDS = /*KINDS*/;
+const pick = Object.fromEntries(KINDS.map(k => [k.id, 0]));
+let cur = KINDS.find(k => k.id === "grids").id;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// a symbol in SVG: the font's glyph, its text slot filled with sample text
+// (font units: x = 500 + gx*28, y = 380 + gy*28 above the baseline, 1000 per em)
+function sym(k, s, size, sample) {
+  const W = size, H = size * 1.15, base = size * 0.92;
+  let t = "";
+  if (s.text && sample) {
+    const x = (500 + s.text.at[0] * 28) / 1000 * size, y = base - (380 + s.text.at[1] * 28) / 1000 * size;
+    const fs = size * 0.13 * Math.max(0.8, Math.min(1.3, (s.text.size || 3) / 3));
+    t = `<text x="${x.toFixed(1)}" y="${(y + fs * 0.35).toFixed(1)}" font-family="Segoe UI, sans-serif" font-size="${fs.toFixed(1)}" text-anchor="middle" fill="currentColor">${esc(sample)}</text>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" aria-label="${esc(s.name)}"><text x="0" y="${base}" font-family="CreaBIM Symbols" font-size="${size}" fill="currentColor">${String.fromCodePoint(s.code)}</text>${t}</svg>`;
+}
+function list() {
+  const groups = [["mark", "Marks CreaBIM draws"], ["new", "New, with the Symbol tool"]];
+  document.getElementById("list").innerHTML = groups.map(([g, title]) =>
+    `<div class="grp">${title}</div>` + KINDS.filter(k => k.where === g).map(k => {
+      const s = k.styles[pick[k.id]];
+      return `<div class="k${k.id === cur ? " on" : ""}" data-k="${k.id}" role="option" tabindex="0" aria-selected="${k.id === cur}"><span class="g">${String.fromCodePoint(s.code)}</span><span><div class="n">${esc(k.name)}</div><div class="s">${esc(s.name)}</div></span></div>`;
+    }).join("")).join("");
+  document.querySelectorAll(".k").forEach(el => {
+    el.onclick = () => { cur = el.dataset.k; render(); };
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); } };
+  });
+}
+function render() {
+  const k = KINDS.find(x => x.id === cur);
+  document.getElementById("kname").textContent = k.name;
+  document.getElementById("kwhat").textContent = k.what;
+  document.getElementById("grid").innerHTML = k.styles.map((s, i) =>
+    `<div class="tile${i === pick[k.id] ? " on" : ""}" data-i="${i}" tabindex="0" role="button" aria-pressed="${i === pick[k.id]}">${sym(k, s, 90, k.sample)}<div class="nm">${esc(s.name)}</div><div class="fam">${s.family}</div></div>`).join("");
+  document.querySelectorAll(".tile").forEach(el => {
+    el.onclick = () => { pick[k.id] = +el.dataset.i; render(); };
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); } };
+  });
+  const sel = document.getElementById("sel");
+  sel.innerHTML = k.styles.map((s, i) => `<option value="${i}"${i === pick[k.id] ? " selected" : ""}>${esc(s.name)}</option>`).join("");
+  sel.onchange = () => { pick[k.id] = +sel.value; render(); };
+  // the chosen symbol beside a piece of plan, at drawing size
+  const s = k.styles[pick[k.id]];
+  document.getElementById("demo").innerHTML =
+    `<svg viewBox="0 0 420 150" style="width:100%;height:auto;background:#fff;border-radius:4px;color:#1c1c1a" aria-label="${esc(k.name)} in a plan">
+      <rect x="20" y="40" width="250" height="70" fill="none" stroke="#1c1c1a" stroke-width="3"/>
+      <rect x="32" y="52" width="226" height="46" fill="none" stroke="#1c1c1a" stroke-width="1"/>
+      <line x1="145" y1="10" x2="145" y2="140" stroke="#1c1c1a" stroke-width="0.8" stroke-dasharray="10 3 2 3"/>
+      ${sym(k, s, 100, k.sample).replace("<svg ", '<svg x="300" y="18" width="100" height="115" ')}
+      <line x1="270" y1="75" x2="300" y2="75" stroke="#1c1c1a" stroke-width="0.8"/>
+    </svg>`;
+  list();
+}
+document.fonts.ready.then(render);
+render();
+</script>

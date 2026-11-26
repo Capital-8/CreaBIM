@@ -123,9 +123,16 @@ pub(super) fn sample_model(
                     width: 1.0,
                     height: if door { 2.1 } else { 1.2 },
                     material: None,
-                    frame: Default::default(),
+                    frame: creabim_core::OpeningFrame::for_kind(if door {
+                        creabim_core::OpeningKind::Door
+                    } else {
+                        creabim_core::OpeningKind::Window
+                    }),
                     flip_hand: false,
                     flip_facing: false,
+                    roof_at: None,
+                    roof_build: Default::default(),
+                    arrangement: None,
                 }),
             ));
             // the section through its middle, whatever its width
@@ -295,7 +302,8 @@ impl CreaBimApp {
             Some(t) if model.get(t).is_some() => types::instances(model, t),
             _ => {
                 self.type_preview.spotlight = None;
-                vec![]
+                // else what the Select tab's ticked values would pick
+                std::mem::take(&mut self.match_preview)
             }
         };
         if now != self.plan.spotlight {
@@ -309,7 +317,8 @@ impl CreaBimApp {
         let n = types::instances(self.doc.model(), id).len();
         let mut on = self.type_preview.spotlight == Some(id);
         let r = ui
-            .add_enabled(n > 0, egui::Checkbox::new(&mut on, "Show in model"))
+            .add_enabled_ui(n > 0, |ui| crate::props::tickbox(ui, &mut on, "Show in model"))
+            .inner
             .on_hover_text("Light every instance of this type in the 3D view and the plans, as if selected, and frame them")
             .on_disabled_hover_text("No instances yet");
         if r.changed() {
@@ -410,7 +419,7 @@ impl CreaBimApp {
                     ui.separator();
                     ui.vertical(|ui| {
                         let Some(s) = &shown else {
-                            ui.label(egui::RichText::new("This type can't be drawn on its own.").weak());
+                            crate::props::empty(ui, "This type can't be drawn on its own.");
                             return;
                         };
                         let w = ui.available_width().max(300.0);

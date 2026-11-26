@@ -23,6 +23,14 @@ impl CreaBimApp {
     /// Edit mode ends when its element is no longer the one selected, is
     /// gone, or a drawing tool is picked.
     pub(super) fn keep_edit_mode(&mut self) {
+        if let Some((id, vs)) = handles::take_pick_next() {
+            if self.plan.edit.is_some() && self.plan.grips.id == Some(id) {
+                self.plan.grips.pick_mesh(&vs, false);
+            }
+        }
+        if let Some(s) = self.plan.take_handle() {
+            self.status = s;
+        }
         match self.plan.grips.request.take() {
             Some(handles::GripRequest::Finish) => {
                 self.plan.edit = None;
@@ -56,10 +64,14 @@ impl CreaBimApp {
                     }
                 }
             }
+            // taken by take_handle above
+            Some(handles::GripRequest::Handle(..)) => {}
             None => {}
         }
+        self.plan.grips.publish(self.plan.edit);
         let Some(id) = self.plan.edit else {
             self.plan.grips.clear();
+            handles::forget_handle();
             handles::set_layers(false);
             return;
         };

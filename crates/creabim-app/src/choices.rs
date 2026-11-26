@@ -49,6 +49,7 @@ fn marker_items(parts: Option<&MarkerParts>, which: Marks) -> Vec<PlanItem> {
                 rgb: [0.17, 0.19, 0.16],
             });
             out.push(PlanItem::Text {
+                angle: 0.0,
                 id,
                 at: DVec2::new(x, 3.0),
                 text: "A".into(),
@@ -116,6 +117,11 @@ fn marker_items(parts: Option<&MarkerParts>, which: Marks) -> Vec<PlanItem> {
 
 /// Draw drawing items fitted into `r`, on paper.
 fn draw_fitted(painter: &Painter, r: Rect, items: &[PlanItem]) {
+    // on the drawings' paper, dark in a dark theme (DS MU21)
+    crate::app::paint_drawing(painter, || draw_fitted_light(painter, r, items));
+}
+
+fn draw_fitted_light(painter: &Painter, r: Rect, items: &[PlanItem]) {
     painter.rect_filled(r, 4.0, Color32::from_rgb(250, 250, 248));
     let pts: Vec<(DVec2, DVec2)> = items.iter().filter_map(|i| i.bounds()).collect();
     let Some(first) = pts.first() else { return };
@@ -138,6 +144,10 @@ fn draw_fitted(painter: &Painter, r: Rect, items: &[PlanItem]) {
 
 /// A picture of room tags laid out `style`'s way.
 fn paint_room_tag(painter: &Painter, r: Rect, style: RoomTagStyle) {
+    crate::app::paint_drawing(painter, || paint_room_tag_light(painter, r, style));
+}
+
+fn paint_room_tag_light(painter: &Painter, r: Rect, style: RoomTagStyle) {
     painter.rect_filled(r, 4.0, Color32::from_rgb(238, 241, 246));
     let ink = Color32::from_rgb(40, 60, 110);
     let c = r.center();
@@ -402,12 +412,7 @@ pub fn marks_page(
 ) -> (bool, Option<StylePack>) {
     let mut changed = false;
     let mut hover: Option<StylePack> = None;
-    ui.label(
-        egui::RichText::new(
-            "What prints on sheets, for the whole project: every tag and mark follows the choice. Rest on an option to see it on the plan; click to keep it.",
-        )
-        .weak(),
-    );
+    crate::props::info(ui, "What prints on sheets, for the whole project: every tag and mark follows the choice. Rest on an option to see it on the plan; click to keep it.", "");
     ui.columns(2, |cols| {
         let ui = &mut cols[0];
         crate::props::section(ui, "Room tags");
@@ -608,11 +613,7 @@ pub fn marks_page(
         let mut save = false;
         let mut cancel = false;
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(name)
-                    .vertical_align(egui::Align::Center)
-                    .desired_width(240.0),
-            );
+            crate::props::text_field(ui, egui::TextEdit::singleline(name), 240.0);
             save = ui
                 .add_enabled(!name.trim().is_empty(), egui::Button::new("Save as style"))
                 .clicked();

@@ -2,6 +2,8 @@
 
 CreaBIM is a free program for designing buildings. You draw walls, floors, doors and roofs, and CreaBIM keeps them as one 3D model of the building. Plans, sections, elevations, schedules and printed sheets are all made from that model, so they always agree with each other.
 
+CreaBIM is **modelled like Blender, made for architects**. You can design in it, not only document. Pick the points, edges and faces of a shape and move them, grow masses with modifiers, and cut walls and slabs into panels. It all stays one building model. [About CreaBIM](about) says more.
+
 ## New to BIM?
 
 BIM stands for *Building Information Modelling*. Instead of drawing lines that only look like a wall, you place a **wall**: an object that knows how thick and tall it is, what it is made of and which floor it stands on. Because the program knows what everything is, it can:

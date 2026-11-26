@@ -14,6 +14,8 @@ creabim-store.workspace = true
 creabim-exchange.workspace = true
 creabim-spec.workspace = true
 glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [[bin]]
 name = "creabim"

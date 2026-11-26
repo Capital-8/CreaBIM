@@ -7,8 +7,10 @@
 //!   patterns, and into free meshes that keep their IFC class otherwise.
 //! - IFC5 (experimental): the alpha IFCX JSON format, both ways.
 
+pub mod census;
 mod classes;
 mod export;
+mod export_kept;
 mod ifcx;
 mod import;
 mod params;
@@ -17,6 +19,6 @@ mod step;
 pub mod step_read;
 mod tess;
 
-pub use export::{export_ifc4, ExportOptions, IfcBody};
-pub use ifcx::{export_ifcx, import_ifcx};
-pub use import::{import_ifc, import_ifc_materials, ImportError, ImportResult};
+pub use export::{export_ifc4, export_ifc4_with, ExportOptions, IfcBody};
+pub use ifcx::{export_ifcx, export_ifcx_with, import_ifcx};
+pub use import::{import_ifc, import_ifc_materials, import_ifc_with, ImportError, ImportResult};

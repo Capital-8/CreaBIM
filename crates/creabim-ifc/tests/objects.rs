@@ -178,3 +178,62 @@ fn lights_hang_from_the_ceiling_in_ifc_too() {
     };
     assert!(o.offset.abs() < 1e-9, "{}", o.offset);
 }
+
+/// A fitting's own light (Visuals REV02) goes out with its type and comes
+/// back; a fitting with none still has none.
+#[test]
+fn a_fittings_own_light_round_trips_through_ifc() {
+    use creabim_core::{Document, Light, Spread, Transaction, TypeParams};
+    let mut doc = Document::from_model(furnished_house());
+    let lights = |m: &Model| -> Vec<(String, Option<Light>)> {
+        let mut v: Vec<_> = m
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::ElementType(t) => match &t.params {
+                    TypeParams::Object(o) if o.is_light_fitting() => {
+                        Some((e.name.clone(), o.light.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    };
+    let before = lights(doc.model());
+    assert!(
+        before.len() >= 2 && before.iter().all(|(_, l)| l.is_none()),
+        "{before:?}"
+    );
+    // the first fitting gets a light of its own
+    let name = before[0].0.clone();
+    let te = doc
+        .model()
+        .iter()
+        .find(|e| e.name == name && matches!(e.kind, ElementKind::ElementType(_)))
+        .unwrap()
+        .clone();
+    let mut after = te.clone();
+    let own = Light {
+        on: false,
+        lumens: 2400.0,
+        kelvin: 4000.0,
+        beam: Spread::Narrow,
+        group: "Kitchen downlights".into(),
+    };
+    if let ElementKind::ElementType(t) = &mut after.kind {
+        if let TypeParams::Object(o) = &mut t.params {
+            o.light = Some(own.clone());
+        }
+    }
+    doc.commit(Transaction::new("light").replace(te, after))
+        .unwrap();
+    let ifc = export_ifc4(doc.model(), &ExportOptions::default());
+    assert!(ifc.contains("'LightOutput'") && ifc.contains("Kitchen downlights"));
+    let back = import_ifc(&ifc).expect("the file reads");
+    let got = lights(&back.model);
+    assert_eq!(got.len(), before.len());
+    assert_eq!(got[0], (name, Some(own)));
+    assert!(got[1..].iter().all(|(_, l)| l.is_none()), "{got:?}");
+}

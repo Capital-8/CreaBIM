@@ -7,6 +7,7 @@
 
 use crate::step_read::{Entity, StepFile, Value};
 use crate::tess::{add_face, area2, clean_loop};
+use creabim_core::csg::BoolOp;
 use creabim_core::EditMesh;
 use glam::{DMat3, DMat4, DVec2, DVec3};
 use indexmap::IndexMap;
@@ -20,6 +21,8 @@ use std::f64::consts::{PI, TAU};
 pub(crate) struct Warnings {
     groups: IndexMap<String, usize>,
     details: Vec<String>,
+    /// For each detail, the index of its note in `groups`.
+    detail_notes: Vec<usize>,
 }
 
 impl Warnings {
@@ -30,18 +33,22 @@ impl Warnings {
     /// A note about one element: counted under `group`, and listed with
     /// `detail`, which names the element and says why.
     pub fn element(&mut self, group: impl Into<String>, detail: impl Into<String>) {
-        self.add(group);
+        let entry = self.groups.entry(group.into());
+        let at = entry.index();
+        *entry.or_insert(0) += 1;
         self.details.push(detail.into());
+        self.detail_notes.push(at);
     }
 
-    /// The grouped summary, then the detailed list.
-    pub fn into_parts(self) -> (Vec<String>, Vec<String>) {
+    /// The grouped summary, the detailed list, and for each detail the
+    /// index of its line in the summary.
+    pub fn into_grouped(self) -> (Vec<String>, Vec<String>, Vec<usize>) {
         let summary = self
             .groups
             .into_iter()
             .map(|(m, n)| if n > 1 { format!("{m} (×{n})") } else { m })
             .collect();
-        (summary, self.details)
+        (summary, self.details, self.detail_notes)
     }
 }
 
@@ -115,6 +122,9 @@ pub(crate) struct Geo<'a> {
     /// Radians per file plane angle unit.
     pub angle: f64,
     pub warnings: Warnings,
+    /// Boolean cuts (differences and intersections): applied, and left
+    /// out because they failed (the first operand is kept as it is).
+    pub cuts: [usize; 2],
     placements: HashMap<u64, DMat4>,
 }
 
@@ -125,6 +135,7 @@ impl<'a> Geo<'a> {
             len,
             angle,
             warnings: Warnings::default(),
+            cuts: [0; 2],
             placements: HashMap::new(),
         }
     }
@@ -873,17 +884,43 @@ impl<'a> Geo<'a> {
             "IFCBOOLEANRESULT" | "IFCBOOLEANCLIPPINGRESULT" => {
                 let first = e.arg(1).as_ref();
                 let second = e.arg(2).as_ref();
-                if e.arg(0).as_enum() == Some("UNION") {
+                let op = e.arg(0).as_enum().unwrap_or("DIFFERENCE");
+                if op == "UNION" {
                     for op in [first, second].into_iter().flatten() {
                         self.item(op, tf, out, depth + 1);
                     }
+                    return out.faces.len() > before;
+                }
+                // the first operand, cut by the second: a wall's top by the
+                // roof's planes, a stud's mitre, a notch (Highland Haven:
+                // 1,462 booleans, 900 elements, all came in uncut)
+                let mut a = EditMesh::default();
+                if let Some(f) = first {
+                    self.item(f, tf, &mut a, depth + 1);
+                }
+                if a.faces.is_empty() {
+                    return false;
+                }
+                let how = if op == "INTERSECTION" {
+                    BoolOp::Intersection
                 } else {
-                    self.warnings.add(format!(
-                        "boolean {} ignored: only the first operand is imported",
-                        e.arg(0).as_enum().unwrap_or("operation").to_lowercase()
-                    ));
-                    if let Some(op) = first {
-                        self.item(op, tf, out, depth + 1);
+                    BoolOp::Difference
+                };
+                let cut = second
+                    .and_then(|s| self.cutter(s, tf, &a, depth + 1))
+                    .and_then(|b| solid_op(&a, &b, how));
+                match cut {
+                    Some(m) => {
+                        self.cuts[0] += 1;
+                        append(out, m);
+                    }
+                    None => {
+                        self.cuts[1] += 1;
+                        self.warnings.add(format!(
+                            "boolean {} could not be applied: only the first operand is imported",
+                            op.to_lowercase()
+                        ));
+                        append(out, a);
                     }
                 }
                 return out.faces.len() > before;
@@ -972,6 +1009,70 @@ impl<'a> Geo<'a> {
         }
         append(out, local);
         out.faces.len() > before
+    }
+
+    /// The second operand of a boolean as a closed solid around `first`:
+    /// a half-space as a box on its solid side, large enough to hold
+    /// `first`; a bounded one cut down to its boundary's prism; any other
+    /// solid as it is.
+    fn cutter(&mut self, id: u64, tf: &DMat4, first: &EditMesh, depth: usize) -> Option<EditMesh> {
+        let e = self.f.get(id)?;
+        match e.class.as_str() {
+            "IFCHALFSPACESOLID" | "IFCBOXEDHALFSPACE" => self.half_space(e, tf, first),
+            "IFCPOLYGONALBOUNDEDHALFSPACE" => {
+                let side = self.half_space(e, tf, first)?;
+                let (lo, hi) = crate::tess::bounds(first.vertices.iter().copied())?;
+                let at = *tf * self.axis_placement(e.arg(2));
+                // the boundary, in its position's plane, run through
+                // everything along that plane's normal
+                let far =
+                    (at.w_axis.truncate() - (lo + hi) / 2.0).length() + (hi - lo).length() + 1.0;
+                let outline: Vec<DVec2> =
+                    self.curve(e.arg(3))?.iter().map(|p| p.truncate()).collect();
+                let region = Region::new(outline, vec![])?;
+                let mut prism = EditMesh::default();
+                extrude_mesh(
+                    &Extrusion {
+                        regions: vec![region],
+                        position: at * DMat4::from_translation(DVec3::new(0.0, 0.0, -far)),
+                        vector: DVec3::Z * 2.0 * far,
+                    },
+                    &mut prism,
+                );
+                solid_op(&side, &prism, BoolOp::Intersection)
+            }
+            _ => {
+                let mut b = EditMesh::default();
+                self.item(id, tf, &mut b, depth);
+                (!b.faces.is_empty()).then_some(b)
+            }
+        }
+    }
+
+    /// A half-space as a box on its solid side, holding all of `first`.
+    /// Its agreement flag says which side: true, the plane's normal points
+    /// away from the solid; false, into it.
+    fn half_space(&mut self, e: &Entity, tf: &DMat4, first: &EditMesh) -> Option<EditMesh> {
+        let plane = self.get(e.arg(0)).filter(|p| p.is("IFCPLANE"))?;
+        let m = *tf * self.axis_placement(plane.arg(0));
+        let p = m.transform_point3(DVec3::ZERO);
+        let n = m.transform_vector3(DVec3::Z).try_normalize()?;
+        let away = e.arg(1).as_bool().unwrap_or(true);
+        let (lo, hi) = crate::tess::bounds(first.vertices.iter().copied())?;
+        let c = (lo + hi) / 2.0;
+        let r = (hi - lo).length() + (c - p).length() + 1.0;
+        // the box's base on the plane, under `first`'s middle, standing on
+        // the solid's side; its axes kept right-handed
+        let at = c - n * n.dot(c - p);
+        let w = if away { -n } else { n };
+        let u = w.any_orthonormal_vector();
+        let v = w.cross(u);
+        let mut b = EditMesh::cuboid(DVec3::new(2.0 * r, 2.0 * r, r));
+        transform_mesh(
+            &mut b,
+            &DMat4::from_cols(u.extend(0.0), v.extend(0.0), w.extend(0.0), at.extend(1.0)),
+        );
+        Some(b)
     }
 
     fn shell(&mut self, v: &Value, out: &mut EditMesh) {
@@ -1151,6 +1252,39 @@ fn arc_through(a: DVec3, b: DVec3, c: DVec3) -> Vec<DVec3> {
     pts
 }
 
+/// `m` with its faces turned to face out, when it is wound inside out.
+fn outward(m: &EditMesh) -> EditMesh {
+    let mut f = m.clone();
+    if f.volume() < 0.0 {
+        for face in &mut f.faces {
+            face.reverse();
+        }
+    }
+    f
+}
+
+/// `a op b` for two closed solids, or `None` when the cut failed: nothing
+/// left of it, or pieces multiplied far past the inputs (a cut that splits
+/// without end).
+fn solid_op(a: &EditMesh, b: &EditMesh, op: BoolOp) -> Option<EditMesh> {
+    use creabim_core::csg;
+    // each operand turned outward first: other tools write closed meshes
+    // inside out (half of Highland Haven's cutters), and a cutter taken
+    // inside out keeps what lies within it instead of removing it
+    let (a, b) = (outward(a), outward(b));
+    let (a, b) = (&a, &b);
+    let r = csg::to_mesh(
+        &csg::boolean(
+            csg::from_mesh(a, DVec3::ZERO),
+            csg::from_mesh(b, DVec3::ZERO),
+            op,
+        ),
+        DVec3::ZERO,
+    );
+    let swollen = r.faces.len() > 20 * (a.faces.len() + b.faces.len()) + 2000;
+    (!r.faces.is_empty() && !swollen).then_some(r)
+}
+
 pub(crate) fn transform_mesh(mesh: &mut EditMesh, m: &DMat4) {
     for v in &mut mesh.vertices {
         *v = m.transform_point3(*v);
@@ -1323,6 +1457,22 @@ mod tests {
     use super::*;
     use crate::step_read::parse;
 
+    #[test]
+    fn each_detail_knows_the_note_it_was_counted_under() {
+        let mut w = Warnings::default();
+        w.element("walls as meshes", "IfcWall 'a'");
+        w.add("damaged records");
+        w.element("doors clipped", "IfcDoor 'd'");
+        w.element("walls as meshes", "IfcWall 'b'");
+        let (summary, details, notes) = w.into_grouped();
+        assert_eq!(
+            summary,
+            ["walls as meshes (×2)", "damaged records", "doors clipped"]
+        );
+        assert_eq!(details, ["IfcWall 'a'", "IfcDoor 'd'", "IfcWall 'b'"]);
+        assert_eq!(notes, [0, 2, 0]);
+    }
+
     fn geo(data: &str) -> StepFile {
         parse(&format!("ISO-10303-21;HEADER;ENDSEC;DATA;{data}ENDSEC;")).unwrap()
     }
@@ -1379,6 +1529,96 @@ mod tests {
         let (lo, hi) = crate::tess::bounds(m.vertices.iter().copied()).unwrap();
         assert!((lo - DVec3::new(10.0, 5.0, 2.0)).length() < 1e-9, "{lo}");
         assert!((hi - DVec3::new(12.0, 7.0, 4.0)).length() < 1e-9, "{hi}");
+    }
+
+    /// A 4 x 1 x 3 block from the origin, #5, and what is cut from it.
+    fn block_cut_by(cut: &str) -> EditMesh {
+        let f = geo(&format!(
+            "#1=IFCCARTESIANPOINT((2.,0.5));#2=IFCAXIS2PLACEMENT2D(#1,$);\
+             #3=IFCRECTANGLEPROFILEDEF(.AREA.,$,#2,4.,1.);#4=IFCDIRECTION((0.,0.,1.));\
+             #5=IFCEXTRUDEDAREASOLID(#3,$,#4,3.);{cut}"
+        ));
+        let mut g = Geo::new(&f, 1.0, 1.0);
+        let mut m = EditMesh::default();
+        assert!(g.item(99, &DMat4::IDENTITY, &mut m, 0));
+        m
+    }
+
+    #[test]
+    fn a_half_space_clip_cuts_the_body() {
+        // Highland Haven: walls clipped by the roof planes, studs and
+        // rafters mitred, 1,462 booleans, all came in uncut. A top cut
+        // level at 2 m (the plane's normal up, the half-space above it)
+        let m = block_cut_by(
+            "#6=IFCCARTESIANPOINT((0.,0.,2.));#7=IFCAXIS2PLACEMENT3D(#6,$,$);#8=IFCPLANE(#7);\
+             #9=IFCHALFSPACESOLID(#8,.F.);#99=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#5,#9);",
+        );
+        assert!((m.volume() - 8.0).abs() < 1e-6, "{}", m.volume());
+        let (_, hi) = crate::tess::bounds(m.vertices.iter().copied()).unwrap();
+        assert!((hi.z - 2.0).abs() < 1e-9, "{hi}");
+        // the flag the other way: the half-space below, the top kept
+        let m = block_cut_by(
+            "#6=IFCCARTESIANPOINT((0.,0.,2.));#7=IFCAXIS2PLACEMENT3D(#6,$,$);#8=IFCPLANE(#7);\
+             #9=IFCHALFSPACESOLID(#8,.T.);#99=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#5,#9);",
+        );
+        assert!((m.volume() - 4.0).abs() < 1e-6, "{}", m.volume());
+    }
+
+    #[test]
+    fn a_sloped_clip_leaves_the_gable() {
+        // the plane through (0, 0, 2) leaning at 45 degrees: what is left
+        // is the wedge under z = 2 - x, 2 x 2 / 2 x 1 = 2
+        let m = block_cut_by(
+            "#6=IFCCARTESIANPOINT((0.,0.,2.));#7=IFCDIRECTION((1.,0.,1.));\
+             #8=IFCDIRECTION((1.,0.,-1.));#10=IFCAXIS2PLACEMENT3D(#6,#7,#8);#11=IFCPLANE(#10);\
+             #12=IFCHALFSPACESOLID(#11,.F.);#99=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#5,#12);",
+        );
+        assert!((m.volume() - 2.0).abs() < 1e-6, "{}", m.volume());
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn a_bounded_half_space_cuts_only_within_its_boundary() {
+        // above 2 m, but only over the first metre in x: 12 - 1 = 11
+        let m = block_cut_by(
+            "#6=IFCCARTESIANPOINT((0.,0.,2.));#7=IFCAXIS2PLACEMENT3D(#6,$,$);#8=IFCPLANE(#7);\
+             #20=IFCCARTESIANPOINT((0.,0.,0.));#21=IFCAXIS2PLACEMENT3D(#20,$,$);\
+             #22=IFCCARTESIANPOINT((0.,-1.));#23=IFCCARTESIANPOINT((1.,-1.));\
+             #24=IFCCARTESIANPOINT((1.,2.));#25=IFCCARTESIANPOINT((0.,2.));\
+             #26=IFCPOLYLINE((#22,#23,#24,#25,#22));\
+             #9=IFCPOLYGONALBOUNDEDHALFSPACE(#8,.F.,#21,#26);\
+             #99=IFCBOOLEANCLIPPINGRESULT(.DIFFERENCE.,#5,#9);",
+        );
+        assert!((m.volume() - 11.0).abs() < 1e-6, "{}", m.volume());
+    }
+
+    #[test]
+    fn a_cutter_wound_inside_out_still_cuts() {
+        // Highland Haven: half of Bonsai's face-set cutters are wound
+        // inside out; taken as they were, they kept what was inside them
+        // and walls came in with nothing left. The unit cube, its faces
+        // all turned inward: 12 - 1 = 11
+        let m = block_cut_by(
+            "#40=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.),\
+             (0.,0.,1.),(1.,0.,1.),(1.,1.,1.),(0.,1.,1.)));\
+             #41=IFCINDEXEDPOLYGONALFACE((1,2,3,4));#42=IFCINDEXEDPOLYGONALFACE((5,8,7,6));\
+             #43=IFCINDEXEDPOLYGONALFACE((1,5,6,2));#44=IFCINDEXEDPOLYGONALFACE((2,6,7,3));\
+             #45=IFCINDEXEDPOLYGONALFACE((3,7,8,4));#46=IFCINDEXEDPOLYGONALFACE((4,8,5,1));\
+             #47=IFCPOLYGONALFACESET(#40,$,(#41,#42,#43,#44,#45,#46),$);\
+             #99=IFCBOOLEANRESULT(.DIFFERENCE.,#5,#47);",
+        );
+        assert!((m.volume() - 11.0).abs() < 1e-6, "{}", m.volume());
+    }
+
+    #[test]
+    fn a_solid_is_subtracted() {
+        // a 1 x 1 x 1 box out of the block's corner: 12 - 1 = 11
+        let m = block_cut_by(
+            "#30=IFCCARTESIANPOINT((0.,0.,0.));#31=IFCBLOCK(#32,1.,1.,1.);\
+             #32=IFCAXIS2PLACEMENT3D(#30,$,$);\
+             #99=IFCBOOLEANRESULT(.DIFFERENCE.,#5,#31);",
+        );
+        assert!((m.volume() - 11.0).abs() < 1e-6, "{}", m.volume());
     }
 
     #[test]

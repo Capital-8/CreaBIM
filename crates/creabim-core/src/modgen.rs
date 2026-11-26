@@ -246,7 +246,7 @@ pub fn bevel_outline(
             Corners::Concave => !convex,
         };
         let theta = u.dot(w).clamp(-1.0, 1.0).acos();
-        if !wanted || theta > std::f64::consts::PI - 1e-3 || theta < 1e-3 || radius <= 0.0 {
+        if !wanted || !(1e-3..=std::f64::consts::PI - 1e-3).contains(&theta) || radius <= 0.0 {
             out.push(c);
             continue;
         }
@@ -316,6 +316,7 @@ pub fn shell(e: &Evaluated, thickness: f64, open: OpenFaces) -> Evaluated {
         mesh: EditMesh {
             vertices: e.mesh.vertices.clone(),
             faces: vec![],
+            edges: vec![],
         },
         source: vec![],
     };

@@ -40,6 +40,15 @@ impl SlabMode {
         }
     }
 
+    /// [`SlabMode::label`] for the tool drawing: a pad's Fill room goes
+    /// round the walls (MU41).
+    pub fn label_for(self, tool: crate::planview::Tool) -> &'static str {
+        match (tool, self) {
+            (crate::planview::Tool::Pad, SlabMode::FillRoom) => "Around walls (3)",
+            _ => self.label(),
+        }
+    }
+
     fn key(self) -> egui::Key {
         match self {
             SlabMode::Polygon => egui::Key::Num1,
@@ -58,6 +67,7 @@ impl SlabMode {
             (Tool::Room, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a room with its outline, and the sketch is used up.",
             (Tool::Ceiling, SlabMode::FillRoom) => "Click inside a room: the ceiling goes over it and follows it.",
             (Tool::Ceiling, SlabMode::FromSketch) => "Click inside a closed sketch lying flat: it becomes a ceiling with its outline, and the sketch is used up.",
+            (Tool::Pad, SlabMode::FillRoom) => "Click inside the building: the pad goes round its walls, 600 mm past their outer faces.",
             _ => self.hint(),
         }
     }
@@ -139,7 +149,7 @@ pub fn controls(
     if !options_in_top_bar(&ctx) {
         egui::Area::new(egui::Id::new(("slab modes", pane)))
             .fixed_pos(rect.left_top() + egui::vec2(8.0, 8.0))
-            .order(egui::Order::Foreground)
+            .order(crate::app::overlay_order())
             .show(&ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     crate::props::flow(ui, |ui| {
@@ -354,6 +364,21 @@ pub fn click(
         SlabMode::FillRoom => {
             if let Some(space) = crate::roomtool::Space::of(state.tool) {
                 state.status = Some(crate::roomtool::fill(doc, space, level, p, selection)?);
+                return Ok(());
+            }
+            // a pad round the whole building, past its outer faces (MU41)
+            if state.tool == crate::planview::Tool::Pad {
+                let Some(outline) =
+                    creabim_core::slab::building_outline(doc.model(), level, p, 0.6)
+                else {
+                    state.status = Some("Click inside the building's walls: the pad goes round them, 600 mm past their outer faces. Or draw it (1 Polygon, 2 Rectangle).".into());
+                    return Ok(());
+                };
+                if let Some(make) = crate::partstool::make_for(state) {
+                    let (msg, id) = crate::partstool::finish_outline(doc, level, outline, &make)?;
+                    selection.set(id);
+                    state.status = Some(msg);
+                }
                 return Ok(());
             }
             let Some(outline) = creabim_core::room_outline(doc.model(), level, p) else {

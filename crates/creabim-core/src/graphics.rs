@@ -22,29 +22,33 @@ pub struct LineWeights {
     pub hidden: f64,
 }
 
+/// The Technical pens by scale: up to 1:`n`, cut, projection, symbol,
+/// fine, hatch and hidden, in paper millimetres.
+pub const TECHNICAL_ROWS: [(f64, [f64; 6]); 6] = [
+    (5.0, [0.70, 0.35, 0.25, 0.18, 0.13, 0.18]),
+    (10.0, [0.60, 0.30, 0.25, 0.18, 0.13, 0.18]),
+    (20.0, [0.50, 0.25, 0.21, 0.18, 0.10, 0.18]),
+    (50.0, [0.50, 0.25, 0.18, 0.13, 0.09, 0.13]),
+    (100.0, [0.35, 0.18, 0.15, 0.13, 0.09, 0.13]),
+    (100000.0, [0.25, 0.13, 0.11, 0.09, 0.07, 0.09]),
+];
+
 impl LineWeights {
-    /// The pens of a drawing at 1:`scale`: heavier at 1:50 and larger,
-    /// where there is room for a clear hierarchy, lighter at 1:100 and
-    /// smaller.
+    /// The pens of a drawing at 1:`scale`, one row per scale of the scale
+    /// table (owner, Mockup_Scale_Aware_Drawings_REV00): a strong outline
+    /// in a 1:5 detail, thinning step by step to a light 1:200 site plan.
     pub fn for_scale(scale: f64) -> Self {
-        if scale <= 75.0 {
-            Self {
-                cut: 0.70,
-                projection: 0.35,
-                symbol: 0.25,
-                fine: 0.18,
-                hatch: 0.13,
-                hidden: 0.18,
-            }
-        } else {
-            Self {
-                cut: 0.50,
-                projection: 0.25,
-                symbol: 0.18,
-                fine: 0.13,
-                hatch: 0.09,
-                hidden: 0.13,
-            }
+        let r = |v: [f64; 6]| Self {
+            cut: v[0],
+            projection: v[1],
+            symbol: v[2],
+            fine: v[3],
+            hatch: v[4],
+            hidden: v[5],
+        };
+        match TECHNICAL_ROWS.iter().find(|(up_to, _)| scale <= *up_to) {
+            Some((_, v)) => r(*v),
+            None => r(TECHNICAL_ROWS[TECHNICAL_ROWS.len() - 1].1),
         }
     }
 
@@ -198,6 +202,10 @@ pub struct PlanGraphics {
     /// How what is cut is drawn (A4-11).
     #[serde(default, skip_serializing_if = "DrawingStyle::is_default")]
     pub drawing_style: DrawingStyle,
+    /// A ceiling plan leaves out its "CH 2700" tags (they show by
+    /// default; issue #70).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_ceiling_heights: bool,
 }
 
 /// How a view draws what it cuts (A4-11): a set of overrides over its
@@ -283,6 +291,7 @@ impl Default for PlanGraphics {
             below_grey: false,
             range: PlanRange::default(),
             drawing_style: DrawingStyle::default(),
+            hide_ceiling_heights: false,
         }
     }
 }
@@ -334,7 +343,7 @@ mod tests {
 
     #[test]
     fn weights_step_down_from_cut_to_hatch() {
-        for s in [50.0, 100.0] {
+        for s in [5.0, 10.0, 20.0, 50.0, 100.0, 200.0] {
             let w = LineWeights::for_scale(s);
             assert!(w.cut > w.projection && w.projection > w.symbol);
             assert!(w.symbol > w.fine && w.fine > w.hatch);

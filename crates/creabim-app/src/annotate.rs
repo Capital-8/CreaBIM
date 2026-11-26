@@ -57,6 +57,54 @@ pub fn text_px(look: &TextLook, mm: f64, xf: &Xf) -> f32 {
 
 /// Text on screen in a look's family, weight and slant, turned `angle`
 /// radians counter-clockwise about its anchor.
+/// A text size on screen snapped to a ladder of twelve sizes a doubling:
+/// egui draws each glyph once per size, and a zoom asked it for a new size
+/// every frame, the fonts' glyphs drawn again each time (MU85: a plan
+/// stalled for up to a second while zooming).
+pub fn snap_px(px: f32) -> f32 {
+    if px <= 0.0 {
+        return px;
+    }
+    // steps of 1/24 octave (3 %): few sizes for the glyph cache, too fine
+    // to see jump when zooming (MU89: the text flickered in size)
+    ((px.log2() * 24.0).round() / 24.0).exp2().max(1.0)
+}
+
+/// The egui family a text style's font draws in on screen.
+pub fn family_of(f: Font) -> egui::FontFamily {
+    match f {
+        Font::Mono => egui::FontFamily::Monospace,
+        Font::Sans | Font::Serif => egui::FontFamily::Proportional,
+        f => egui::FontFamily::Name(f.family().into()),
+    }
+}
+
+/// The shipped fonts, each a family of its own, falling back to the
+/// interface's font for anything it lacks (2026-11-16 font set).
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut defs = egui::FontDefinitions::default();
+    let fallback = defs
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for f in Font::ALL {
+        let Some(bytes) = creabim_geom::fonts::bytes(f) else {
+            continue;
+        };
+        let name = f.family().to_string();
+        defs.font_data.insert(
+            name.clone(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+        let mut list = vec![name.clone()];
+        list.extend(fallback.iter().cloned());
+        defs.families
+            .insert(egui::FontFamily::Name(name.into()), list);
+    }
+    ctx.set_fonts(defs);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn text(
     painter: &egui::Painter,
@@ -69,21 +117,41 @@ pub fn text(
     look: &TextLook,
 ) {
     if px < 3.0 {
+        // the bar as long as the line is on paper (owner after MU91: the
+        // guessed length ran past the note's box)
+        let wide = look.width(text) as f32;
+        let w = (look.size > 0.0 && wide > 0.0).then(|| wide * px / look.size as f32);
+        greek(painter, at, text, px, anchor, angle, color, w);
         return;
     }
-    let family = match look.font {
-        Font::Mono => egui::FontFamily::Monospace,
-        Font::Sans | Font::Serif => egui::FontFamily::Proportional,
+    let family = family_of(look.font);
+    let lay = |px: f32| {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text.to_string(),
+            egui::FontId::new(px, family.clone()),
+            color,
+        );
+        for s in &mut job.sections {
+            s.format.italics = look.italic;
+        }
+        painter.layout_job(job)
     };
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        text.to_string(),
-        egui::FontId::new(px, family),
-        color,
-    );
-    for s in &mut job.sections {
-        s.format.italics = look.italic;
+    // as wide on screen as on paper: the screen's face is not the paper's,
+    // so the size is set from the paper width (MU89: lines ran past a
+    // note's box and changed length while zooming)
+    let snapped = snap_px(px);
+    let mut galley = lay(snapped);
+    let paper = look.width(text) as f32;
+    if look.size > 0.0 && paper > 0.0 && galley.size().x > 1.0 {
+        let want = paper * px / look.size as f32;
+        // stepped down, never up, so a line never runs past its box at any
+        // zoom (MU91)
+        let exact = snapped * (want / galley.size().x).clamp(0.6, 1.6);
+        let fit = ((exact.log2() * 24.0).floor() / 24.0).exp2().max(1.0);
+        if (fit - snapped).abs() > 0.01 {
+            galley = lay(fit);
+        }
     }
-    let galley = painter.layout_job(job);
     let w = galley.size().x;
     let shift = match anchor {
         Anchor::Start => w / 2.0,
@@ -103,6 +171,40 @@ pub fn text(
         );
     }
     painter.add(egui::epaint::TextShape::new(pos, galley, color).with_angle(-angle as f32));
+}
+
+/// Text too small to read drawn as a faint bar the length of its line, in
+/// its own colour (a selection's blue stays blue), so notes and lists stay
+/// in sight at any zoom (MU88, MU89).
+#[allow(clippy::too_many_arguments)]
+pub fn greek(
+    painter: &egui::Painter,
+    o: Pos2,
+    text: &str,
+    px: f32,
+    anchor: Anchor,
+    angle: f64,
+    color: Color32,
+    width: Option<f32>,
+) {
+    let chars = text.trim_end().chars().count() as f32;
+    if chars == 0.0 || px < 0.15 {
+        return;
+    }
+    // its paper width when known; else about half its height per letter
+    let w = width.unwrap_or(chars * px * 0.52);
+    let start = match anchor {
+        Anchor::Start => 0.0,
+        Anchor::Middle => -w / 2.0,
+        Anchor::End => -w,
+    };
+    let rot = egui::emath::Rot2::from_angle(-angle as f32);
+    let a = o + rot * Vec2::new(start, 0.0);
+    let b = o + rot * Vec2::new(start + w, 0.0);
+    painter.line_segment(
+        [a, b],
+        egui::Stroke::new(px.clamp(0.6, 2.0), color.gamma_multiply(0.45)),
+    );
 }
 
 /// Draw an annotation in a pane.
@@ -132,16 +234,36 @@ pub fn paint_weighted(
     paint_ends_weighted(painter, xf, &m.ends, color, w);
     let px = text_px(&item.look, mm, xf);
     for t in &m.texts {
-        text(
-            painter,
-            xf.to_screen(t.at),
-            &t.text,
-            px,
-            color,
-            t.angle,
-            t.anchor,
-            &item.look,
-        );
+        // bold and italic runs one after the other (notes' **bold**)
+        use creabim_geom::annotation::{runs_width, text_runs, BOLD, ITALIC};
+        if !t.text.contains([BOLD, ITALIC]) || item.look.size <= 0.0 {
+            text(
+                painter,
+                xf.to_screen(t.at),
+                &t.text,
+                px,
+                color,
+                t.angle,
+                t.anchor,
+                &item.look,
+            );
+            continue;
+        }
+        let k = px / item.look.size as f32;
+        let total = runs_width(&t.text, &item.look) as f32 * k;
+        let start = match t.anchor {
+            Anchor::Start => 0.0,
+            Anchor::Middle => -total / 2.0,
+            Anchor::End => -total,
+        };
+        let rot = egui::emath::Rot2::from_angle(-t.angle as f32);
+        let o = xf.to_screen(t.at);
+        for (off, run, l) in text_runs(&t.text, &item.look) {
+            if !run.is_empty() {
+                let at = o + rot * Vec2::new(start + off as f32 * k, 0.0);
+                text(painter, at, &run, px, color, t.angle, Anchor::Start, &l);
+            }
+        }
     }
 }
 
@@ -176,6 +298,7 @@ pub fn is_tool(t: Tool) -> bool {
             | Tool::Diameter
             | Tool::ArcLength
             | Tool::Note
+            | Tool::Symbol
             | Tool::SpotLevel
     )
 }
@@ -228,12 +351,32 @@ pub enum Grab {
     TagElbow(ElementId, DVec2),
     /// A level's head in a section: the level, and its datum line's end.
     LevelHead(ElementId, DVec2),
+    /// A lot edge's note: the lot, the edge, where the drag began and the
+    /// note's offset then (MU98_06).
+    LotNote(ElementId, usize, DVec2, DVec2),
 }
 
 /// Where the elbow grip of a leader running `from` → `to` sits: its
 /// elbow, or halfway along when it has none.
 fn elbow_grip(elbow: Option<DVec2>, from: DVec2, to: DVec2) -> DVec2 {
     elbow.unwrap_or((from + to) / 2.0)
+}
+
+/// Is `press` (on the screen) on a grip of a selected item?
+pub fn on_grip(
+    model: &Model,
+    items: &[PlanItem],
+    selection: &Selection,
+    xf: &Xf,
+    press: egui::Pos2,
+    mm: f64,
+) -> bool {
+    items.iter().any(|it| {
+        selection.contains(it.id())
+            && grips(model, it, mm)
+                .iter()
+                .any(|(p, _)| xf.to_screen(*p).distance(press) < 9.0)
+    })
 }
 
 /// The grips of a selected item: (where, what dragging it does).
@@ -251,10 +394,26 @@ fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
                     .last()
                     .and_then(|l| l.first().copied())
                     .unwrap_or(*tip);
-                vec![
-                    (*tip, Grab::Leader(*id)),
-                    (elbow_grip(*elbow, from, *tip), Grab::Elbow(*id)),
-                ]
+                // a room's tag: its leader's end and bend are the tag's own,
+                // kept from the room's middle (MU142: these grips moved
+                // only notes, so a room tag's showed and did nothing)
+                match model.get(*id).map(|e| &e.kind) {
+                    Some(ElementKind::Tag(t)) => {
+                        let centre = *tip - t.end.unwrap_or(DVec2::ZERO);
+                        vec![
+                            (*tip, Grab::TagEnd(*id, centre)),
+                            (elbow_grip(*elbow, from, *tip), Grab::TagElbow(*id, centre)),
+                        ]
+                    }
+                    Some(ElementKind::Note(_)) => vec![
+                        (*tip, Grab::Leader(*id)),
+                        (elbow_grip(*elbow, from, *tip), Grab::Elbow(*id)),
+                    ],
+                    // drawn for something else (a section's level tags,
+                    // the terrain's): these grips edit notes only and did
+                    // nothing (MU142); a level tag has grips of its own
+                    _ => vec![],
+                }
             }
             // a level's head in a section or elevation, for this view only
             Shape::Level { at, line_end, .. } => {
@@ -280,6 +439,36 @@ fn grips(model: &Model, it: &PlanItem, mm: f64) -> Vec<(DVec2, Grab)> {
                     Grab::TagElbow(*id, centre),
                 ),
             ]
+        }
+        // a lot edge's note: dragged from its place below the setback
+        PlanItem::Text {
+            id,
+            at,
+            text,
+            size,
+            angle,
+            ..
+        } if *size == creabim_geom::parts::LOT_NOTE_MM => {
+            // the grip just before its first letter, clear of the words
+            let half = (text.chars().count() as f64 * 0.3 + 0.35) * size * mm;
+            let grip = *at - DVec2::from_angle(*angle) * (half + 0.8 * size * mm);
+            let Some(ElementKind::Site(creabim_core::Site {
+                form:
+                    creabim_core::SiteForm::Property {
+                        boundary, rules, ..
+                    },
+                ..
+            })) = model.get(*id).map(|e| &e.kind)
+            else {
+                return vec![];
+            };
+            (0..boundary.len())
+                .find(|i| rules.note_at(*i) == Some(text.trim()))
+                .map(|i| {
+                    let off = rules.note_off(i).unwrap_or(DVec2::ZERO);
+                    vec![(grip, Grab::LotNote(*id, i, DVec2::ZERO, off))]
+                })
+                .unwrap_or_default()
         }
         _ => vec![],
     }
@@ -485,6 +674,35 @@ pub fn click(
         return Ok(added(tool, d));
     }
     match tool {
+        Tool::Symbol => {
+            // the kind placed last, so a run of one kind is a click each
+            let kind = model
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Note(n) => n.symbol.as_ref().map(|s| s.kind.clone()),
+                    _ => None,
+                })
+                .last()
+                .unwrap_or_else(|| "points".into());
+            let mut n = Note::symbol(view_id, p, &kind);
+            // the style placed last of that kind, too
+            n.symbol.as_mut().unwrap().style = model
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Note(n) => n
+                        .symbol
+                        .as_ref()
+                        .filter(|s| s.kind == kind)
+                        .map(|s| s.style.clone()),
+                    _ => None,
+                })
+                .last()
+                .flatten();
+            let e = Element::new("Symbol", ElementKind::Note(n));
+            selection.only(e.id);
+            doc.commit(Transaction::new("Add symbol").insert(e))?;
+            Ok("Symbol placed: its kind, style, turn and text are in Properties.".into())
+        }
         Tool::Note if !d.leader => {
             let e = d.styled(Element::new(
                 "Note",
@@ -913,7 +1131,11 @@ pub fn drag(
             grips(model, it, mm)
                 .into_iter()
                 .find(|(p, _)| xf.to_screen(*p).distance(press) < 9.0)
-                .map(|g| g.1)
+                .map(|g| match g.1 {
+                    // where this drag began
+                    Grab::LotNote(id, i, _, off) => Grab::LotNote(id, i, w, off),
+                    g => g,
+                })
         });
         d.grab = grip.or_else(|| {
             items.iter().rev().find_map(|it| {
@@ -937,7 +1159,8 @@ pub fn drag(
                 | Grab::Elbow(id)
                 | Grab::TagEnd(id, _)
                 | Grab::TagElbow(id, _)
-                | Grab::LevelHead(id, _),
+                | Grab::LevelHead(id, _)
+                | Grab::LotNote(id, ..),
             ) => selection.only(id),
             None => {}
         }
@@ -1012,6 +1235,15 @@ pub fn drag(
         Grab::TagElbow(id, centre) => doc.edit_merged(id, "Move leader elbow", |e| {
             if let ElementKind::Tag(t) = &mut e.kind {
                 t.elbow = Some(p - centre);
+            }
+        }),
+        Grab::LotNote(id, i, from, off) => doc.edit_merged(id, "Move edge note", |e| {
+            if let ElementKind::Site(creabim_core::Site {
+                form: creabim_core::SiteForm::Property { rules, .. },
+                ..
+            }) = &mut e.kind
+            {
+                rules.set_note_off(i, Some(off + p - from));
             }
         }),
         Grab::LevelHead(level, end) => {
@@ -1289,7 +1521,7 @@ pub fn look_ui(
             let h = ui.spacing().interact_size.y;
             ui.spacing_mut().interact_size.x = ui.available_width().max(40.0);
             ui.spacing_mut().interact_size.y = h;
-            if ui.color_edit_button_rgb(c).changed() {
+            if crate::props::colour_button_rgb(ui, c).changed() {
                 out = LookEdit::Changed("Annotation colour");
             }
         });
@@ -1324,23 +1556,43 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     let mut label = None;
     crate::app::helpui::combo(ui, "Font")
         .selected_text(s.font.label())
+        .height(560.0)
         .show_ui(ui, |ui| {
+            ui.set_min_width(230.0);
+            // grouped, each name written in its own face, so the list
+            // shows what a font looks like before it is picked
+            let mut group = None;
             for f in Font::ALL {
-                if ui.selectable_value(&mut s.font, f, f.label()).changed() {
+                if group != Some(f.group()) {
+                    group = Some(f.group());
+                    ui.add_space(4.0);
+                    let head = match f.group() {
+                        creabim_core::FontGroup::Standard => "IN EVERY PDF",
+                        creabim_core::FontGroup::CreaBim => "CREABIM",
+                        creabim_core::FontGroup::Classic => "CLASSICS",
+                    };
+                    ui.label(egui::RichText::new(head).small().weak());
+                }
+                let text = egui::RichText::new(f.label())
+                    .family(family_of(f))
+                    .size(14.0);
+                let r = ui.selectable_value(&mut s.font, f, text);
+                let r = if f.bundled() {
+                    r.on_hover_text(
+                        "Shipped with CreaBIM: it goes inside the SVGs and PDFs that use it",
+                    )
+                } else {
+                    r
+                };
+                if r.changed() {
                     label = Some("Text font");
                 }
             }
         });
     // full-width fields in the label column, as every other row (MU29)
     crate::props::row(ui, "Size on paper", |ui| {
-        if crate::props::fill(
-            ui,
-            egui::DragValue::new(&mut s.size)
-                .speed(0.05)
-                .range(0.5..=50.0)
-                .suffix(" mm"),
-        )
-        .changed()
+        if crate::props::fill(ui, crate::units::paper_small(&mut s.size).range(0.5..=50.0))
+            .changed()
         {
             label = Some("Text size");
         }
@@ -1355,7 +1607,7 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
             label = Some("Text colour");
         }
         if let Some(c) = &mut s.color {
-            if ui.color_edit_button_rgb(c).changed() {
+            if crate::props::colour_button_rgb(ui, c).changed() {
                 label = Some("Text colour");
             }
         }
@@ -1363,10 +1615,11 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
     // Blender's rows (MU31): toggles in the field column, then how the
     // lines line up
     crate::props::row(ui, "Emphasis", |ui| {
-        crate::props::flow(ui, |ui| {
+        // a fixed row in whole pixels: wrapping, it flickered as the panel was resized (MU59)
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
             let h = ui.spacing().interact_size.y;
-            let w = ((ui.available_width() - 1.0) / 2.0).max(30.0);
+            let w = ((ui.available_width() - 1.0) / 2.0).floor().max(30.0);
             if ui
                 .add_sized([w, h], egui::Button::selectable(s.bold, "Bold"))
                 .clicked()
@@ -1384,35 +1637,47 @@ pub fn style_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
         })
     });
     use creabim_core::TextAlign;
-    if crate::props::choice(
-        ui,
-        "Align",
-        &mut s.align,
-        &[
-            (
-                TextAlign::Usual,
-                "Usual",
-                "Each kind's own: notes from the left, room tags centred",
-            ),
-            (
-                TextAlign::Left,
-                "Left",
-                "Every line from the block's left edge",
-            ),
-            (
-                TextAlign::Centre,
-                "Centre",
-                "Every line on the block's middle",
-            ),
-            (
-                TextAlign::Right,
-                "Right",
-                "Every line against the block's right edge",
-            ),
-        ],
-    ) {
-        label = Some("Text alignment");
-    }
+    // a list, not four buttons: at the panel's narrowest they ran past its
+    // edge, and every row under them with them (MU141)
+    let aligns = [
+        (
+            TextAlign::Usual,
+            "Usual",
+            "Each kind's own: notes from the left, room tags centred",
+        ),
+        (
+            TextAlign::Left,
+            "Left",
+            "Every line from the block's left edge",
+        ),
+        (
+            TextAlign::Centre,
+            "Centre",
+            "Every line on the block's middle",
+        ),
+        (
+            TextAlign::Right,
+            "Right",
+            "Every line against the block's right edge",
+        ),
+    ];
+    let now = aligns
+        .iter()
+        .find(|a| a.0 == s.align)
+        .map_or("Usual", |a| a.1);
+    crate::app::helpui::combo(ui, "Align")
+        .selected_text(now)
+        .show_ui(ui, |ui| {
+            for (v, name, tip) in aligns {
+                if ui
+                    .selectable_value(&mut s.align, v, name)
+                    .on_hover_text(tip)
+                    .changed()
+                {
+                    label = Some("Text alignment");
+                }
+            }
+        });
     if let Some(l) = ends_ui(ui, s) {
         label = Some(l);
     }
@@ -1494,16 +1759,29 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
             label = Some("Leader end");
         }
     });
+    crate::props::row(ui, "Leader", |ui| {
+        if crate::props::segment(
+            ui,
+            &mut s.leader_shape,
+            &[
+                (
+                    creabim_core::LeaderShape::Straight,
+                    "Straight",
+                    "Straight runs, bent at the elbow",
+                ),
+                (
+                    creabim_core::LeaderShape::Curved,
+                    "Curved",
+                    "A smooth curve to what it points at",
+                ),
+            ],
+        ) {
+            label = Some("Leader shape");
+        }
+    });
     crate::props::row(ui, "End size", |ui| {
         let mut size = s.end_size.unwrap_or(creabim_geom::annotation::END_SIZE);
-        if crate::props::fill(
-            ui,
-            egui::DragValue::new(&mut size)
-                .speed(0.05)
-                .range(0.5..=10.0)
-                .suffix(" mm"),
-        )
-        .changed()
+        if crate::props::fill(ui, crate::units::paper_small(&mut size).range(0.5..=10.0)).changed()
         {
             s.end_size = Some(size);
             label = Some("Terminator size");
@@ -1521,7 +1799,7 @@ pub fn ends_ui(ui: &mut egui::Ui, s: &mut TextStyle) -> Option<&'static str> {
                 }
             }
         });
-    if crate::props::switch(ui, &mut s.break_at_tags, "Break dimension lines at tags")
+    if crate::props::switch(ui, &mut s.break_at_tags, "Break dimensions at tags")
         .on_hover_text(
             "Dimension lines in this style leave a gap where a tag or a note sits across them",
         )
@@ -1578,10 +1856,16 @@ pub fn style_inline(
     if resp.clicked() {
         ui.ctx().data_mut(|d| d.insert_temp(key, !shown));
     }
-    if shown {
+    // its body folds smoothly (AMD-017)
+    crate::props::fold(ui, shown, |ui| {
         label = style_ui(ui, &mut s);
-        ui.label(egui::RichText::new(format!("Changes every one of its {users} users.")).weak());
-    }
+        crate::props::worked_out(
+            ui,
+            "text-style",
+            &[crate::props::Worked::new("Used by", users.to_string())],
+        );
+        crate::props::info(ui, "A change here changes every one of them.", "");
+    });
     let label = label?;
     let r = doc.edit_merged(id, label, |e| e.kind = ElementKind::TextStyle(s));
     Some(match r {
@@ -1614,20 +1898,18 @@ pub fn offset_label(kind: DimensionKind) -> &'static str {
     }
 }
 
-/// A note's text and leader. `unit` is a drawing unit's worth of a
-/// leader's default reach (larger on sheets, which are in mm).
-pub fn note_ui(
+/// The note's text (MU83, the owner's sketch): "Text" on the left and the
+/// marks and large-editor buttons on the right of one line, the box under
+/// them across the whole panel, as text areas always span it.
+fn note_text_row(
     ui: &mut egui::Ui,
-    n: &mut Note,
-    focus: &mut bool,
-    unit: f64,
+    text: &mut String,
     pop_out: &mut bool,
-) -> Option<&'static str> {
-    let mut label = None;
-    // the field keeps its size and scrolls inside; the small button at its
-    // corner opens the large editor (MU27)
+    marked: &mut bool,
+) -> egui::Response {
     crate::props::flow(ui, |ui| {
-        ui.label("Text");
+        let muted = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        ui.label(egui::RichText::new("Text").color(muted));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if crate::props::icon_button(
                 ui,
@@ -1638,20 +1920,254 @@ pub fn note_ui(
             {
                 *pop_out = true;
             }
+            *marked = marks_menu(ui, text, false);
         });
     });
-    let r = egui::ScrollArea::vertical()
+    egui::ScrollArea::vertical()
         .id_salt("note.text")
         .max_height(110.0)
         .show(ui, |ui| {
             ui.add(
-                egui::TextEdit::multiline(&mut n.text)
+                egui::TextEdit::multiline(text)
                     .desired_rows(4)
                     .desired_width(f32::INFINITY),
             )
         })
-        .inner;
-    if std::mem::take(focus) {
+        .inner
+}
+
+/// Signs and words that drawings often carry (MU81): offered beside text
+/// fields, so they need no typing.
+pub const MARKS: [(&str, &str); 24] = [
+    ("±", "plus or minus"),
+    ("Ø", "diameter"),
+    ("°", "degrees"),
+    ("²", "squared"),
+    ("³", "cubed"),
+    ("×", "by"),
+    ("≈", "about"),
+    ("′", "feet"),
+    ("″", "inches"),
+    ("℄", "centre line"),
+    ("∆", "change, revision"),
+    ("½", "half"),
+    ("¼", "quarter"),
+    ("¾", "three quarters"),
+    ("TYP.", "typical"),
+    ("CLR", "clear"),
+    ("MIN", "minimum"),
+    ("MAX", "maximum"),
+    ("O.C.", "on centre"),
+    ("EQ", "equal"),
+    ("U.N.O.", "unless noted otherwise"),
+    ("V.I.F.", "verify in field"),
+    ("FFL", "finished floor level"),
+    ("NTS", "not to scale"),
+];
+
+/// A small button that opens [`MARKS`]; a pick is added to `text` (after a
+/// space when it is a word, or always when `words` says the field takes
+/// whole words). True when the text changed.
+pub fn marks_menu(ui: &mut egui::Ui, text: &mut String, words: bool) -> bool {
+    let mut changed = false;
+    let r = crate::props::icon_button(ui, "diameter", "Add a sign or word: ±, Ø, °, TYP., CLR…");
+    egui::Popup::menu(&r).show(|ui| {
+        ui.set_min_width(200.0);
+        egui::Grid::new(ui.id().with("marks"))
+            .num_columns(2)
+            .show(ui, |ui| {
+                for (i, (m, what)) in MARKS.iter().enumerate() {
+                    if ui.button(*m).on_hover_text(*what).clicked() {
+                        let word = words || m.chars().count() > 1;
+                        if word && !text.is_empty() && !text.ends_with(' ') && !text.ends_with('\n')
+                        {
+                            text.push(' ');
+                        }
+                        text.push_str(m);
+                        changed = true;
+                        ui.close();
+                    }
+                    if i % 2 == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
+    });
+    changed
+}
+
+/// A linear dimension's Text fields (MU80, A on all three; MU81): its own
+/// text instead of the measure, words before and after, a note below, its
+/// place along the line, the leader of moved text, and Move text, which
+/// gives the text a grip. Returns the undo label when something changed.
+pub fn dim_text_ui(ui: &mut egui::Ui, t: &mut creabim_core::DimText) -> Option<&'static str> {
+    use creabim_core::{DimLeader, DimPlace};
+    let mut label = None;
+    // a tick and a list, not segments: four segments in a narrow panel cut
+    // their names to "…" (checked in the test copy)
+    if crate::props::check(ui, "Value", &mut t.instead, "Text instead")
+        .on_hover_text("Your own text instead of the measure; <> in it brings the measure back. Off, the measure, kept up to date.")
+        .changed()
+    {
+        label = Some("Dimension value");
+    }
+    // each field fills the value column; its hint shows greyed inside it
+    // and in full on hover, never as a loose line (MU82)
+    let field =
+        |ui: &mut egui::Ui, name: &str, s: &mut String, hint: &str, tip: &str, words: bool| {
+            let mut changed = false;
+            crate::props::row(ui, name, |ui| {
+                let w = (ui.available_width() - 24.0).max(40.0);
+                changed |=
+                    crate::props::text_field(ui, egui::TextEdit::singleline(s).hint_text(hint), w)
+                        .on_hover_text(tip)
+                        .changed();
+                changed |= marks_menu(ui, s, words);
+            });
+            changed
+        };
+    if t.instead
+        && field(
+            ui,
+            "Text",
+            &mut t.text,
+            "EQ or <> MIN",
+            "Your text instead of the number. <> puts the measure back in: <> MIN reads 3810 MIN",
+            false,
+        )
+    {
+        label = Some("Dimension text");
+    }
+    if field(
+        ui,
+        "Before",
+        &mut t.before,
+        "±",
+        "On the line before the number: ±, ≈, Ø, R",
+        false,
+    ) {
+        label = Some("Dimension text");
+    }
+    if field(
+        ui,
+        "After",
+        &mut t.after,
+        "CLR",
+        "On the line after the number: TYP., CLR, MIN, O.C.",
+        true,
+    ) {
+        label = Some("Dimension text");
+    }
+    if field(
+        ui,
+        "Below",
+        &mut t.below,
+        "FACE OF STUD",
+        "A line of smaller text under the dimension line",
+        true,
+    ) {
+        label = Some("Dimension note");
+    }
+    let mut place = t.place;
+    let places = [
+        (DimPlace::Centre, "Centre", "Over the middle of the line"),
+        (
+            DimPlace::Left,
+            "Left",
+            "Past the line's start, the line running on under it",
+        ),
+        (
+            DimPlace::Right,
+            "Right",
+            "Past the line's end, the line running on under it",
+        ),
+        (
+            DimPlace::Moved,
+            "Moved",
+            "Where its grip was dragged (tick Move text)",
+        ),
+    ];
+    crate::app::helpui::combo(ui, "Place")
+        .selected_text(
+            places
+                .iter()
+                .find(|p| p.0 == place)
+                .map_or("Centre", |p| p.1),
+        )
+        .show_ui(ui, |ui| {
+            for (v, name, tip) in places {
+                ui.selectable_value(&mut place, v, name).on_hover_text(tip);
+            }
+        });
+    if place != t.place {
+        t.place = place;
+        if place == DimPlace::Moved {
+            t.movable = true;
+        }
+        label = Some("Dimension text place");
+    }
+    if t.place == DimPlace::Moved {
+        let mut leader = t.leader;
+        crate::app::helpui::combo(ui, "Leader")
+            .selected_text(match leader {
+                DimLeader::WhenOutside => "When outside",
+                DimLeader::Always => "Always",
+                DimLeader::Never => "Never",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut leader, DimLeader::WhenOutside, "When outside")
+                    .on_hover_text("Only when the text sits outside the witness lines");
+                ui.selectable_value(&mut leader, DimLeader::Always, "Always");
+                ui.selectable_value(&mut leader, DimLeader::Never, "Never");
+            });
+        if leader != t.leader {
+            t.leader = leader;
+            label = Some("Dimension leader");
+        }
+    }
+    if crate::props::check(ui, "", &mut t.movable, "Move text")
+        .on_hover_text("Gives this dimension's text a grip to drag it by; the others stay put, so none moves by mistake")
+        .changed()
+    {
+        label = Some("Move dimension text");
+    }
+    if !t.is_plain()
+        && crate::props::action(
+            ui,
+            "",
+            "Back to the plain number",
+            "Clears all of the above",
+            true,
+        )
+        .clicked()
+    {
+        *t = Default::default();
+        label = Some("Dimension text");
+    }
+    label
+}
+
+/// A note's text and leader. `unit` is a drawing unit's worth of a
+/// leader's default reach (larger on sheets, which are in mm).
+pub fn note_ui(
+    ui: &mut egui::Ui,
+    n: &mut Note,
+    focus: &mut bool,
+    unit: f64,
+    pop_out: &mut bool,
+) -> Option<&'static str> {
+    let mut label = None;
+    // the field in the value column like every other (MU81), keeping its
+    // size and scrolling inside; the buttons beside it add a drawing mark
+    // or open the large editor (MU27)
+    let mut marked = false;
+    // a note showing a notes section is written in the Notes area
+    let linked = n.section.is_some();
+    let r = (!linked).then(|| note_text_row(ui, &mut n.text, pop_out, &mut marked));
+    if marked {
+        label = Some("Note text");
+    }
+    if let Some(r) = r.as_ref().filter(|_| std::mem::take(focus)) {
         r.request_focus();
         // select it all, so typing replaces the placeholder
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), r.id) {
@@ -1663,15 +2179,14 @@ pub fn note_ui(
             state.store(ui.ctx(), r.id);
         }
     }
-    if r.changed() {
+    if r.is_some_and(|r| r.changed()) {
         label = Some("Note text");
     }
     // a text box (MU26): wraps to a width, reads markdown
     let mut boxed = n.width.is_some();
     crate::props::row(ui, "Box", |ui| {
         crate::props::flow(ui, |ui| {
-            if ui
-                .checkbox(&mut boxed, "Wrap at")
+            if crate::props::tickbox(ui, &mut boxed, "Wrap at")
                 .on_hover_text(
                     "Lines wrap to this width on paper; off, each line runs as long as it is",
                 )
@@ -1681,21 +2196,23 @@ pub fn note_ui(
                 label = Some("Note box");
             }
             if let Some(w) = &mut n.width {
-                if ui
-                    .add(
-                        egui::DragValue::new(w)
-                            .speed(0.5)
-                            .range(5.0..=800.0)
-                            .suffix(" mm"),
-                    )
-                    .changed()
-                {
+                if ui.add(crate::units::paper(w).range(5.0..=800.0)).changed() {
                     label = Some("Note box");
                 }
+                // how the box and Continue tie together (MU91)
+                crate::props::help_ring(
+                    ui,
+                    "Wrap at",
+                    "The box's width: every line wraps to it. On a sheet, Text flow adds a height; \
+                     the text stops there and Continue carries the rest into blocks of the same width, \
+                     so changing the width here reflows every part.",
+                    "notes#long-notes",
+                );
             }
         });
     });
-    if crate::props::switch(ui, &mut n.markdown, "Markdown")
+    if !linked
+        && crate::props::switch(ui, &mut n.markdown, "Markdown")
         .on_hover_text("# heading (capitals, underlined), - bullet, 1. numbered, - [ ] and - [x] checkboxes; **bold** and *italic* marks are dropped on paper")
         .changed()
     {
@@ -1706,12 +2223,19 @@ pub fn note_ui(
         .on_hover_text("An arrow from the note to what it is about. Drag its square to move it.")
         .changed()
     {
-        n.leader = leader.then(|| HostPoint::free(n.at + DVec2::new(-1.5, -1.0) * unit));
+        // off keeps its point, so on again points the same way (MU135)
+        let fresh = n.at + DVec2::new(-1.5, -1.0) * unit;
+        n.set_leader(leader, fresh);
         label = Some("Note leader");
     }
     if n.leader.is_some_and(|l| l.host.is_some()) {
-        ui.label(
-            egui::RichText::new("Its arrow is attached and follows what it points at.").weak(),
+        crate::props::worked_out(
+            ui,
+            "note-leader",
+            &[crate::props::Worked::new(
+                "Arrow",
+                "Attached: follows what it points at",
+            )],
         );
     }
     label
@@ -1722,6 +2246,44 @@ mod tests {
     use super::*;
     use creabim_core::ViewKind;
     use creabim_geom::plan::Pen;
+
+    /// MU142 (seen in wave3m): a section's level tags are notes drawn for
+    /// the terrain; with the terrain selected they showed a note's leader
+    /// grips, which edit Note elements only and so did nothing. A note
+    /// drawn for anything but a Note or a Tag has none of those (a level
+    /// tag has grips of its own, over it).
+    #[test]
+    fn a_note_drawn_for_a_terrain_shows_no_note_grips() {
+        let lv = creabim_core::Element::new(
+            "Ground",
+            ElementKind::Level(creabim_core::Level {
+                elevation: 0.0,
+                height: 3.0,
+            }),
+        );
+        let t = creabim_core::Site::terrain(
+            lv.id,
+            creabim_core::polygon::rectangle(DVec2::ZERO, DVec2::new(10.0, 10.0)),
+            0.0,
+            1.0,
+        );
+        let te = creabim_core::Element::new("Terrain", ElementKind::Site(t));
+        let (tid, m) = (te.id, Model::from_elements([lv, te]).unwrap());
+        let level = creabim_geom::annotate::room_tag_item(
+            tid,
+            "+2.00".into(),
+            DVec2::new(5.0, 3.0),
+            creabim_geom::annotate::look_of(&m, None, None),
+            0.1,
+        );
+        let mut level = level;
+        if let PlanItem::Annotation { item, .. } = &mut level {
+            if let Shape::Note { leader, .. } = &mut item.shape {
+                *leader = Some(DVec2::new(5.0, 1.0));
+            }
+        }
+        assert!(grips(&m, &level, 0.1).is_empty());
+    }
 
     fn plan_of(doc: &Document) -> (ElementId, View) {
         doc.model()

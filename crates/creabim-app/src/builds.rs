@@ -32,6 +32,8 @@ enum Done {
     Scene {
         revision: u64,
         scene: Arc<Vec<SceneItem>>,
+        /// How long the scene and then its edges took, in ms.
+        ms: (f64, f64),
     },
 }
 
@@ -107,6 +109,11 @@ impl Builds {
         self.cost.get(&key).is_some_and(|ms| *ms < CHEAP_MS)
     }
 
+    /// Is `key`'s drawing known to build in under `ms`?
+    pub fn under(&self, key: Key, ms: f64) -> bool {
+        self.cost.get(&key).is_some_and(|c| *c < ms)
+    }
+
     /// Can work go to a worker thread at all?
     pub fn enabled(&self) -> bool {
         self.ctx.is_some()
@@ -121,7 +128,7 @@ impl Builds {
         if self.running.contains_key(&key) {
             return;
         }
-        let revision = model.drawing_revision();
+        let revision = model.drawing_revision_of(key.0);
         let snapshot = self.snapshot(model);
         let tx = self.tx.clone();
         self.running.insert(key, revision);
@@ -155,14 +162,25 @@ impl Builds {
         if self.scene_running.is_some() {
             return;
         }
-        let revision = model.revision();
+        // (the revision the scene is cached by: see `shared_scene`)
+        let revision = model.scene_revision();
         let snapshot = self.snapshot(model);
         let tx = self.tx.clone();
         self.scene_running = Some(revision);
         std::thread::spawn(move || {
             creabim_geom::prio::background();
+            let t = Instant::now();
             let scene = creabim_geom::shared_scene(&snapshot);
-            let _ = tx.send(Done::Scene { revision, scene });
+            let built = t.elapsed().as_secs_f64() * 1000.0;
+            // the edges the 3D view draws, found here and not in a frame
+            let t = Instant::now();
+            crate::snaps::warm_edges(&scene);
+            let edges = t.elapsed().as_secs_f64() * 1000.0;
+            let _ = tx.send(Done::Scene {
+                revision,
+                scene,
+                ms: (built, edges),
+            });
             ctx.request_repaint();
         });
     }
@@ -199,8 +217,19 @@ impl Builds {
                         drawing,
                     });
                 }
-                Done::Scene { revision, scene } => {
+                Done::Scene {
+                    revision,
+                    scene,
+                    ms,
+                } => {
                     self.scene_running = None;
+                    // what the 3D view waited for, for problem reports
+                    if ms.0 + ms.1 >= crate::actlog::SLOW_MS {
+                        crate::actlog::line(format!(
+                            "worker: 3D scene built in {:.0} ms, its edges in {:.0} ms",
+                            ms.0, ms.1
+                        ));
+                    }
                     if self.scene_done.as_ref().is_none_or(|(r, _)| *r < revision) {
                         self.scene_done = Some((revision, scene));
                     }
@@ -264,15 +293,6 @@ mod tests {
             worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        // a frame's asking costs the model snapshot at most. Shared CI
-        // machines stall now and then for reasons of their own, so there
-        // the bound is looser: it still catches a frame that builds
-        let bound = if std::env::var_os("CI").is_some() {
-            60.0
-        } else {
-            16.0
-        };
-        assert!(worst < bound, "a frame waited {worst:.1} ms");
         let last = doc.model().drawing_revision();
         let deadline = Instant::now() + std::time::Duration::from_secs(60);
         let mut newest: HashMap<Key, u64> = HashMap::new();
@@ -287,6 +307,21 @@ mod tests {
                 .iter()
                 .all(|v| newest.get(&(*v, false)) == Some(&last))
             {
+                // A frame's asking costs a model snapshot at most (2-4 ms);
+                // a frame that built a drawing would take a whole build
+                // (seconds in a test build). Measured against the builds
+                // themselves, slowed by the same machine load, so a busy
+                // machine (a full test run: 16 ms bound failed when the
+                // OS took the thread away for one time slice) does not
+                // fail it, and a frame that builds still does.
+                let cheapest = views
+                    .iter()
+                    .filter_map(|v| b.cost.get(&(*v, false)))
+                    .fold(f64::INFINITY, |a, c| a.min(*c));
+                assert!(
+                    worst < cheapest / 4.0,
+                    "a frame waited {worst:.1} ms; a build takes {cheapest:.0} ms"
+                );
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));

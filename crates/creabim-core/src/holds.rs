@@ -268,6 +268,7 @@ mod tests {
                 start: DVec2::new(x, -5.0),
                 end: DVec2::new(x, 15.0),
                 group: None,
+                ..crate::Grid::default()
             }),
         )
     }

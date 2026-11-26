@@ -316,7 +316,7 @@ impl CreaBimApp {
                     match ask {
                         LevelAsk::Copy => {
                             let mut on = self.level_copy.targets.contains(id);
-                            if ui.add_enabled(!here, egui::Checkbox::new(&mut on, text)).changed() {
+                            if ui.add_enabled_ui(!here, |ui| crate::props::tickbox(ui, &mut on, text)).inner.changed() {
                                 if on {
                                     self.level_copy.targets.insert(*id);
                                 } else {

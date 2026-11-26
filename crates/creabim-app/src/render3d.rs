@@ -21,7 +21,9 @@ pub struct Vertex {
 /// of lines.
 pub const PLAIN: [f32; 3] = [0.8, 0.0, 1.0];
 
-/// How the 3D view draws the model.
+/// How the 3D view draws the model. The first four are drawn by the GPU
+/// every frame; the rest are rendered (by creabim-render) when the view
+/// stops moving, over the shaded view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RenderMode {
     /// Surfaces in their materials' colours.
@@ -33,14 +35,122 @@ pub enum RenderMode {
     HiddenLine,
     /// Edges only, the hidden ones too: what is inside and behind shows.
     Wireframe,
+    /// Sun and sky of the place and hour, soft shadows, ambient occlusion.
+    Realtime,
+    /// The same with glass and metal reflecting the scene.
+    RealtimeReflections,
+    /// The OSAL toon preset: flat bands, outlines, cavity, faint shadows.
+    Toon,
+    /// Every surface white: the massing model.
+    Clay,
+    /// Outlines over pale washes and two-tone shadows.
+    LineWash,
+    Watercolour,
+    /// Pencil outlines and hatching.
+    Sketch,
+    /// The path tracer, refining pass by pass.
+    PathTraced,
+}
+
+/// The four display buttons of the 3D view's header, each a family of
+/// looks (Visuals REV02).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    /// Edges only: wireframe, hidden line.
+    Line,
+    /// Shaded, with or without its edges.
+    Solid,
+    /// A drawing style: toon, clay, line and wash, watercolour, sketch.
+    Style,
+    /// Lit by the sun and sky: Quick or Photoreal.
+    Rendered,
+}
+
+impl Family {
+    pub const ALL: [Family; 4] = [Family::Line, Family::Solid, Family::Style, Family::Rendered];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Family::Line => "Line",
+            Family::Solid => "Solid",
+            Family::Style => "Style",
+            Family::Rendered => "Rendered",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Family::Line => "Edges only: hidden line or wireframe",
+            Family::Solid => "Shaded surfaces, with or without their edges",
+            Family::Style => "A drawing style, the one chosen in Properties",
+            Family::Rendered => "Lit by the sun and sky, by the renderer chosen in Properties",
+        }
+    }
+
+    /// Its name in an action ("display:solid").
+    pub fn key(self) -> &'static str {
+        match self {
+            Family::Line => "line",
+            Family::Solid => "solid",
+            Family::Style => "style",
+            Family::Rendered => "rendered",
+        }
+    }
+
+    pub fn of_key(key: &str) -> Option<Family> {
+        Family::ALL.into_iter().find(|f| f.key() == key)
+    }
+
+    /// The look its button shows before any was picked.
+    pub fn first(self) -> RenderMode {
+        match self {
+            Family::Line => RenderMode::HiddenLine,
+            Family::Solid => RenderMode::Shaded,
+            Family::Style => RenderMode::Toon,
+            Family::Rendered => RenderMode::Realtime,
+        }
+    }
 }
 
 impl RenderMode {
-    pub const ALL: [RenderMode; 4] = [
+    /// The drawing styles, as Properties lists them.
+    pub const STYLES: [RenderMode; 5] = [
+        RenderMode::Toon,
+        RenderMode::Clay,
+        RenderMode::LineWash,
+        RenderMode::Watercolour,
+        RenderMode::Sketch,
+    ];
+
+    /// The display button it belongs to.
+    pub fn family(self) -> Family {
+        match self {
+            RenderMode::HiddenLine | RenderMode::Wireframe => Family::Line,
+            RenderMode::Shaded | RenderMode::ShadedEdges => Family::Solid,
+            RenderMode::Toon
+            | RenderMode::Clay
+            | RenderMode::LineWash
+            | RenderMode::Watercolour
+            | RenderMode::Sketch => Family::Style,
+            RenderMode::Realtime | RenderMode::RealtimeReflections | RenderMode::PathTraced => {
+                Family::Rendered
+            }
+        }
+    }
+
+    pub const ALL: [RenderMode; 12] = [
         RenderMode::Shaded,
         RenderMode::ShadedEdges,
         RenderMode::HiddenLine,
         RenderMode::Wireframe,
+        RenderMode::Realtime,
+        RenderMode::RealtimeReflections,
+        RenderMode::Toon,
+        RenderMode::Clay,
+        RenderMode::LineWash,
+        RenderMode::Watercolour,
+        RenderMode::Sketch,
+        RenderMode::PathTraced,
     ];
 
     pub fn label(self) -> &'static str {
@@ -49,6 +159,14 @@ impl RenderMode {
             RenderMode::ShadedEdges => "Shaded with edges",
             RenderMode::HiddenLine => "Hidden line",
             RenderMode::Wireframe => "Wireframe",
+            RenderMode::Realtime => "Quick",
+            RenderMode::RealtimeReflections => "Quick with reflections",
+            RenderMode::Toon => "Toon",
+            RenderMode::Clay => "Clay",
+            RenderMode::LineWash => "Line and wash",
+            RenderMode::Watercolour => "Watercolour",
+            RenderMode::Sketch => "Sketch",
+            RenderMode::PathTraced => "Photoreal",
         }
     }
 
@@ -58,6 +176,14 @@ impl RenderMode {
             RenderMode::ShadedEdges => "render-edges",
             RenderMode::HiddenLine => "render-hidden-line",
             RenderMode::Wireframe => "render-wireframe",
+            RenderMode::Realtime => "house",
+            RenderMode::RealtimeReflections => "house",
+            RenderMode::Toon => "box",
+            RenderMode::Clay => "cuboid",
+            RenderMode::LineWash => "pen-tool",
+            RenderMode::Watercolour => "palette",
+            RenderMode::Sketch => "pencil",
+            RenderMode::PathTraced => "scan-eye",
         }
     }
 
@@ -71,12 +197,50 @@ impl RenderMode {
             RenderMode::Wireframe => {
                 "Edges only, the hidden ones too: see shafts and what is inside walls and slabs"
             }
+            RenderMode::Realtime => {
+                "Sun and sky for the project's place and the hour, soft shadows and ambient occlusion"
+            }
+            RenderMode::RealtimeReflections => "Quick, with glass and metal reflecting the scene",
+            RenderMode::Toon => {
+                "Flat toon bands, outlines on every edge, darker corners and faint shadows (the OSAL preset)"
+            }
+            RenderMode::Clay => "Every surface white, with sun and occlusion: the massing model",
+            RenderMode::LineWash => "Outlines over pale washes of each material, with two-tone shadows",
+            RenderMode::Watercolour => "Washes that bleed and pool, on paper, over faint pencil",
+            RenderMode::Sketch => "Pencil outlines and hatching by tone",
+            RenderMode::PathTraced => {
+                "Real light, bounced: refines pass by pass while the view stays still"
+            }
         }
+    }
+
+    /// Is it rendered when the view stops, rather than drawn every frame?
+    /// The renderer's mode for it if so.
+    pub fn rendered(self) -> Option<creabim_render::job::Mode> {
+        use creabim_render::job::Mode;
+        use creabim_render::look::Look;
+        Some(match self {
+            RenderMode::Shaded
+            | RenderMode::ShadedEdges
+            | RenderMode::HiddenLine
+            | RenderMode::Wireframe => return None,
+            RenderMode::Realtime => Mode::Look(Look::Realtime { traced: false }),
+            RenderMode::RealtimeReflections => Mode::Look(Look::Realtime { traced: true }),
+            RenderMode::Toon => Mode::Look(Look::Toon),
+            RenderMode::Clay => Mode::Look(Look::Clay),
+            RenderMode::LineWash => Mode::Look(Look::LineWash),
+            RenderMode::Watercolour => Mode::Look(Look::Watercolour),
+            RenderMode::Sketch => Mode::Look(Look::Sketch),
+            RenderMode::PathTraced => Mode::Path { samples: 256 },
+        })
     }
 
     /// Are the model's edges drawn?
     pub fn edges(self) -> bool {
-        self != RenderMode::Shaded
+        matches!(
+            self,
+            RenderMode::ShadedEdges | RenderMode::HiddenLine | RenderMode::Wireframe
+        )
     }
 }
 
@@ -186,6 +350,10 @@ pub struct Viewport3d {
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     triangles: Option<Mesh>,
+    /// The shape that follows the pointer, apart from the rest.
+    moving: Option<Mesh>,
+    moving_glass: Option<Mesh>,
+    moving_lines: Option<Mesh>,
     glass_mesh: Option<Mesh>,
     line_mesh: Option<Mesh>,
     overlay_mesh: Option<Mesh>,
@@ -328,6 +496,9 @@ impl Viewport3d {
             uniforms,
             bind_group,
             triangles: None,
+            moving: None,
+            moving_glass: None,
+            moving_lines: None,
             glass_mesh: None,
             line_mesh: None,
             overlay_mesh: None,
@@ -382,6 +553,49 @@ impl Viewport3d {
         };
         self.line_mesh = line_mesh(lines);
         self.overlay_mesh = line_mesh(overlay);
+    }
+
+    /// Replace the buffers of the shape that follows the pointer, kept
+    /// apart from the rest so that a step of a move sends these only
+    /// (MU86: sending the whole model's was 8 to 11 ms a step).
+    pub fn set_moving(
+        &mut self,
+        device: &wgpu::Device,
+        vertices: &[Vertex],
+        indices: &[u32],
+        see_through: &[u32],
+        lines: &[Vertex],
+    ) {
+        let buffer = |data: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: data,
+                usage,
+            })
+        };
+        if vertices.is_empty() {
+            self.moving = None;
+            self.moving_glass = None;
+        } else {
+            let shared = buffer(bytemuck::cast_slice(vertices), wgpu::BufferUsages::VERTEX);
+            let tri_mesh = |indices: &[u32]| {
+                (!indices.is_empty()).then(|| Mesh {
+                    vertices: shared.clone(),
+                    indices: Some(buffer(
+                        bytemuck::cast_slice(indices),
+                        wgpu::BufferUsages::INDEX,
+                    )),
+                    count: indices.len() as u32,
+                })
+            };
+            self.moving = tri_mesh(indices);
+            self.moving_glass = tri_mesh(see_through);
+        }
+        self.moving_lines = (!lines.is_empty()).then(|| Mesh {
+            vertices: buffer(bytemuck::cast_slice(lines), wgpu::BufferUsages::VERTEX),
+            indices: None,
+            count: lines.len() as u32,
+        });
     }
 
     /// Replace the selection's highlight: its triangles (three vertices
@@ -536,10 +750,13 @@ impl Viewport3d {
             pass.set_bind_group(0, &self.bind_group, &[]);
             for (pipeline, mesh) in [
                 (&self.shaded, &self.triangles),
+                (&self.shaded, &self.moving),
                 (&self.highlight, &self.sel_mesh),
                 (&self.glass, &self.glass_mesh),
+                (&self.glass, &self.moving_glass),
                 (&self.behind, &self.behind_mesh),
                 (&self.lines, &self.line_mesh),
+                (&self.lines, &self.moving_lines),
                 (&self.lines, &self.sel_lines),
                 (&self.overlay_lines, &self.overlay_mesh),
                 (&self.overlay_lines, &self.sel_top),

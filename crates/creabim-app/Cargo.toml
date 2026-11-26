@@ -10,11 +10,14 @@ rust-version = "1.95"
 live-mcp = []
 
 [dependencies]
+# the clipboard's HTML, to paste from Word keeping headings and bold (already in the build via egui)
+arboard = { version = "3.6", default-features = false }
 creabim-core.workspace = true
 creabim-geom.workspace = true
 creabim-ifc.workspace = true
 creabim-store.workspace = true
 creabim-exchange.workspace = true
+creabim-render.workspace = true
 glam.workspace = true
 eframe = "0.36"
 bytemuck = { version = "1", features = ["derive"] }
@@ -25,6 +28,10 @@ serde.workspace = true
 serde_json.workspace = true
 wry = "0.57"
 raw-window-handle = "0.6"
+
+# the local time zone, for project time's days and hours
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

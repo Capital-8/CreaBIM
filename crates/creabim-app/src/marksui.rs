@@ -98,7 +98,7 @@ impl CreaBimApp {
             _ => "None".into(),
         };
         let changed = crate::props::row(ui, "Mark", |ui| {
-            crate::props::fill(ui, egui::TextEdit::singleline(&mut text).vertical_align(egui::Align::Center).hint_text(hint))
+            crate::props::text_field(ui, egui::TextEdit::singleline(&mut text).hint_text(hint), f32::INFINITY)
                 .on_hover_text(
                     "What its tags and schedules show. Leave it empty for the number the project's rules give it (File, Mark numbering).",
                 )
@@ -144,12 +144,7 @@ impl CreaBimApp {
             .constrain_to(area)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "How doors, windows and other elements are numbered when they have no mark of their own. Tags and schedules show these numbers. The rules belong to the project and can be saved for another one.",
-                    )
-                    .weak(),
-                );
+                crate::props::info(ui, "How doors, windows and other elements are numbered when they have no mark of their own. Tags and schedules show these numbers. The rules belong to the project and can be saved for another one.", "");
                 ui.add_space(6.0);
                 rules_grid(ui, &mut rules);
                 crate::props::flow(ui, |ui| {
@@ -249,7 +244,7 @@ impl CreaBimApp {
     fn duplicates_list(&mut self, ui: &mut egui::Ui) {
         let dups = marks::duplicates(self.doc.model());
         if dups.is_empty() {
-            ui.label(egui::RichText::new("✔ No two elements share a mark.").weak());
+            crate::props::readout(ui, "Marks", "All different", "No two elements share a mark");
             return;
         }
         ui.label(
@@ -336,19 +331,11 @@ fn rules_grid(ui: &mut egui::Ui, rules: &mut MarkRules) {
             ui.end_row();
             for class in MarkClass::ALL {
                 let r = rules.rule_mut(class);
-                ui.checkbox(&mut r.auto, class.label());
-                ui.add(
-                    egui::TextEdit::singleline(&mut r.prefix)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(44.0),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut r.separator)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(24.0),
-                );
+                crate::props::tickbox(ui, &mut r.auto, class.label());
+                crate::props::text_field(ui, egui::TextEdit::singleline(&mut r.prefix), 44.0);
+                crate::props::text_field(ui, egui::TextEdit::singleline(&mut r.separator), 24.0);
                 ui.add(egui::DragValue::new(&mut r.padding).range(1..=6));
-                ui.checkbox(&mut r.by_level, "");
+                crate::props::tickbox(ui, &mut r.by_level, "");
                 egui::ComboBox::from_id_salt(("mark_order", class))
                     .icon(crate::props::combo_icon)
                     .selected_text(r.order.label())

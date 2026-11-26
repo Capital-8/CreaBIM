@@ -22,7 +22,7 @@ impl TextBox {
         Some(Self { lo, hi })
     }
 
-    fn moved(self, d: DVec2) -> Self {
+    pub(crate) fn moved(self, d: DVec2) -> Self {
         Self {
             lo: self.lo + d,
             hi: self.hi + d,
@@ -153,9 +153,11 @@ pub fn text_box(item: &PlanItem, mm: f64) -> Option<(TextBox, bool)> {
             text,
             look,
             witness,
+            label,
             ..
         } => {
-            let g = dimension_geometry(*a, *b, *offset, *witness, look, mm);
+            let g =
+                crate::annotate::dimension_layout(*a, *b, *offset, *witness, look, mm, text, label);
             let w = look.width(text) * mm;
             let h = look.size * 0.6 * mm;
             let (dir, up) = (
@@ -183,7 +185,7 @@ fn obstacles(items: &[PlanItem], mm: f64) -> Vec<(DVec2, DVec2, f64, usize)> {
         match it {
             PlanItem::Line { pen, a, b, .. } => {
                 let w = match pen {
-                    Pen::Guide | Pen::Underlay => continue,
+                    Pen::Guide | Pen::Underlay | Pen::Cutter => continue,
                     Pen::Cut => 3.0,
                     Pen::Grid => 2.0,
                     _ => 1.0,
@@ -257,19 +259,141 @@ fn obstacles(items: &[PlanItem], mm: f64) -> Vec<(DVec2, DVec2, f64, usize)> {
 /// How far a label may move to find a clear spot, paper mm.
 const REACH: f64 = 14.0;
 /// A label moved further than this, paper mm, gets a leader back.
-const LEADER_PAST: f64 = 9.0;
+pub(crate) const LEADER_PAST: f64 = 9.0;
 
 /// Move labels, notes and tags off lines and each other. `mm` is drawing
 /// units per paper mm. Grid and section bubbles and dimension text stay
 /// where they are and are kept clear of.
 pub fn place_labels(items: &mut Vec<PlanItem>, mm: f64) {
+    place_labels_with(
+        items,
+        mm,
+        &std::collections::HashSet::new(),
+        &std::collections::HashSet::new(),
+    );
+}
+
+/// The box a plain text covers, in drawing units.
+fn plain_text_box(item: &PlanItem) -> Option<TextBox> {
+    let PlanItem::Text {
+        at,
+        text,
+        size,
+        align,
+        mm,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    let w = crate::paper::text_width(text, *size) * mm;
+    let h = size * 0.6 * mm;
+    let x0 = match align {
+        crate::paper::Anchor::Start => 0.0,
+        crate::paper::Anchor::Middle => -w / 2.0,
+        crate::paper::Anchor::End => -w,
+    };
+    Some(TextBox {
+        lo: DVec2::new(at.x + x0, at.y - h),
+        hi: DVec2::new(at.x + x0 + w, at.y + h),
+    })
+}
+
+/// [`place_labels`], with the plain texts of the elements in `blocks`
+/// (a chamber's name and levels, a tank's) moved too, each stack of lines
+/// as one block. Other plain texts stay and are kept clear of.
+pub fn place_labels_with(
+    items: &mut Vec<PlanItem>,
+    mm: f64,
+    blocks: &std::collections::HashSet<creabim_core::ElementId>,
+    lead_out: &std::collections::HashSet<creabim_core::ElementId>,
+) {
+    place_labels_pinned(
+        items,
+        mm,
+        blocks,
+        lead_out,
+        &std::collections::HashSet::new(),
+    );
+}
+
+/// [`place_labels_with`], with the items of `pinned` (tags put by hand)
+/// left where they are and kept clear of, as fixed text is.
+pub fn place_labels_pinned(
+    items: &mut Vec<PlanItem>,
+    mm: f64,
+    blocks: &std::collections::HashSet<creabim_core::ElementId>,
+    lead_out: &std::collections::HashSet<creabim_core::ElementId>,
+    pinned: &std::collections::HashSet<creabim_core::ElementId>,
+) {
+    place_labels_in_rooms(items, mm, blocks, lead_out, pinned, &Default::default());
+}
+
+/// [`place_labels_pinned`], with each room tag's room (`rooms`, by tag):
+/// a tag nudged but still wholly inside its room gets no leader back. Every
+/// tag nudged off another label drew one, so a plan opened with leaders
+/// on tags that sat in their rooms (MU142, owner: "they still start with
+/// leader").
+pub fn place_labels_in_rooms(
+    items: &mut Vec<PlanItem>,
+    mm: f64,
+    blocks: &std::collections::HashSet<creabim_core::ElementId>,
+    lead_out: &std::collections::HashSet<creabim_core::ElementId>,
+    pinned: &std::collections::HashSet<creabim_core::ElementId>,
+    rooms: &std::collections::HashMap<creabim_core::ElementId, Vec<DVec2>>,
+) {
     let segs = obstacles(items, mm);
+    // the building's extent (its cut lines), for what goes outside it
+    let extent = items
+        .iter()
+        .filter_map(|it| match it {
+            PlanItem::Line {
+                pen: Pen::Cut,
+                a,
+                b,
+                ..
+            } => Some([*a, *b]),
+            _ => None,
+        })
+        .flatten()
+        .fold(None::<(DVec2, DVec2)>, |acc, p| match acc {
+            None => Some((p, p)),
+            Some((a, b)) => Some((a.min(p), b.max(p))),
+        });
     // what is placed so far: fixed text first
     let mut taken: Vec<(TextBox, usize)> = Vec::new();
     let mut movable: Vec<(usize, TextBox)> = Vec::new();
+    // stacks of plain lines that move together
+    let mut stacks: Vec<(Vec<usize>, TextBox)> = Vec::new();
     for (k, it) in items.iter().enumerate() {
+        if let Some(b) = plain_text_box(it) {
+            if !blocks.contains(&it.id()) {
+                taken.push((b, k));
+                continue;
+            }
+            // the line under the last of this element's stack joins it
+            let joins = stacks.last().is_some_and(|(ks, g)| {
+                let last = ks[ks.len() - 1];
+                last + 1 == k
+                    && items[last].id() == it.id()
+                    && (b.lo.x - g.lo.x).abs() < 1e-6
+                    && b.hi.y >= g.lo.y - (b.hi.y - b.lo.y)
+            });
+            if joins {
+                let (ks, g) = stacks.last_mut().unwrap();
+                ks.push(k);
+                *g = TextBox {
+                    lo: g.lo.min(b.lo),
+                    hi: g.hi.max(b.hi),
+                };
+            } else {
+                stacks.push((vec![k], b));
+            }
+            continue;
+        }
         match text_box(it, mm) {
             Some((b, false)) => taken.push((b, k)),
+            Some((b, true)) if pinned.contains(&it.id()) => taken.push((b, k)),
             Some((b, true)) => movable.push((k, b)),
             None => {}
         }
@@ -297,6 +421,7 @@ pub fn place_labels(items: &mut Vec<PlanItem>, mm: f64) {
         }
     }
     let mut movable = groups;
+    movable.extend(stacks);
     // the bigger texts first (room names, notes), tags after
     movable.sort_by(|a, b| {
         let area = |t: &TextBox| (t.hi - t.lo).x * (t.hi - t.lo).y;
@@ -315,9 +440,11 @@ pub fn place_labels(items: &mut Vec<PlanItem>, mm: f64) {
         };
         let local: Vec<(DVec2, DVec2, f64)> = segs
             .iter()
-            .filter(|(p, q, _, i)| {
+            .filter(|(p, q, w, i)| {
                 !ks.contains(i)
                     && !(own == items[*i].id() && is_own_mark(&items[k]))
+                    // a path's own joints and pattern under its name
+                    && !(own == items[*i].id() && blocks.contains(&own) && *w <= 1.0)
                     && near.crossed_by(*p, *q)
             })
             .map(|(p, q, w, _)| (*p, *q, *w))
@@ -356,13 +483,47 @@ pub fn place_labels(items: &mut Vec<PlanItem>, mm: f64) {
                 }
             }
         }
-        let d = best.1;
+        let mut d = best.1;
+        // a room tag too big for its room, on another text with no
+        // clear spot near: outside the plan at its nearest edge, on a
+        // leader (MU131)
+        if best.0 >= 10.0 && lead_out.contains(&own) {
+            if let Some((lo, hi)) = extent {
+                let c = b.centre();
+                let h = b.hi.y - b.lo.y;
+                let up = (hi.y - c.y) < (c.y - lo.y);
+                let gap = 6.0 * mm;
+                let x = c.x.clamp(
+                    lo.x + (b.hi.x - b.lo.x) / 2.0,
+                    hi.x - (b.hi.x - b.lo.x) / 2.0,
+                );
+                let mut y = if up {
+                    hi.y + gap + h / 2.0
+                } else {
+                    lo.y - gap - h / 2.0
+                };
+                let free = |y: f64| {
+                    let t = b.moved(DVec2::new(x, y) - c);
+                    !taken.iter().any(|(o, _)| o.overlaps(&t.shrunk(-pad)))
+                };
+                let mut tries = 0;
+                while !free(y) && tries < 40 {
+                    y += if up { h + pad } else { -(h + pad) };
+                    tries += 1;
+                }
+                d = DVec2::new(x, y) - c;
+            }
+        }
         if d == DVec2::ZERO {
             taken.push((b, k));
             continue;
         }
         let nb = b.moved(d);
-        let far = d.length() > LEADER_PAST * mm;
+        // (its middle in the room: a small room's tag may lap its walls)
+        let in_room = rooms
+            .get(&own)
+            .is_some_and(|o| creabim_core::polygon::contains(o, nb.centre()));
+        let far = d.length() > LEADER_PAST * mm && !in_room;
         // one leader for the block, from its first line
         for (n, &j) in ks.iter().enumerate() {
             shift(
@@ -408,6 +569,17 @@ fn shift(
             }
         }
         PlanItem::Tag { at, .. } => *at += d,
+        PlanItem::Text { id, at, .. } => {
+            *at += d;
+            if far {
+                leaders.push(PlanItem::Line {
+                    id: *id,
+                    pen: Pen::Fine,
+                    a: edge_toward(&now, was),
+                    b: was,
+                });
+            }
+        }
         PlanItem::Annotation { item, .. } => {
             if let Shape::Note { at, leader, .. } = &mut item.shape {
                 *at += d;
@@ -522,7 +694,8 @@ mod tests {
     fn no_two_labels_overlap_on_the_starter_house_sheets() {
         let m = creabim_core::starter::starter_house();
         let plans = plans_on_sheets(&m);
-        assert_eq!(plans.len(), 4);
+        // four floor plans and the two ceiling plans of A105 (#70)
+        assert_eq!(plans.len(), 6);
         for view in plans {
             let ElementKind::View(v) = &m.get(view).unwrap().kind else {
                 unreachable!()

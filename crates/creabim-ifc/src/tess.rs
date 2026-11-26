@@ -618,6 +618,7 @@ mod tests {
         let mut tri = EditMesh {
             vertices: cube.vertices.clone(),
             faces: vec![],
+            edges: vec![],
         };
         for f in &cube.faces {
             tri.faces.push(vec![f[0], f[1], f[2]]);

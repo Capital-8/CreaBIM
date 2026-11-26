@@ -11,16 +11,26 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub fn export_glb(model: &Model) -> Vec<u8> {
+    export_glb_with(model, &creabim_core::progress::quiet)
+}
+
+/// [`export_glb`], telling `tick` how far it has got, in parts drawn.
+pub fn export_glb_with(model: &Model, tick: creabim_core::progress::Tick) -> Vec<u8> {
+    tick(0, model.len(), "Preparing the shapes");
     let scene = creabim_geom::scene::drawn_elements(model);
+    let total = scene.len();
     let mut bin: Vec<u8> = Vec::new();
     let (mut views, mut accessors, mut meshes, mut nodes) = (vec![], vec![], vec![], vec![]);
     let mut materials: Vec<Value> = Vec::new();
     let mut material_ids: HashMap<String, usize> = HashMap::new();
 
-    for item in &scene {
+    for (i, item) in scene.iter().enumerate() {
         let Some(e) = model.get(item.id) else {
             continue;
         };
+        if i % 8 == 0 {
+            tick(i, total, creabim_core::progress::step_of(e.ifc_class()));
+        }
         // weld corners so faces share them
         let mut ids: HashMap<(i64, i64, i64), u32> = HashMap::new();
         let mut pos: Vec<[f32; 3]> = Vec::new();

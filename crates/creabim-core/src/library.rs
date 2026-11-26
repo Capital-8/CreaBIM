@@ -77,6 +77,7 @@ impl LibraryEntry {
             metallic: self.metallic,
             opacity: self.opacity,
             pattern: None,
+            surface_pattern: None,
             rate: None,
         }
     }
@@ -757,6 +758,24 @@ pub fn users(model: &Model, material: ElementId) -> Vec<ElementId> {
         .collect()
 }
 
+/// Everything a change to `material` reaches: its [`users`] and the
+/// elements built of an assembly with a layer of it, each once. The
+/// material card says this many change with it (owner test 2026-11-22: a
+/// layer of a 12-wall assembly read "used here only").
+pub fn reach(model: &Model, material: ElementId) -> Vec<ElementId> {
+    let mut out = users(model, material);
+    for (id, _, a) in crate::assembly::assemblies(model) {
+        if a.layers.iter().any(|l| l.material == Some(material)) {
+            for e in crate::assembly::users(model, id) {
+                if !out.contains(&e) {
+                    out.push(e);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// An element's material, `Some(None)` for an element that can have one
 /// but has none, `None` for kinds that can't have one.
 pub fn material_slot(e: &Element) -> Option<Option<ElementId>> {
@@ -1060,5 +1079,42 @@ mod tests {
         doc.commit(tx).unwrap();
         assert_eq!(unique_name(doc.model(), "Zinc"), "Zinc 2");
         assert_eq!(unique_name(doc.model(), "Lead"), "Lead");
+    }
+
+    #[test]
+    fn reach_counts_what_is_built_of_its_assemblies() {
+        // the sample house with the starter assemblies, every wall built of
+        // the first (a wall assembly)
+        let mut doc = Document::from_model(crate::sample::sample_house());
+        let (tx, ids) = crate::assembly::add_starters(doc.model());
+        doc.commit(tx).unwrap();
+        let walls: Vec<ElementId> = doc
+            .model()
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Wall(_)))
+            .map(|e| e.id)
+            .collect();
+        let (tx, n) = crate::assembly::assign(doc.model(), &walls, Some(ids[0]));
+        assert!(n > 1);
+        doc.commit(tx).unwrap();
+        let model = doc.model();
+        // a layer material of it that nothing uses directly
+        let aid = ids[0];
+        let ElementKind::Assembly(a) = &model.get(aid).unwrap().kind else {
+            unreachable!()
+        };
+        let m = a
+            .layers
+            .iter()
+            .filter_map(|l| l.material)
+            .find(|m| users(model, *m).is_empty())
+            .expect("a layer used nowhere else");
+        let built = crate::assembly::users(model, aid);
+        let reached = reach(model, m);
+        assert!(
+            built.iter().all(|e| reached.contains(e)),
+            "{built:?} {reached:?}"
+        );
+        assert!(reached.len() >= built.len() && reached.len() > 1);
     }
 }

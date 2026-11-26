@@ -12,6 +12,7 @@ fn info() -> SheetInfo {
     SheetInfo {
         project: "Test".into(),
         date: "2026-11-04".into(),
+        ..Default::default()
     }
 }
 
@@ -48,7 +49,7 @@ fn view_of(m: &Model, id: ElementId) -> View {
 
 /// Stroke widths written in a PDF, with how often each is used.
 fn pdf_widths(pdf: &[u8]) -> std::collections::BTreeMap<String, usize> {
-    let text = String::from_utf8_lossy(pdf);
+    let text = creabim_geom::paper::pdf_readable(pdf);
     let mut out = std::collections::BTreeMap::new();
     let words: Vec<&str> = text.split_whitespace().collect();
     for w in words.windows(2) {
@@ -105,18 +106,26 @@ fn two_packs_give_two_sets_with_their_own_line_weights_in_pdf() {
     let b = plan_pdf(&with_pack(&house, &packs[1]));
     assert_ne!(a, b);
     let (wa, wb) = (pdf_widths(&a), pdf_widths(&b));
-    // the plans at 1:50 cut with 0.70 mm in one, 0.50 mm in the other
-    assert!(wa.contains_key("0.700"), "{wa:?}");
-    assert!(!wb.contains_key("0.700"), "{wb:?}");
-    assert!(wb.contains_key("0.500"));
+    // the plans at 1:50 cut with the scale table's 0.50 mm in one (it
+    // was 0.70 before the table), the light pack's own in the other
+    assert!(wa.contains_key("0.500"), "{wa:?}");
+    assert!(
+        !wa.contains_key("0.700") && !wb.contains_key("0.700"),
+        "{wa:?} {wb:?}"
+    );
     // the light pack's own fine pens are in its PDF, not the standard's
     assert!(
         wb.contains_key("0.100") && !wa.contains_key("0.100"),
         "{wa:?} {wb:?}"
     );
-    // and it draws in colour: furniture grey, doors blue-grey
-    let rgb = |pdf: &[u8]| String::from_utf8_lossy(pdf).matches(" RG ").count();
-    assert!(rgb(&b) > rgb(&a) + 50, "{} {}", rgb(&b), rgb(&a));
+    // and it draws in colour: furniture grey, doors blue-grey (a pen is
+    // written once per change, so this counts the changes)
+    let rgb = |pdf: &[u8]| {
+        creabim_geom::paper::pdf_readable(pdf)
+            .matches(" RG ")
+            .count()
+    };
+    assert!(rgb(&b) > rgb(&a) + 10, "{} {}", rgb(&b), rgb(&a));
 }
 
 #[test]

@@ -10,7 +10,7 @@ use creabim_core::types::FootingType;
 use creabim_core::types::{
     BeamType, ColumnType, ElementType, OpeningType, SlabType, TypeCategory, TypeParams, WallType,
 };
-use creabim_core::{Footing, FootingKind, LocationLine, OpeningFrame, Profile};
+use creabim_core::{Footing, FootingKind, LocationLine, OpeningFrame, Operation, Profile};
 use std::collections::HashMap;
 
 /// The property set a type's parameters go in.
@@ -31,6 +31,8 @@ pub(crate) enum Prop {
     Real(f64),
     Label(String),
     Bool(bool),
+    /// A U-value, W/m²K.
+    Thermal(f64),
     /// Text of any length (a label is at most 255 characters).
     Text(String),
 }
@@ -44,6 +46,7 @@ impl Prop {
             Prop::Real(v) => format!("IFCREAL({})", real(*v)),
             Prop::Label(s) => format!("IFCLABEL({})", string(s)),
             Prop::Bool(b) => format!("IFCBOOLEAN({})", if *b { ".T." } else { ".F." }),
+            Prop::Thermal(v) => format!("IFCTHERMALTRANSMITTANCEMEASURE({})", real(*v)),
             Prop::Text(s) => format!("IFCTEXT({})", string(s)),
         }
     }
@@ -56,7 +59,7 @@ fn len(p: &Props, k: &str) -> Option<f64> {
     p.get(k).and_then(|v| v.0).filter(|v| v.is_finite())
 }
 
-fn label<'a>(p: &'a Props, k: &str) -> Option<&'a str> {
+pub(crate) fn label<'a>(p: &'a Props, k: &str) -> Option<&'a str> {
     p.get(k).and_then(|v| v.1.as_deref())
 }
 
@@ -64,6 +67,9 @@ fn rule_props(out: &mut Vec<(&'static str, Prop)>, keys: [&'static str; 2], r: G
     match r {
         GridRule::Spacing(s) => out.push((keys[0], Prop::Length(s))),
         GridRule::Count(n) => out.push((keys[1], Prop::Count(n as i64))),
+        // the fewest equal bays no wider than: written as its size, with
+        // the rule's name beside it
+        GridRule::Fit(s) => out.push((keys[0], Prop::Length(s))),
     }
 }
 
@@ -90,6 +96,15 @@ pub(crate) fn curtain_props(g: &CurtainGrid) -> Vec<(&'static str, Prop)> {
     out.push(("MullionDepth", Prop::Length(g.mullion_depth)));
     out.push(("PanelThickness", Prop::Length(g.panel_thickness)));
     out.push(("Panels", Prop::Label(g.panel.label().into())));
+    out.push(("MullionProfile", Prop::Label(g.profile.label().into())));
+    match g.profile {
+        creabim_core::MullionProfile::Stick => out.push(("CapDepth", Prop::Length(g.cap))),
+        creabim_core::MullionProfile::Flush => out.push(("JointWidth", Prop::Length(g.joint))),
+        creabim_core::MullionProfile::Box => {}
+    }
+    if let Some(t) = g.transom_depth {
+        out.push(("TransomDepth", Prop::Length(t)));
+    }
     if !g.swapped.is_empty() {
         let cells: Vec<String> = g.swapped.iter().map(|(a, b)| format!("{a}:{b}")).collect();
         out.push(("SwappedPanels", Prop::Label(cells.join(" "))));
@@ -127,6 +142,17 @@ pub(crate) fn curtain_from(p: &Props) -> Option<CurtainGrid> {
                     .collect()
             })
             .unwrap_or_default(),
+        profile: label(p, "MullionProfile")
+            .and_then(|s| {
+                creabim_core::MullionProfile::ALL
+                    .into_iter()
+                    .find(|k| k.label().eq_ignore_ascii_case(s))
+            })
+            .unwrap_or_default(),
+        cap: len(p, "CapDepth").filter(|v| *v > 0.0).unwrap_or(d.cap),
+        joint: len(p, "JointWidth").filter(|v| *v > 0.0).unwrap_or(d.joint),
+        transom_depth: len(p, "TransomDepth").filter(|v| *v > 0.0),
+        ..d
     };
     g.validate().ok().map(|_| g)
 }
@@ -171,6 +197,29 @@ fn screen_from(p: &Props) -> Option<ScreenPattern> {
     s.validate().ok().map(|_| s)
 }
 
+/// An operation's name in a type's properties.
+fn operation_label(o: Operation) -> &'static str {
+    match o {
+        Operation::Standard => "Standard",
+        Operation::DoubleSwing => "DoubleSwing",
+        Operation::SurfaceSliding => "SurfaceSliding",
+        Operation::SurfaceSlidingPair => "SurfaceSlidingPair",
+        Operation::Pocket => "Pocket",
+        Operation::PocketPair => "PocketPair",
+        Operation::MultiSlide => "MultiSlide",
+        Operation::Pivot => "Pivot",
+        Operation::CentrePivot => "CentrePivot",
+        Operation::DoubleAction => "DoubleAction",
+        Operation::DoubleActionPair => "DoubleActionPair",
+        Operation::Bifold => "Bifold",
+        Operation::BifoldPair => "BifoldPair",
+        Operation::Folding => "Folding",
+        Operation::Sectional => "Sectional",
+        Operation::Roller => "Roller",
+        Operation::Revolving => "Revolving",
+    }
+}
+
 fn location_label(l: LocationLine) -> &'static str {
     match l {
         LocationLine::Centre => "Centre",
@@ -209,8 +258,34 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             out.push(("Sill", Prop::Length(o.sill)));
             out.push(("FrameWidth", Prop::Length(o.frame.width)));
             out.push(("FrameDepth", Prop::Length(o.frame.depth)));
-            out.push(("PanesAcross", Prop::Count(o.frame.panes_across as i64)));
-            out.push(("PanesUp", Prop::Count(o.frame.panes_up as i64)));
+            let kind = match &t.params {
+                TypeParams::Door(_) => creabim_core::OpeningKind::Door,
+                _ => creabim_core::OpeningKind::Window,
+            };
+            let [across, up] = o.frame.panes();
+            out.push(("PanesAcross", Prop::Count(across as i64)));
+            out.push(("PanesUp", Prop::Count(up as i64)));
+            match o.frame.grid.operation(kind) {
+                Some(Operation::Standard) => {}
+                Some(op) => {
+                    out.push(("Operation", Prop::Label(operation_label(op).into())));
+                    if op.pair() {
+                        out.push(("ActiveLeafShare", Prop::Real(o.frame.active_share())));
+                    }
+                    if op == Operation::MultiSlide {
+                        out.push(("SlidingPanels", Prop::Count(o.frame.panels() as i64)));
+                        out.push(("FixedPanels", Prop::Count(o.frame.fixed() as i64)));
+                    }
+                    if op == Operation::Folding {
+                        out.push(("FoldingPanels", Prop::Count(o.frame.panels() as i64)));
+                    }
+                }
+                // a grid no single operation describes goes out whole
+                None => out.push((
+                    "CellGrid",
+                    Prop::Label(serde_json::to_string(&o.frame.grid).unwrap_or_default()),
+                )),
+            }
         }
         TypeParams::Slab(s) | TypeParams::Roof(s) => {
             out.push(("Thickness", Prop::Length(s.thickness)));
@@ -246,6 +321,20 @@ pub(crate) fn type_props(t: &ElementType) -> Vec<(&'static str, Prop)> {
             }
             if let Some(k) = &o.catalogue {
                 out.push(("CatalogueKey", Prop::Label(k.clone())));
+            }
+            // a light of its own (one that gives its kind's usual light
+            // has none, and reads back the same)
+            if let Some(l) = &o.light {
+                out.push((
+                    "LightOn",
+                    Prop::Label(if l.on { "Yes" } else { "No" }.into()),
+                ));
+                out.push(("LightOutput", Prop::Real(l.lumens)));
+                out.push(("LightColourTemperature", Prop::Real(l.kelvin)));
+                out.push(("LightBeam", Prop::Label(l.beam.label().into())));
+                if !l.group.is_empty() {
+                    out.push(("LightGroup", Prop::Label(l.group.clone())));
+                }
             }
         }
     }
@@ -296,8 +385,36 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
         }
         TypeCategory::Door | TypeCategory::Window => {
             let door = category == TypeCategory::Door;
-            let d = OpeningFrame::default();
+            let kind = if door {
+                creabim_core::OpeningKind::Door
+            } else {
+                creabim_core::OpeningKind::Window
+            };
+            let d = OpeningFrame::for_kind(kind);
             let count = |k: &str| len(p, k).map_or(1, |v| (v.round() as u32).clamp(1, 12));
+            let op = label(p, "Operation")
+                .and_then(|s| {
+                    Operation::for_kind(creabim_core::OpeningKind::Door)
+                        .iter()
+                        .copied()
+                        .find(|o| operation_label(*o).eq_ignore_ascii_case(s))
+                })
+                .unwrap_or_default();
+            let grid = label(p, "CellGrid")
+                .and_then(|s| serde_json::from_str::<creabim_core::cells::Grid>(s).ok())
+                .map(|g| g.fitted())
+                .unwrap_or_else(|| {
+                    creabim_core::cells::Grid::of_operation(
+                        kind,
+                        op,
+                        len(p, "ActiveLeafShare").unwrap_or(0.5),
+                        len(p, "SlidingPanels")
+                            .or_else(|| len(p, "FoldingPanels"))
+                            .map_or(2, |v| (v.round() as u32).clamp(2, 6)),
+                        len(p, "FixedPanels").map_or(1, |v| (v.round().max(0.0) as u32) & 15),
+                        [count("PanesAcross"), count("PanesUp")],
+                    )
+                });
             let o = OpeningType {
                 width: l("Width", if door { 0.9 } else { 1.2 }),
                 height: l("Height", if door { 2.1 } else { 1.3 }),
@@ -307,8 +424,8 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
                 frame: OpeningFrame {
                     width: l("FrameWidth", d.width),
                     depth: l("FrameDepth", d.depth),
-                    panes_across: count("PanesAcross"),
-                    panes_up: count("PanesUp"),
+                    grid,
+                    construction: Default::default(),
                 },
                 material: None,
             };
@@ -378,6 +495,15 @@ pub(crate) fn type_from(category: TypeCategory, curtain: bool, p: &Props) -> Typ
             parts: vec![],
             symbol: vec![],
             catalogue: label(p, "CatalogueKey").map(str::to_string),
+            light: len(p, "LightOutput").map(|lumens| creabim_core::Light {
+                on: label(p, "LightOn") != Some("No"),
+                lumens,
+                kelvin: len(p, "LightColourTemperature").unwrap_or(2700.0),
+                beam: label(p, "LightBeam")
+                    .map(creabim_core::Spread::from_label)
+                    .unwrap_or_default(),
+                group: label(p, "LightGroup").unwrap_or_default().to_string(),
+            }),
         }),
     }
 }
@@ -511,7 +637,7 @@ mod tests {
                 let r = match v {
                     Prop::Length(x) => (Some(*x), None),
                     Prop::Count(n) => (Some(*n as f64), None),
-                    Prop::Real(x) => (Some(*x), None),
+                    Prop::Real(x) | Prop::Thermal(x) => (Some(*x), None),
                     Prop::Label(s) | Prop::Text(s) => (None, Some(s.clone())),
                     Prop::Bool(b) => (Some(*b as i64 as f64), None),
                 };
@@ -543,6 +669,62 @@ mod tests {
                 }
             }
             assert_eq!(back, want, "{}", e.name);
+        }
+    }
+
+    /// A door type from a file before cells comes out and back with the
+    /// same numbers it did then: its operation, its pair's share, its
+    /// sliding panels.
+    #[test]
+    fn door_types_from_before_cells_carry_the_same_numbers() {
+        use creabim_core::{ElementType, Operation};
+        for (frame, op, share, fixed) in [
+            (
+                r#"{"operation":"DoubleSwing","active_share":0.67}"#,
+                Operation::DoubleSwing,
+                0.67,
+                None,
+            ),
+            (
+                r#"{"operation":"PocketPair"}"#,
+                Operation::PocketPair,
+                0.5,
+                None,
+            ),
+            (
+                r#"{"operation":"MultiSlide","panels":4,"fixed":9}"#,
+                Operation::MultiSlide,
+                0.5,
+                Some(9),
+            ),
+        ] {
+            let json =
+                format!(r#"{{"params":{{"Door":{{"width":1.62,"height":2.1,"frame":{frame}}}}}}}"#);
+            let t: ElementType = serde_json::from_str(&json).unwrap();
+            let props = type_props(&t);
+            let get = |k: &str| props.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+            match op {
+                Operation::DoubleSwing => {
+                    let Some(Prop::Real(s)) = get("ActiveLeafShare") else {
+                        panic!("{frame}")
+                    };
+                    assert!((s - share).abs() < 1e-12, "{s}");
+                }
+                Operation::MultiSlide => {
+                    assert!(matches!(get("FixedPanels"), Some(Prop::Count(9))));
+                    assert!(matches!(get("SlidingPanels"), Some(Prop::Count(4))));
+                }
+                _ => {}
+            }
+            assert!(get("CellGrid").is_none(), "{frame}");
+            let back = type_from(t.category(), false, &read(&props));
+            let TypeParams::Door(d) = back else { panic!() };
+            assert_eq!(d.frame.operation(creabim_core::OpeningKind::Door), op);
+            assert!((d.frame.active_share() - share).abs() < 1e-12);
+            if let Some(f) = fixed {
+                assert_eq!(d.frame.fixed(), f);
+            }
+            assert_eq!(TypeParams::Door(d), t.params, "{frame}");
         }
     }
 }

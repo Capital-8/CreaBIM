@@ -112,12 +112,22 @@ impl Entity {
 #[derive(Clone, Debug, Default)]
 pub struct StepFile {
     pub schemas: Vec<String>,
+    /// The header's originating system (FILE_NAME), e.g. "CreaBIM" or
+    /// "Bonsai 0.8.6".
+    pub system: Option<String>,
     pub entities: HashMap<u64, Entity>,
     /// Problems found while reading; each names its line.
     pub errors: Vec<String>,
 }
 
 impl StepFile {
+    /// Written by CreaBIM itself.
+    pub fn from_creabim(&self) -> bool {
+        self.system
+            .as_deref()
+            .is_some_and(|s| s.starts_with("CreaBIM"))
+    }
+
     pub fn get(&self, id: u64) -> Option<&Entity> {
         self.entities.get(&id)
     }
@@ -319,6 +329,13 @@ impl Parser<'_> {
             self.skip_ws();
             match self.value(0) {
                 Ok(Value::List(args)) => {
+                    if name == "FILE_NAME" {
+                        file.system = args
+                            .get(5)
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .filter(|s| !s.is_empty());
+                    }
                     if name == "FILE_SCHEMA" {
                         let schemas = args.first().map(Value::as_list).unwrap_or(&[]);
                         file.schemas = schemas

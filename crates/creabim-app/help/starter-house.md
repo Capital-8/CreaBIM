@@ -1,6 +1,8 @@
 # The starter house
 
-CreaBIM opens on the **Maple Lane House**, a two-storey family house with a single-storey kitchen wing. It is a complete small project: the model, the drawings made from it and a set of sheets ready to print. Nothing in it is special. It is built with the same tools you have, so you can take it apart to see how it works, or change it and watch the drawings follow. To get it back, use *File › New starter house*.
+The starter house of CreaBIM 1.2 is **Ridgeline House**, a two-storey timber house on a sloping lot, with its site, structure, details and a permit set of sheets. CreaBIM opens on it, and *New project › Starter house* opens it again.
+
+This page describes the starter house of 1.1, the **Maple Lane House**, which is still there: *New project › Earlier starter houses*. It is a two-storey family house with a single-storey kitchen wing. It is a complete small project: the model, the drawings made from it and a set of sheets ready to print. Nothing in it is special. It is built with the same tools you have, so you can take it apart to see how it works, or change it and watch the drawings follow. To get it back, use *File › New starter house*.
 
 ## What is in the model
 

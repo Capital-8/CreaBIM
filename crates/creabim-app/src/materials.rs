@@ -136,6 +136,11 @@ pub(super) fn preview(ui: &mut egui::Ui, m: &Material, size: f32) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// The 3D view's shading as sRGB bytes (the Preview's sphere).
+pub(super) fn shade_srgb(m: &Material, n: [f32; 3]) -> [u8; 3] {
+    shade(m, n).map(|c| (linear_to_srgb(c) * 255.0).round().clamp(0.0, 255.0) as u8)
+}
+
 fn linear_to_srgb(c: f32) -> f32 {
     creabim_exchange::materials::srgb(c)
 }
@@ -176,7 +181,11 @@ fn shade(m: &Material, n: [f32; 3]) -> [f32; 3] {
 }
 
 /// The fields of a material. Returns the undo label of what changed, or "".
-pub(super) fn material_fields(ui: &mut egui::Ui, m: &mut Material) -> &'static str {
+pub(super) fn material_fields(
+    ui: &mut egui::Ui,
+    m: &mut Material,
+    pack: &creabim_core::styles::StylePack,
+) -> &'static str {
     let mut label = "";
     egui::Grid::new(ui.id().with("material_fields"))
         .num_columns(2)
@@ -208,12 +217,7 @@ pub(super) fn material_fields(ui: &mut egui::Ui, m: &mut Material) -> &'static s
             ui.end_row();
 
             ui.label("Description");
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut m.description)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(170.0),
-                )
+            if crate::props::text_field(ui, egui::TextEdit::singleline(&mut m.description), 170.0)
                 .changed()
             {
                 label = "Material description";
@@ -223,25 +227,97 @@ pub(super) fn material_fields(ui: &mut egui::Ui, m: &mut Material) -> &'static s
             ui.label("Colour");
             // the colour is sRGB, as the picker shows it
             let mut srgb = m.color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
-            if ui.color_edit_button_srgb(&mut srgb).changed() {
+            if crate::props::colour_button_srgb(ui, &mut srgb).changed() {
                 m.color = srgb.map(|c| c as f32 / 255.0);
                 label = "Material colour";
             }
             ui.end_row();
 
-            ui.label("Cut hatch");
-            egui::ComboBox::from_id_salt("mat_hatch")
-                .icon(crate::props::combo_icon)
-                .selected_text(m.hatch.label())
-                .width(ui.available_width().min(170.0))
-                .truncate()
-                .show_ui(ui, |ui| {
-                    for h in Hatch::ALL {
-                        if ui.selectable_value(&mut m.hatch, h, h.label()).changed() {
-                            label = "Material hatch";
+            // its patterns: the cut hatch and the surface pattern, from
+            // the Patterns window, with a swatch and a way there
+            ui.label("Cut pattern")
+                .on_hover_text("How its cut faces are hatched in plans, sections and details");
+            crate::props::flow(ui, |ui| {
+                let shown = m.pattern.clone().unwrap_or_else(|| m.hatch.label().to_string());
+                if let Some(p) = pack.pattern(&shown) {
+                    super::patternsui::swatch(ui, &p, if p.recipe.is_some() { 20.0 } else { 100.0 }, 20.0);
+                }
+                egui::ComboBox::from_id_salt("mat_hatch")
+                    .icon(crate::props::combo_icon)
+                    .selected_text(shown.clone())
+                    .width(ui.available_width().min(124.0))
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        for h in Hatch::ALL {
+                            let on = m.pattern.is_none() && m.hatch == h;
+                            if ui.selectable_label(on, h.label()).clicked() {
+                                m.hatch = h;
+                                m.pattern = None;
+                                label = "Material hatch";
+                            }
+                        }
+                        let own: Vec<&str> = pack
+                            .patterns
+                            .iter()
+                            .map(|p| p.name.as_str())
+                            .filter(|n| !Hatch::ALL.iter().any(|h| h.label().eq_ignore_ascii_case(n)))
+                            .collect();
+                        if !own.is_empty() {
+                            ui.separator();
+                        }
+                        for n in own {
+                            let on = m.pattern.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(n));
+                            if ui.selectable_label(on, n).clicked() {
+                                m.pattern = Some(n.to_string());
+                                label = "Material hatch";
+                            }
+                        }
+                    });
+                if ui.small_button("Edit…").on_hover_text("Open it in the Patterns window").clicked() {
+                    super::patternsui::request_open(Some(&shown));
+                }
+            });
+            ui.end_row();
+
+            ui.label("Surface pattern").on_hover_text(
+                "Drawn true size on its faces seen in plans and elevations: coursing, tiles, boards",
+            );
+            crate::props::flow(ui, |ui| {
+                let shown = m.surface_pattern.clone();
+                if let Some(p) = shown.as_deref().and_then(|n| pack.pattern(n)) {
+                    super::patternsui::swatch(ui, &p, 20.0, 20.0);
+                }
+                egui::ComboBox::from_id_salt("mat_surface")
+                    .icon(crate::props::combo_icon)
+                    .selected_text(shown.clone().unwrap_or_else(|| "None".into()))
+                    .width(ui.available_width().min(124.0))
+                    .truncate()
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(m.surface_pattern.is_none(), "None").clicked() {
+                            m.surface_pattern = None;
+                            label = "Material surface pattern";
+                        }
+                        for n in pack.pattern_names() {
+                            let on = m.surface_pattern.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&n));
+                            if ui.selectable_label(on, &n).clicked() {
+                                m.surface_pattern = Some(n);
+                                label = "Material surface pattern";
+                            }
+                        }
+                    });
+                match &shown {
+                    Some(n) => {
+                        if ui.small_button("Edit…").on_hover_text("Open it in the Patterns window").clicked() {
+                            super::patternsui::request_open(Some(n));
                         }
                     }
-                });
+                    None => {
+                        if ui.small_button("Patterns…").on_hover_text("Make or add one in the Patterns window").clicked() {
+                            super::patternsui::request_open(None);
+                        }
+                    }
+                }
+            });
             ui.end_row();
 
             ui.label("Roughness");
@@ -386,6 +462,9 @@ impl CreaBimApp {
             Item::new("mat.browser", "Material browser…")
                 .icon("palette")
                 .hint("Add, edit, delete and assign the project's materials"),
+            Item::new("mat.patterns", "Patterns…")
+                .icon("hatch")
+                .hint("Hatches and surface patterns: brick bonds, tiles, boards, drawn tiles; .pat import and export"),
             Item::sub("Add from the library", lib).icon("plus"),
             Item::new("mat.import", "Import materials…").icon("download").hint(
                 "Materials from an IFC file, FreeCAD material cards (.FCMat), glTF (.glb, .gltf, e.g. exported from Blender) or a .blend file",
@@ -421,6 +500,7 @@ impl CreaBimApp {
     pub(super) fn materials_action(&mut self, head: &str, arg: &str) -> bool {
         match head {
             "mat.browser" => self.open_materials(None),
+            "mat.patterns" => self.open_patterns(None),
             "mat.import" => self.import_materials_dialog(),
             "mat.import.path" => {
                 let path = self.path.trim().to_string();
@@ -575,21 +655,13 @@ impl CreaBimApp {
                 crate::props::flow(ui, |ui| {
                     ui.selectable_value(&mut self.mat.tab, MatTab::Project, "In this project");
                     ui.selectable_value(&mut self.mat.tab, MatTab::Library, "Library");
-                    ui.separator();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.mat.filter)
-                            .vertical_align(egui::Align::Center)
-                            .hint_text("Find")
-                            .desired_width(140.0),
-                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button("Import…")
-                            .on_hover_text("IFC, FreeCAD .FCMat, glTF/.glb or .blend")
-                            .clicked()
-                        {
-                            asks.push(Ask::Import);
-                        }
+                        crate::props::text_field(
+                            ui,
+                            egui::TextEdit::singleline(&mut self.mat.filter)
+                                .hint_text("Find a material"),
+                            180.0,
+                        );
                     });
                 });
                 ui.separator();
@@ -613,95 +685,105 @@ impl CreaBimApp {
             .filter(|c| mats.iter().any(|(id, _, _)| id == c))
             .or_else(|| mats.first().map(|m| m.0));
         let f = self.mat.filter.trim().to_lowercase();
-        let height = ui.available_height().max(360.0);
-        ui.horizontal_top(|ui| {
-            // the list, by category
-            ui.vertical(|ui| {
-                ui.set_width(250.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("mat_list")
-                    .max_height(height - 40.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let mut cats: Vec<String> =
-                            mats.iter().map(|(_, _, m)| m.category.clone()).collect();
-                        cats.sort_by_key(|c| {
-                            (
-                                CATEGORIES
-                                    .iter()
-                                    .position(|(v, _)| v == c)
-                                    .unwrap_or(usize::MAX),
-                                c.clone(),
+        let mut cats: Vec<String> = mats.iter().map(|(_, _, m)| m.category.clone()).collect();
+        cats.sort_by_key(|c| {
+            (
+                CATEGORIES
+                    .iter()
+                    .position(|(v, _)| v == c)
+                    .unwrap_or(usize::MAX),
+                c.clone(),
+            )
+        });
+        cats.dedup();
+        crate::library::frame(
+            ui,
+            "materials",
+            crate::library::LIST_WIDTH,
+            asks,
+            |ui, asks| {
+                for cat in &cats {
+                    let rows: Vec<_> = mats
+                        .iter()
+                        .filter(|(_, n, m)| {
+                            &m.category == cat && (f.is_empty() || n.to_lowercase().contains(&f))
+                        })
+                        .collect();
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    let open = crate::library::group(
+                        ui,
+                        "materials",
+                        &library::category_label(cat),
+                        rows.len(),
+                    );
+                    // the rows fold smoothly (AMD-017)
+                    crate::props::fold(ui, open, |ui| {
+                        for (id, name, m) in rows {
+                            let users = library::users(model, *id).len();
+                            let note = if users > 0 {
+                                users.to_string()
+                            } else {
+                                String::new()
+                            };
+                            let mark = crate::library::swatch(m.color);
+                            if crate::library::item(
+                                ui,
+                                current == Some(*id),
+                                name,
+                                &note,
+                                Some(&mark),
                             )
-                        });
-                        cats.dedup();
-                        for cat in cats {
-                            let rows: Vec<_> = mats
-                                .iter()
-                                .filter(|(_, n, m)| {
-                                    m.category == cat
-                                        && (f.is_empty() || n.to_lowercase().contains(&f))
-                                })
-                                .collect();
-                            if rows.is_empty() {
-                                continue;
+                            .on_hover_text(match users {
+                                0 => "Not used".to_string(),
+                                n => format!("Used by {n} element{}", plural_s(n)),
+                            })
+                            .clicked()
+                            {
+                                asks.push(Ask::Pick(*id));
                             }
-                            ui.label(
-                                egui::RichText::new(library::category_label(&cat).to_uppercase())
-                                    .size(10.5)
-                                    .strong()
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                            for (id, name, m) in rows {
-                                let users = library::users(model, *id).len();
-                                crate::props::flow(ui, |ui| {
-                                    if swatch(ui, m, 16.0).clicked() {
-                                        asks.push(Ask::Pick(*id));
-                                    }
-                                    let text = if users > 0 {
-                                        format!("{name}  ·  {users}")
-                                    } else {
-                                        name.to_string()
-                                    };
-                                    let r = ui
-                                        .selectable_label(current == Some(*id), text)
-                                        .on_hover_text(match users {
-                                            0 => "Not used".to_string(),
-                                            n => format!("Used by {n} element{}", plural_s(n)),
-                                        });
-                                    if r.clicked() {
-                                        asks.push(Ask::Pick(*id));
-                                    }
-                                });
-                            }
-                            ui.add_space(4.0);
-                        }
-                        if mats.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No materials yet. Add some from the Library tab, or import them.",
-                                )
-                                .weak(),
-                            );
                         }
                     });
-                crate::props::flow(ui, |ui| {
-                    if ui.button("New").clicked() {
-                        asks.push(Ask::New);
-                    }
+                }
+                if mats.is_empty() {
+                    crate::props::empty(
+                        ui,
+                        "No materials yet. Add some from the Library tab, or import them.",
+                    );
+                }
+            },
+            |ui, asks| {
+                if crate::library::new_button(ui, "A new material").clicked() {
+                    asks.push(Ask::New);
+                }
+                if crate::library::duplicate_button(ui, current.is_some()).clicked() {
                     if let Some(c) = current {
-                        if ui.button("Duplicate").clicked() {
-                            asks.push(Ask::Duplicate(c));
-                        }
-                        if ui.button("Delete").clicked() {
-                            asks.push(Ask::Delete(c));
-                        }
+                        asks.push(Ask::Duplicate(c));
+                    }
+                }
+                if crate::library::delete_button(
+                    ui,
+                    current.is_some(),
+                    "Asks what its elements are made of instead, when it is in use",
+                )
+                .clicked()
+                {
+                    if let Some(c) = current {
+                        asks.push(Ask::Delete(c));
+                    }
+                }
+                crate::library::right(ui, |ui| {
+                    if ui
+                        .button("Import…")
+                        .on_hover_text("IFC, FreeCAD .FCMat, glTF/.glb or .blend")
+                        .clicked()
+                    {
+                        asks.push(Ask::Import);
                     }
                 });
-            });
-            ui.separator();
-            // the editor
-            ui.vertical(|ui| {
+            },
+            |ui, asks| {
                 let Some(id) = current else {
                     return;
                 };
@@ -710,14 +792,15 @@ impl CreaBimApp {
                     return;
                 };
                 crate::props::flow(ui, |ui| {
-                    preview(ui, m, 96.0);
+                    preview(ui, m, 72.0);
                     ui.vertical(|ui| {
                         let mut name = e.name.clone();
                         if ui
                             .add(
-                                egui::TextEdit::singleline(&mut name).vertical_align(egui::Align::Center)
+                                egui::TextEdit::singleline(&mut name)
+                                    .vertical_align(egui::Align::Center)
                                     .font(egui::TextStyle::Heading)
-                                    .desired_width(240.0),
+                                    .desired_width(f32::INFINITY),
                             )
                             .changed()
                         {
@@ -730,35 +813,12 @@ impl CreaBimApp {
                             ))
                             .weak(),
                         );
-                        let users = library::users(model, id);
-                        crate::props::flow(ui, |ui| {
-                            ui.label(match users.len() {
-                                0 => "Not used yet.".to_string(),
-                                n => format!("Used by {n} element{}.", plural_s(n)),
-                            });
-                            if !users.is_empty() && ui.small_button("Select them").clicked() {
-                                asks.push(Ask::SelectUsers(id));
-                            }
-                        });
-                        let targets = self.assignable().len();
-                        let r = ui.add_enabled(
-                            targets > 0,
-                            egui::Button::new(match targets {
-                                0 => "Assign to the selection".to_string(),
-                                1 => "Assign to the selected element".to_string(),
-                                n => format!("Assign to the {n} selected elements"),
-                            }),
-                        );
-                        if r.on_disabled_hover_text("Select walls, slabs or masses first")
-                            .clicked()
-                        {
-                            asks.push(Ask::Assign(Some(id)));
-                        }
                     });
                 });
-                ui.add_space(8.0);
+                crate::library::heading(ui, "Settings");
                 let mut edited = m.clone();
-                let label = material_fields(ui, &mut edited);
+                let pack = creabim_core::styles::active_pack(model);
+                let label = material_fields(ui, &mut edited, &pack);
                 if !label.is_empty() {
                     asks.push(Ask::Edit(id, label, edited));
                 }
@@ -775,7 +835,8 @@ impl CreaBimApp {
                         let shown = choice
                             .and_then(|c| model.get(c))
                             .map_or("By type (no material)".to_string(), |e| e.name.clone());
-                        egui::ComboBox::from_id_salt("mat_replace").icon(crate::props::combo_icon)
+                        egui::ComboBox::from_id_salt("mat_replace")
+                            .icon(crate::props::combo_icon)
                             .selected_text(shown)
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut choice, None, "By type (no material)");
@@ -798,8 +859,33 @@ impl CreaBimApp {
                         });
                     });
                 }
-            });
-        });
+
+                let users = library::users(model, id);
+                let targets = self.assignable().len();
+                let used = match users.len() {
+                    0 => "Not used yet.".to_string(),
+                    n => format!("Used by {n} element{}.", plural_s(n)),
+                };
+                crate::library::foot(ui, &used, |ui| {
+                    let r = crate::library::primary(
+                        ui,
+                        targets > 0,
+                        &match targets {
+                            0 | 1 => "Assign to the selection".to_string(),
+                            n => format!("Assign to the {n} selected"),
+                        },
+                    );
+                    if r.on_disabled_hover_text("Select walls, slabs or masses first")
+                        .clicked()
+                    {
+                        asks.push(Ask::Assign(Some(id)));
+                    }
+                    if !users.is_empty() && ui.button("Select all").clicked() {
+                        asks.push(Ask::SelectUsers(id));
+                    }
+                });
+            },
+        );
     }
 
     fn library_tab(&self, ui: &mut egui::Ui, asks: &mut Vec<Ask>) {
@@ -809,12 +895,13 @@ impl CreaBimApp {
             .map(|(_, n, _)| n)
             .collect();
         let f = self.mat.filter.trim().to_lowercase();
-        ui.label(
-            egui::RichText::new(format!(
+        crate::props::info(
+            ui,
+            format!(
                 "{} common building materials, with IFC categories. Adding one that the project has already resets it to the library's.",
                 LIBRARY.len()
-            ))
-            .weak(),
+            ),
+            "",
         );
         ui.add_space(4.0);
         egui::ScrollArea::vertical()

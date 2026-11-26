@@ -221,6 +221,28 @@ pub fn legible(c: Color32, ground: Color32, toward: Color32) -> Color32 {
         .unwrap_or(toward)
 }
 
+/// The ink for text on a filled accent: white, or near-black when white
+/// would not read (a yellow accent, MU78).
+pub fn ink_on(fill: Color32) -> Color32 {
+    let dark = Color32::from_rgb(0x1A, 0x1A, 0x1A);
+    if contrast_ratio(Color32::WHITE, fill) >= contrast_ratio(dark, fill) {
+        Color32::WHITE
+    } else {
+        dark
+    }
+}
+
+/// A see-through `fill` laid over `ground`, as it shows on screen.
+pub fn over(fill: Color32, ground: Color32) -> Color32 {
+    let a = fill.a() as f32 / 255.0;
+    let m = |f: u8, g: u8| (f as f32 + g as f32 * (1.0 - a)).round().min(255.0) as u8;
+    Color32::from_rgb(
+        m(fill.r(), ground.r()),
+        m(fill.g(), ground.g()),
+        m(fill.b(), ground.b()),
+    )
+}
+
 impl Palette {
     /// The palette last applied to `ctx` (Light before any).
     pub fn of(ctx: &egui::Context) -> Palette {

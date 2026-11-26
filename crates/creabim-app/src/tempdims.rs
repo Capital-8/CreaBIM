@@ -880,6 +880,7 @@ mod tests {
                     start: DVec2::new(x, -2.0),
                     end: DVec2::new(x, 8.0),
                     group: None,
+                    ..Grid::default()
                 }),
             )
         };
@@ -1011,9 +1012,12 @@ mod tests {
                     width: 0.9,
                     height: 2.1,
                     material: None,
-                    frame: Default::default(),
+                    frame: creabim_core::OpeningFrame::for_kind(creabim_core::OpeningKind::Door),
                     flip_hand: false,
                     flip_facing: false,
+                    roof_at: None,
+                    roof_build: Default::default(),
+                    arrangement: None,
                 }),
             )
         };

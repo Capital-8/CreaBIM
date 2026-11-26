@@ -37,9 +37,9 @@ Wall fixtures go in at these heights, measured to their underside:
 
 ## Heights
 
-Select a fixture. In *Properties*, **Above its level** sets how high a wall fixture is. For a ceiling fixture the field reads **Below the ceiling**: 0 is flush with the ceiling, and 300 mm drops a pendant by 300 mm. Moving a ceiling fixture up or down, or pushing its top or bottom face, changes the same value. When a slab moves, the ceiling fixtures under it follow.
+Select a fixture. In *Properties*, under *Placement*, **Height** sets how high a wall fixture is above its level. For a ceiling fixture the field reads **Below** (below the ceiling): 0 is flush with the ceiling, and 300 mm drops a pendant by 300 mm. Moving a ceiling fixture up or down, or pushing its top or bottom face, changes the same value. When a slab moves, the ceiling fixtures under it follow.
 
-The type's **Placed** setting has three choices: *Against a wall*, *Free-standing* and *From the ceiling*. **New ones above the floor** (or *below the ceiling*) is the height the Object tool places new ones at. Change it on a socket type to put every new socket at 450 mm, say.
+The type's **Placed** setting has three choices: *Against a wall*, *Free-standing* and *From the ceiling*. **New ones** is the height above the floor (or below the ceiling) the Object tool places new ones at. Change it on a socket type to put every new socket at 450 mm, say.
 
 ## Plans
 
