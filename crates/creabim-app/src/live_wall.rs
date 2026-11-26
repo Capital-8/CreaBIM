@@ -1,4 +1,5 @@
-use super::CreaBimApp;
+use super::{phasesui::PhaseOf, CreaBimApp, PlanPlacement};
+use crate::areas::Shows;
 use crate::planview::{self, PlanState};
 use creabim_core::{ElementId, ElementKind, LocationLine, TypeCategory};
 use eframe::egui;
@@ -18,6 +19,54 @@ struct WallRequest {
 }
 
 impl CreaBimApp {
+    pub(super) fn track_live_pane(&mut self, ui: &egui::Ui, rect: egui::Rect, plan: bool) {
+        let activated = match self.placement {
+            PlanPlacement::Docked if plan => self.plan.pane_now == Some(self.areas.focus),
+            PlanPlacement::Docked => self.model_in_front(),
+            PlanPlacement::Overlay => {
+                ui.rect_contains_pointer(rect) && ui.input(|i| i.pointer.any_pressed())
+            }
+            PlanPlacement::Window => ui.input(|i| i.viewport().focused == Some(true)),
+            PlanPlacement::Hidden => true,
+        };
+        if activated {
+            self.live_plan_active = plan;
+        }
+    }
+
+    fn use_active_wall_phase(&mut self) -> Result<(), String> {
+        if creabim_core::phases::list(self.doc.model()).is_empty() {
+            return Ok(());
+        }
+        let focus = self.areas.focus;
+        let pane = match self.placement {
+            PlanPlacement::Docked => self.areas.root.areas().get(focus).copied(),
+            PlanPlacement::Overlay | PlanPlacement::Window if self.live_plan_active => {
+                Some(Shows::Current)
+            }
+            _ => Some(Shows::Model),
+        };
+        let view = match pane {
+            Some(Shows::Model) => {
+                self.work_in_phase(PhaseOf::Window3d);
+                return Ok(());
+            }
+            Some(Shows::View(id)) => Some(id),
+            Some(Shows::Current) => self.active_view,
+            _ => None,
+        };
+        let view = view
+            .filter(|id| self.view(*id).is_some())
+            .ok_or("Activate a model view in CreaBIM to choose the wall's phase")?;
+        // A docked area can show the same drawing at a phase of its own.
+        if self.placement == PlanPlacement::Docked {
+            crate::phaselens::set_lens(self.area_phase(focus).map(|p| (view, p)));
+        }
+        self.work_in_phase(PhaseOf::View(view));
+        crate::phaselens::set_lens(None);
+        Ok(())
+    }
+
     pub(super) fn poll_live_mcp(&mut self, ctx: &egui::Context) {
         let Some(request) = self
             .live_bridge
@@ -148,6 +197,7 @@ impl CreaBimApp {
                 return Err("An untyped wall has no layer boundaries".into());
             }
         }
+        self.use_active_wall_phase()?;
         let id = planview::create_straight_wall(&mut self.doc, wall.level_id, &state, start, end)
             .map_err(|e| e.to_string())?;
         let model = self.doc.model();
@@ -161,8 +211,86 @@ impl CreaBimApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::test_app;
     use crate::{planview::Tool, selection::Selection};
     use creabim_core::Element;
+
+    fn create_live_wall(app: &mut CreaBimApp) -> Result<Element, String> {
+        let inspect = app.live_command("inspect_document", json!({}), None, None)?;
+        let args = json!({"level_id": inspect["levels"][0]["id"], "start": [0, 0], "end": [4, 0]});
+        let reply = app.live_command(
+            "create_wall",
+            args,
+            inspect["document_id"].as_str(),
+            inspect["revision"].as_u64(),
+        )?;
+        Ok(serde_json::from_value(reply["element"].clone()).unwrap())
+    }
+
+    #[test]
+    fn live_wall_uses_the_active_views_phase() {
+        use crate::areas::Node;
+
+        let mut app = test_app();
+        let tx = creabim_core::phases::start(app.doc.model(), true).unwrap();
+        app.doc.commit(tx).unwrap();
+        let plan = app.active_view.unwrap();
+        app.set_phase(PhaseOf::Window3d, 3); // Proposed
+        app.set_phase(PhaseOf::View(plan), 2); // Demolition
+        app.placement = PlanPlacement::Overlay;
+        // The 3D view is active, but the inset plan paints last.
+        app.work_in_phase(PhaseOf::Window3d);
+        app.work_in_phase(PhaseOf::View(plan));
+        assert_eq!(create_live_wall(&mut app).unwrap().phase.built, Some(3));
+        assert!(app.doc.undo());
+        let ctx = egui::Context::default();
+        let click = egui::Event::PointerButton {
+            pos: egui::pos2(20.0, 20.0),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        };
+        let mut frame = ctx.run_ui(
+            egui::RawInput {
+                events: vec![click],
+                ..Default::default()
+            },
+            |ui| {
+                app.track_live_pane(ui, ui.max_rect(), false);
+                app.track_live_pane(
+                    ui,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(50.0, 50.0)),
+                    true,
+                );
+            },
+        );
+        frame.textures_delta.clear();
+        assert_eq!(create_live_wall(&mut app).unwrap().phase.built, Some(2));
+        assert!(app.doc.undo());
+
+        // Two docked areas show the same plan. Only the first overrides its phase.
+        app.placement = PlanPlacement::Docked;
+        app.areas.root = Node::split(
+            true,
+            0.5,
+            Node::Area(Shows::View(plan)),
+            Node::Area(Shows::View(plan)),
+        );
+        app.set_area_phase(0, Some(3));
+        for (focus, expected) in [(0, 3), (1, 2)] {
+            app.areas.focus = focus;
+            assert_eq!(
+                create_live_wall(&mut app).unwrap().phase.built,
+                Some(expected)
+            );
+            assert!(app.doc.undo());
+        }
+        app.areas.root = Node::Area(Shows::Notes);
+        app.areas.focus = 0;
+        let revision = app.doc.model().revision();
+        assert!(create_live_wall(&mut app).is_err());
+        assert_eq!(app.doc.model().revision(), revision);
+    }
 
     #[test]
     fn live_wall_matches_native_wall_and_undo() {

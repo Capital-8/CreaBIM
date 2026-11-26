@@ -183,6 +183,9 @@ pub struct CreaBimApp {
     live_bridge: Option<crate::live_mcp::Bridge>,
     #[cfg(feature = "live-mcp")]
     live_document_id: String,
+    /// Outside the docked workspace, remember which modelling pane was activated.
+    #[cfg(feature = "live-mcp")]
+    live_plan_active: bool,
     selection: Selection,
     /// Selected face when a free mesh is selected (mesh edit mode).
     face: Option<usize>,
@@ -646,6 +649,8 @@ impl CreaBimApp {
             live_bridge: None,
             #[cfg(feature = "live-mcp")]
             live_document_id: ElementId::new().0.to_string(),
+            #[cfg(feature = "live-mcp")]
+            live_plan_active: false,
             selection: Selection::default(),
             face: None,
             active_view: None,
@@ -4229,6 +4234,8 @@ impl CreaBimApp {
     }
 
     fn show_3d(&mut self, ui: &mut egui::Ui, rect: Rect, frame: &eframe::Frame) {
+        #[cfg(feature = "live-mcp")]
+        self.track_live_pane(ui, rect, false);
         self.work_in_phase(phasesui::PhaseOf::Window3d);
         let _perf = Perf::new("show_3d");
         self.rect_3d = Some(rect);
@@ -8490,6 +8497,8 @@ impl CreaBimApp {
     fn show_plan(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         let _perf = Perf::new("show_plan");
         let Some(view) = self.active_view else { return };
+        #[cfg(feature = "live-mcp")]
+        self.track_live_pane(ui, rect, true);
         self.rect_2d = Some(rect);
         // what is drawn in it is built in the phase it stands at
         if self.view(view).is_some() {
