@@ -6,7 +6,7 @@
 
 - **The CreaBIM menu** (the logo): About, updates, settings, the activity log and Exit.
 - **Menus**: *File*, *Edit*, *View*, *Create*, *Materials* and *Help*. While one is open, slide to the next to switch.
-- **Quick buttons**: Undo, Redo, Move, Rotate, Scale, Duplicate, Copy, Cut, Paste, Delete, Hide, Show only selected, Show everything. They do the same as the keys, so everything can be done with the mouse alone.
+- **Quick buttons**: Undo, Redo, Move, Rotate, Scale, Duplicate, Split, Mirror, Copy, Cut, Paste, Delete, Hide, Show only selected, Show everything. They do the same as the keys, so everything can be done with the mouse alone.
 - **The file name**. A dot beside it means there are unsaved changes; the window's title shows a • too.
 - **Workspace** (top right): a named layout of [view areas](interface#view-areas). See [Workspaces](interface#workspaces).
 
@@ -113,7 +113,7 @@ This panel. It opens at the right of the window, beside your work. Drag its left
 
 | Category | What is in it |
 | --- | --- |
-| **Interface** | The theme, the **drawing paper** (follow the theme, always light or always dark; prints and PDFs are always on white), and where the **Move, Rotate and Scale bar** sits: over the view, or by the pointer |
+| **Interface** | The theme; the **Interface scale**, from 80 % to 150 % (100 % is the default), to make every panel, menu and button larger or smaller; the **drawing paper** (follow the theme, always light or always dark; prints and PDFs are always on white); **Colour hints**, which tint the *Properties* tabs by subject; whether the **Splash** shows at start; which side the window **Buttons** sit on; and where the **Move, Rotate and Scale bar** sits: over the view, or by the pointer |
 | **Viewport** | The **selection and grips colour** (*Orange*, or *Follow the theme*'s own accent), how grips look, Edit mode's edge width and vertex size, and the X and Y axes on the grid |
 | **Navigation** | The mouse: *CreaBIM* (middle orbits, left boxes) or *Classic* (left drag orbits). **Wheel**: what a roll does in a view. *Automatic* zooms with a mouse wheel and pans with two fingers on a touchpad (a pinch zooms); if your mouse wheel pans instead, choose *Always zooms*. Or *Always pans* |
 | **Snapping** | Grid snap spacing, and distance marks while dragging |

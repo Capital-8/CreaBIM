@@ -4,12 +4,13 @@ A **level** is a floor of the building at a height, such as *Ground Floor* at ±
 
 ## The Levels window
 
-Open it with *View › Levels…* (also in *File* and *Create*), the **⋯** on the browser's *Levels* group, *Levels…* in a level's *Properties*, or by picking the Level tool anywhere but a section.
+Open it with *View › Levels…* (also in *File*), the **⋯** on the browser's *Levels* group, *Levels…* in a level's *Properties*, or by picking the Level tool anywhere but a section.
 
-- Levels are listed highest first, with their name, elevation, storey height, the gap to the next level (with **Fit** when they differ) and how many elements sit on each.
-- **Add level above the top** adds one a storey up. **Add at** adds one at an elevation you type. With *Make a floor plan for each new level* ticked, each comes with its floor plan.
-- Rename a level, change its elevation or height, duplicate it, open or make its plan.
-- **Delete** asks what happens to what is on it: move those elements to another level (they stay where they are in space) or delete them too.
+- Levels are listed down the left, highest first, with their elevation.
+- **+ New** adds one a storey above the highest, as tall as it. Under **Add a level**, type an elevation in **At** and click **Add**. With *Make a floor plan for each new level* ticked, each comes with its floor plan.
+- **Duplicate** copies the picked level one storey up: *The level only*, or *With everything on it*.
+- **Settings** for the picked level: its **Elevation**, its **Height**, and **To next**, the gap up to the level above, with **Fit** when the two differ. **Open its plan**, or **Make a floor plan** when it has none.
+- **Delete** asks what happens to what is on it: *Move them to another level, keeping them where they are*, or *Delete them with the level*.
 
 ![The Levels window](img/levels.jpg)
 

@@ -8,7 +8,7 @@ Edit mode opens one element so every one of its grips shows, in every view it is
 - or double-click the selected element (or one of its corners) in any view;
 - or press `Enter` with it selected.
 
-A layered element's *Properties* has an **Edit its layers in the views** button too.
+A layered element's *Properties* has a **Grips** row: *Element* for its own grips, *Layers* for a grip at each layer's ends (`Shift+Tab` switches them).
 
 As in Blender, only `Tab`, the mode button or *Finish editing* in the right-click menu closes it. `Esc` drops what is picked and stays in Edit mode, and clicking elsewhere does not leave it either. *Properties* says *Editing* while it is open, and the status bar lists what you can do.
 
@@ -48,7 +48,7 @@ Each layer of a wall also has a **bottom** and a **top** grip at mid-length: dra
 
 On a layered slab or roof, Layers puts a grip on each edge of each layer instead: drag it square to the edge to push that layer out past the element's edge or pull it in, such as roof slates run on past the fascia. In plan each layer's grip is drawn a step further out, since they would sit on one another.
 
-*Create › Check layer joins* lists the walls where a layer moved by hand leaves a gap at a join or runs on into the wall it meets. A moved end's or edge's grip is filled. The edit is kept as an offset from the join, so it stays when the wall moves or stretches. Changing the wall's type keeps the edits of the layers the new type has too, and the status bar says how many were dropped.
+**Check layer joins** on the *Manage* tab lists the walls where a layer moved by hand leaves a gap at a join or runs on into the wall it meets. A moved end's or edge's grip is filled. The edit is kept as an offset from the join, so it stays when the wall moves or stretches. Changing the wall's type keeps the edits of the layers the new type has too, and the status bar says how many were dropped.
 
 ## Outlines: one way for all of them
 

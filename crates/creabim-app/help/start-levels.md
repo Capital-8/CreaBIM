@@ -5,12 +5,12 @@ A **level** is a floor of the building: the ground floor, the first floor, the r
 ## Add a level
 
 1. Open the Levels window: *View › Levels…*, or the **⋯** button on the *Levels* group in the project browser on the left.
-2. Click **Add level above the top**. A new level appears one storey up, with its own floor plan.
+2. Click **+ New**. A new level appears one storey above the highest, with its own floor plan. (*Create › Views and levels › Level above the top one* does the same from anywhere.)
 3. Click a level's name to rename it, and type its elevation to change its height.
 
 ![The Levels window](img/levels.jpg)
 
-The **+** on the *Levels* group, or *Create › Level above the top one*, adds a level in one click.
+The **+** on the *Levels* group, or *Create › Views and levels › Level above the top one*, adds a level in one click.
 
 ## Work on a level
 

@@ -16,10 +16,10 @@ Select it. Under *Curtain wall* in *Properties*, **Grid along** and **Grid up** 
 - **Fit**: the fewest equal bays no wider than a size, so they all stay the same;
 - **Spacing**: a line every so far, **set out** from the *Start*, the *Centre* or the *End*. That decides where the odd bay goes: at the end, the same at both ends, or at the start.
 
-Two checks make the grid follow the building:
+Two **Follow** ticks make the grid follow the building:
 
-- **Transoms at floor levels**: a transom where each floor meets the wall, so glass never runs past a slab edge;
-- **Mullions on the grid axes**: an upright wherever a structural grid line crosses it.
+- under *Grid along*, **Grid axes**: an upright wherever a structural grid line crosses it;
+- under *Grid up*, **Floor levels**: a transom where each floor meets the wall, so glass never runs past a slab edge.
 
 Then the mullions' width and depth, and glass or solid panels with their thickness.
 

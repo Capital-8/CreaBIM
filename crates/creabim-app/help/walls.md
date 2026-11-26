@@ -33,7 +33,7 @@ Select it, then:
 - type new values in *Properties*: thickness, height, base offset, material, start and end;
 - drag its square end grips, or the round handles in 3D for its height and faces;
 - push or pull one face with [Move face](move#move-a-face-push-and-pull);
-- *Redraw path* in *Properties* to click a new path for it.
+- **Path** › *Redraw* in *Properties* to click a new path for it, in a plan or the 3D view. More corners make more walls like it.
 
 ## Location line
 
@@ -60,7 +60,7 @@ Walls that meet join by themselves: an L corner is mitred (layer by layer for la
 
 To keep an end free:
 
-- right-click near the end and pick *Disallow join at its end*, or clear *Joins at start / end* in *Properties*. The end stays square and isn't pulled along;
+- right-click near the end and pick *Disallow join at its end*, or clear *Start* or *End* on the **Joins at** row in *Properties*. The end stays square and isn't pulled along;
 - or hold `Ctrl` or `Alt` while dragging an end grip to drag that end free.
 
 ## Overlapping walls

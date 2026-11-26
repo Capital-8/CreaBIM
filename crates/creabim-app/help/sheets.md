@@ -123,7 +123,7 @@ Fill in the title block in the sheet's *Sheet* tab (click empty paper). Project-
 
 The frame and title block a sheet sits on is its **master**. Pick it in the sheet's *Title block*, or click **Edit the master** to open it in a Masters view, where it is drawn with lines, shapes, text, fields, logos and pictures: what you change shows on every sheet on it. See [Masters: title blocks](masters).
 
-*File › Sheet templates…* is the list of masters: *Copy of the built-in block*, *Import DXF or SVG…* for your own drawing, or another project's masters and styles. Any `{name}` in a master's text becomes a field. `{sheet}`, `{number}`, `{project}`, `{scale}` and `{date}` are filled in by each sheet; other fields get a value per sheet in its *Properties*. Use *Use on this sheet*, *Use on every sheet* or *New sheet from it*.
+*File › Masters* (or **Masters** on the *Manage* tab) opens the masters in a Masters view. There, **+** makes a new one, and **Bring in an SVG, DXF or project…** brings in a frame drawn in any drawing program, or another CreaBIM project's masters and text styles. Any `{name}` in a master's text becomes a field. `{sheet}`, `{number}`, `{project}`, `{scale}` and `{date}` are filled in by each sheet; other fields get a value per sheet in its *Properties*. A master's *Properties* has **New sheet on it** and **Use on every sheet**.
 
 ## Printing and exporting
 

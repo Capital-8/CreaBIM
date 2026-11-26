@@ -37,7 +37,7 @@ Give a mass an IFC class in *Properties* (such as `IfcRoof`) and it is exported 
 
 ## Mesh edit
 
-The *Mesh edit* section of *Properties* works on the face you clicked: **Extrude** pushes it out with new sides (`E`), **Move** slides it, **Taper** shrinks it, and **Inset** draws a smaller face inside its edges, by the distance in *Inset by*. Inset makes a reveal, a recessed panel or a parapet: inset the roof face, then push it down. These change the mesh under its modifiers.
+The *Mesh edit* section of *Properties* works on the face you clicked: **Extrude** pushes it out with new sides (`E`), **Move** slides it, **Taper** shrinks it, and **Inset** draws a smaller face inside its edges, by the distance in *Inset by*. Or press `I` over the view: move the pointer or type the thickness, hold `Ctrl` (or type) for a depth, a minus sign sinking the face; `O` makes it an **Outset** instead, a rim round the face cut into its sides, the face keeping its size. Inset makes a reveal, a recessed panel or a parapet: inset the roof face, then push it down. These change the mesh under its modifiers.
 
 ## Modifiers
 

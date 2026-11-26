@@ -84,7 +84,7 @@ Select one element (or a few), then right-click it, or open the *Edit* menu, and
 
 ## Selecting by type or material
 
-- *Select all instances* in *Properties* selects every element of the same [type](types).
+- **Select all** (with the count) on the *Instances* row of *Properties* selects every element of the same [type](types).
 - The [material browser](materials) selects every element made of a material.
 - Clicking a heading in a schedule grouped by type selects all of its rows.
 
