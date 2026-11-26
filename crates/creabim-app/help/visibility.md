@@ -10,7 +10,7 @@ Each view keeps its own list of what it leaves out:
 
 Set it with the *Visibility* menu in the area's header, or in *Properties* (the *View* tab) with nothing selected. Or right-click an element and pick *Hide in view* or *Hide category in view*. *Properties* lists the hidden elements, each with *Unhide*.
 
-To keep a view to a few elements, select them, right-click and pick **Show only the selection in this view**: the view, and every sheet it is on, shows them alone until you show the rest again.
+To keep a view to a few elements, select them, right-click and pick **Show only the selection in view**: the view, and every sheet it is on, shows them alone until you show the rest again.
 
 This is saved with the view and undoes like any edit. Sheets show each view the way it is set, so whatever a view hides is hidden on every sheet it is on.
 

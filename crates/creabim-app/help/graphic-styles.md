@@ -141,7 +141,7 @@ A hatch pattern is one or more families of parallel lines (an angle, a spacing, 
 - *on paper (mm)*: the pattern is the same size at any scale, like fixed-size dots.
 - *true size (m)*: the pattern is drawn to the model's size, like brick coursing or tiles.
 
-Patterns are drawn and changed in the *Patterns* area (*View › Patterns*, or *Patterns ›* in Graphic styles), and more are added from *Manage › Libraries › Patterns*.
+Patterns are drawn and changed in the *Patterns* area (*Materials › Patterns…*, an area's view-type menu, or *Patterns ›* in Graphic styles), and more are added from *Manage › Libraries › Patterns*.
 
 A material's cut faces take the pattern its *Hatch* names (*Brick*, *Concrete*…). A pack pattern with the same name replaces that built-in for every material using it. A material can also name any pattern of the pack.
 
@@ -165,14 +165,14 @@ A view template is a named bundle: scale, style, the categories its views leave 
 
 A view can change how a category or one element draws in it only, over the object styles.
 
-- In a view's *Properties*, under *Template and overrides*, *Add a category…* adds an override: *Halftone*, *No hatch*, a *Weight*, a *Line* pattern or a *Colour*.
+- In a view's *Properties*, under *Template and overrides*, **Graphic override** › *Add* › *A category…* adds an override: *Halftone*, *No hatch*, a *Weight*, a *Line* pattern or a *Colour*.
 - For one element, select it with the view open: *In <view>* in its *Properties* has the same fields, for example the boundary wall dashed in the site plan only.
 
 ## Depth cues
 
 Under *Template and overrides*:
 
-- *Fade with distance*: in sections, elevations and plans from above, lines and fills further from the cut or the viewer draw lighter.
-- *Sun shadows*: in plans from above, each element casts a shadow on the ground, *Toward* a direction, with a *Length* for each metre of height and a *Strength*.
+- **Fade**, a slider: in sections, elevations and plans from above, lines and fills further from the cut or the viewer draw lighter.
+- **Shadows** › *Sun*: in plans from above, each element casts a shadow on the ground, *Toward* a direction, with a *Length* for each metre of height and a *Strength*.
 
 Cut elements always take the heavy cut pen.

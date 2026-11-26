@@ -84,7 +84,7 @@ While a dimension is selected, a small dot after its number shows that the numbe
 
 ## Breaking around tags
 
-A style with **Break dimension lines at tags** on leaves a gap in its dimension lines wherever a tag's bubble or a note's text sits across them, so a chain of dimensions stays readable past the door tags on it. Dimensions in other styles run straight through.
+A style with **Break dimensions at tags** on leaves a gap in its dimension lines wherever a tag's bubble or a note's text sits across them, so a chain of dimensions stays readable past the door tags on it. Dimensions in other styles run straight through.
 
 To write the height of a point rather than a distance, use a [spot level](spot-levels).
 

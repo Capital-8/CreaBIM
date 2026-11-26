@@ -26,4 +26,4 @@ Open *File › Annotation styles…*, *Annotation styles…* at the bottom of an
 - A placed annotation's style is in its *Properties*, with *New text style…* to make one on the spot.
 - *Own colour* overrides the style's colour for one annotation.
 
-Sizes are millimetres on paper, so text is the same size at any scale. Styles can be copied from another project with *File › Sheet templates…* (importing a `.creabim`).
+Sizes are millimetres on paper, so text is the same size at any scale. Styles can be copied from another project with *File › Masters* › **Bring in an SVG, DXF or project…** (picking a `.creabim`).

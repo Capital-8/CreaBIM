@@ -57,9 +57,10 @@ Plans follow the usual conventions of permit drawings:
 
 A plan's *Properties* has a *Graphics* group:
 
-- *Tint what lies below the cut*, its *Strength*, and *In grey, not material colours*.
-- *View depth*: how far below its floor the plan looks through holes in the floor, such as a stair well. Between the floor and the cut is *below* the cut, drawn in projection. Under the floor, down to the view depth, is *beyond*. By default the plan looks down to the level below.
-- *Line weights from the style pack*: untick it to set each pen's width in millimetres on paper (cut, projection, symbols, furniture and fixtures, hatching, hidden) for this view only. Sheets, PDF and SVG use the same weights.
+- **Drawing style**: the plan's graphic style.
+- **Below the cut** › *Tinted*: furniture, fittings and imported meshes under the cut get a light fill, with its **Strength**, and *In grey* (grey, not the materials' colours).
+- **View depth** › *To the level below*: how far below its floor the plan looks through holes in the floor, such as a stair well. Between the floor and the cut is *below* the cut, drawn in projection. Under the floor, down to the view depth, is *beyond*. By default the plan looks down to the level below.
+- **Line weights** › *From the style pack*: untick it to set each pen's width in millimetres on paper (cut, projection, symbols, furniture and fixtures, hatching, hidden) for this view only. Sheets, PDF and SVG use the same weights.
 - The pen, colour, pattern and hatch of each category are **object styles** of the project's style pack, and a view can override them: see [Graphic styles](graphic-styles).
 - *View range*: what levels a plan draws, and the roof or site plan seen from above: see [View range](view-range).
 

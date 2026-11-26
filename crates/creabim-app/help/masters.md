@@ -7,7 +7,7 @@ A **master** is the drawing every sheet sits on: its paper, border and title blo
 - Pick *Masters* in any area's view-type menu, or open the *Masters* group of the project browser.
 - From a sheet's *Properties*, click **Edit the master**.
 
-The header picks a master, and holds **+** (a new master from *Standard A3*, *Minimal A3* or blank), *Duplicate*, *Export SVG* and *Delete*. **Bring in an SVG or DXF…** takes a frame or title block drawn in any drawing program.
+The header picks a master, and holds **+** (a new master from *Standard A3*, *Minimal A3* or blank), *Duplicate*, an export button (the master as SVG, to finish in any drawing program) and *Delete*. **Bring in an SVG, DXF or project…** takes a frame or title block drawn in any drawing program, or another CreaBIM project's masters.
 
 ![A master in the Masters view](img/masters.jpg)
 

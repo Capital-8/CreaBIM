@@ -6,12 +6,12 @@ Change the type, and every instance follows, except where an instance overrides 
 
 ## The Types window
 
-Open it with *Materials › Types…*, *Create › Types…*, or the **⋯** on the browser's *Types* group.
+Open it with *Materials › Types…*, or the **⋯** on the browser's *Types* group.
 
 - Types are grouped by kind, with how many instances each has.
 - Edit a type's values on the right.
-- *Add starters* adds a starter set; *Duplicate* and *Delete* below the list.
-- *Select all instances* and *Assign to the selection* at the bottom.
+- *Add starter types* adds a starter set; *Duplicate* and *Delete* below the list.
+- *Assign to the selection* and *Select all* at the bottom.
 
 ![The Types window](img/types.jpg)
 
@@ -34,7 +34,7 @@ Select an element. In *Properties*:
 - the **Type** picker swaps its type (for every selected element at once);
 - change a value to **override** it; overrides are listed in orange;
 - *Reset to type* drops the overrides, *Update type* writes them into the type;
-- *Select all instances*, *Edit type…*;
+- **Instances**: *Select all* with the count selects every element of the type; *Edit…* opens it in the Types window, and *New* makes a new type with this element's values;
 - *Make a type of it* turns an untyped element into a new type.
 
 A schedule can group its rows by type: tick *Group by type* in the schedule's *Properties*.

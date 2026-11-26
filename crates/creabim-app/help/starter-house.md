@@ -51,6 +51,6 @@ The *Sheets* group holds a set of drawings like one sent for planning permission
 - Right-click a roof in the 3D view and pick *Hide category in view* to look inside. See [Visibility and X-ray](visibility).
 - Export the house with *File › IFC4 (.ifc)* and open it in another program. See [IFC](ifc).
 
-> **Tip:** The room tags read from the rooms, so when you move a wall the area in the tag and in the room schedule changes with it. *Create › Check doorways* lists any furniture or fixture standing in a doorway or a door's swing; the starter house has none.
+> **Tip:** The room tags read from the rooms, so when you move a wall the area in the tag and in the room schedule changes with it. **Check doorways** on the *Manage* tab lists any furniture or fixture standing in a doorway or a door's swing; the starter house has none.
 
 **Next:** [Getting started: a first house](start)

@@ -77,8 +77,8 @@ Choose **Built as** in the stair's *Properties*:
 
 Under **Finishes** in a stair's *Properties*:
 
-- **Tread finish** and **Tread material**: a finish on every tread, landing and winder, such as 25 mm oak.
-- **Riser finish** and **Riser material**: a finish on each riser's face. A stair with open risers (stringers, spine, cantilevered, spiral post) has none.
+- **Tread** and its **Made of**: a finish on every tread, landing and winder, such as 25 mm oak.
+- **Riser** and its **Made of**: a finish on each riser's face. A stair with open risers (stringers, spine, cantilevered, spiral post) has none.
 - **Nosing**: how far each tread's finish runs out past the riser below it.
 
 Risers are measured finish to finish. The finished treads are a riser apart, and the structure sits the tread finish lower, so the stair's bottom bears on the floor's structure under its finish.
@@ -95,7 +95,7 @@ In plan, a stair is drawn with its risers below the cut, a break line, the tread
 
 ### Rules and checks
 
-Each stair is checked against a rule set, live, under **Rules and checks** in its *Properties*. Pick one in **Check against**:
+Each stair is checked against a rule set, live, under **Rules and checks** in its *Properties*. Pick one in **Rule set**:
 
 - *Comfortable house stair (no code)*
 - *Ontario OBC 2024, dwelling* (the default)
@@ -107,7 +107,7 @@ Each check shows a dot: green passes, red fails, grey isn't in that rule set. Th
 
 Open **Rule set values** to change a limit. Changing a preset's value saves a copy as one of the project's own rule sets ("…, edited"), and the stair is then checked against it.
 
-**Create › Check stairs** selects every stair that fails a check and lists what fails.
+**Check stairs** on the *Manage* tab selects every stair that fails a check and lists what fails.
 
 ### Headroom and stair wells
 
@@ -119,7 +119,7 @@ Open **Rule set values** to change a limit. Changing a preset's value saves a co
 
 ### Drawing a stair
 
-A plan at 1:100 or larger numbers each riser on the tread it lifts you to, counting from the bottom; a winder's number sits in its middle. **UP** marks the foot of the walk line, **DN** the head on the floor above, and the tag under the stair gives its risers and goings.
+A plan at 1:100 or larger numbers each riser on the tread it lifts you to, counting from the bottom; a winder's number sits in its middle. **UP** marks the foot of the walk line, **DN** the head on the floor above, and the tag under the stair gives its risers and goings. Select the stair in a plan and the UP label has a grip of its own: drag the label off whatever it covers and its arrow stays; drag it back by its place and it goes home.
 
 The **Stair schedule** (New schedule › Stairs) lists every stair: its risers and goings, 2R + G, pitch, width, least headroom, rule set and, under **Checks**, Passes or the checks it fails.
 
@@ -135,7 +135,7 @@ A split stair is one wide flight up to a landing, then two arms. Tick **Split** 
 
 ### Stacked stairs
 
-**Repeat up to**, at the end of a stair's Properties, repeats it on every floor up to the level you pick: the last copy arrives there. Each floor's stair is a stair of its own, named after its floor, but the stack stays one design: change any of them, or a railing on any of them, and every storey changes. **Cut a well** on one cuts a well on every floor that needs one.
+**Repeat to**, at the end of a stair's Properties, repeats it on every floor up to the level you pick: the last copy arrives there. Each floor's stair is a stair of its own, named after its floor, but the stack stays one design: change any of them, or a railing on any of them, and every storey changes. **Cut a well** on one cuts a well on every floor that needs one.
 
 Pick a lower level to make the stack shorter, or the level just above the stair for this floor only. **Release this storey**, on a copy, takes it out of the stack as it stands, to change on its own; repeating again leaves it alone. If the stair at the foot is deleted, the lowest copy takes its place.
 
@@ -168,8 +168,8 @@ A railing's **Top rail** in *Properties* can take a profile from the [library](p
 A guard's *Properties* set how it is filled and how tall it is:
 
 - **Infill:** *Bottom rail* (a rail 100 mm above the steps), *Balusters* (20 mm bars, close enough that a 100 mm sphere can't pass) or *Glass* (12 mm panels between the posts).
-- **Guard taller than the handrail:** the guard rises to *Guard height* (1070 mm by default), with the handrail kept at its own height on the inside.
-- **Newel posts:** 90 mm posts at the ends, at each corner, and one where a short steep piece breaks the rail (the inside of a landing or of winders).
+- **Guard** › *Taller*: the guard rises to *Guard height* (1070 mm by default), with the handrail kept at its own height on the inside.
+- **Newels** › *Posts*: 90 mm posts at the ends, at each corner, and one where a short steep piece breaks the rail (the inside of a landing or of winders).
 
 A new guard on a stair gets balusters and newels.
 
