@@ -360,8 +360,8 @@ def home(rel):
     </div>
     <ul class="ticks"><li>No account, no licence fee</li><li>Works fully offline</li><li>IFC in and out</li><li>Blender-style keys</li></ul>
     <figure class="shot wrap" style="margin-inline:auto">
-      <img src="assets/img/app-3d-and-plan.jpg" width="1918" height="1019" alt="CreaBIM 1.1 in the Sage theme: the Maple Lane House ground-floor plan beside the house in 3D from the garden, with its green roof, balcony and terrace" fetchpriority="high">
-      <figcaption><span class="live">Maple Lane House · the starter project</span><span>Two view areas: the plan at 1:50 and the 3D garden view</span></figcaption>
+      <img src="assets/img/app-3d-and-plan.jpg" width="1918" height="1019" alt="CreaBIM 1.2: Ridgeline House, the starter project, in 3D from the south-east on its sloping lot, beside its ground-floor plan with grids, dimensions and room tags">
+      <figcaption><span class="live">Ridgeline House · the starter project</span><span>Two view areas: the 3D view and the ground-floor plan at 1/4" = 1'-0"</span></figcaption>
     </figure>
   </section>
 
@@ -389,8 +389,8 @@ def home(rel):
 
   <section class="proof" aria-label="At a glance">
     <ul class="wrap gutter">
-      <li><b>640<small>elements</small></b><span>in the starter house, footings to fixtures</span></li>
-      <li><b>13<small>sheets</small></b><span>drawn from one model, as vector PDF</span></li>
+      <li><b>763<small>elements</small></b><span>in the starter house, footings to fixtures</span></li>
+      <li><b>16<small>sheets</small></b><span>drawn from one model, as vector PDF</span></li>
       <li><b>3<small>IFC schemas</small></b><span>IFC2X3, IFC4 and IFC4X3 read</span></li>
       <li><b>1<small>model</small></b><span>behind every view, sheet, schedule and export</span></li>
     </ul>
@@ -436,7 +436,7 @@ def home(rel):
         <p class="lede">CreaBIM is written in Rust and draws on your graphics card. Sections and 3D drawings are built on every core in the background, so dragging a wall never waits for the other views.</p>
       </div>
       <ul class="stats">
-        <li><b>16<small>MB</small></b><span>The Windows installer</span></li>
+        <li><b>27<small>MB</small></b><span>The Windows installer</span></li>
         <li><b>0.2<small>s</small></b><span>From double-click to a window</span></li>
         <li><b>0.3<small>%</small></b><span>CPU when you leave it alone</span></li>
         <li><b>16<small>cores</small></b><span>Used to draw sections and 3D views</span></li>
@@ -466,7 +466,7 @@ def home(rel):
         </div>
       </div>
       <figure class="clip">
-        <div class="view"><img src="assets/img/plan-ground-floor.jpg" width="760" height="635" alt="Part of the Maple Lane House ground-floor plan, drawn by CreaBIM" loading="lazy"></div>
+        <div class="view"><img src="assets/img/plan-ground-floor.jpg" width="1000" height="594" alt="The Ridgeline House ground-floor plan, drawn by CreaBIM" loading="lazy"></div>
         <figcaption>Ground-floor plan, drawn by CreaBIM from the model · hatches, dimension chains, room tags</figcaption>
       </figure>
     </div>
