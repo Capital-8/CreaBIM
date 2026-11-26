@@ -193,7 +193,10 @@
   }
 
   function drawTop() {
-    const menus = S.menus.map((m) => `<button class="menubtn ${S.popup === m.key ? "open" : ""}" data-popup="${esc(m.key)}" data-menubar="1">${esc(m.name)}</button>`).join("");
+    const menus = S.native_menu ? "" :
+      `<button class="brand menubtn ${S.popup === S.app.key ? "open" : ""}" data-popup="${esc(S.app.key)}" data-menubar="1" title="About, updates, settings and exit"><span class="logo">${mark(true)}</span><span class="name">${esc(S.app.label)}</span>${icon("chevron-down", "chev")}</button>` +
+      S.menus.map((m) => `<button class="menubtn ${S.popup === m.key ? "open" : ""}" data-popup="${esc(m.key)}" data-menubar="1">${esc(m.name)}</button>`).join("") +
+      `<span class="vsep"></span>`;
     const quick = S.quick.map((q) => q === null ? `<span class="qsep"></span>` :
       `<button class="ibtn" data-act="${esc(q.id)}" title="${esc(q.label)}${q.key ? "  (" + esc(q.key) + ")" : ""}" ${q.enabled ? "" : "disabled"}>${icon(q.icon)}</button>`).join("");
     // the tabs, then Select and Align, then the tab's own buttons: icons
@@ -208,9 +211,11 @@
         `<button class="tool" data-act="${esc(t.act)}" title="${esc(t.label + (t.key_hint ? "  (" + t.key_hint + ")" : "") + " · " + t.family + "\n" + t.hint)}">${icon(t.icon)}</button>` +
         `<button class="caret" data-popup="${esc(t.key)}" title="${esc(t.family)} tools">${icon("chevron-down")}</button></span>` :
       `<button class="tool ${t.active ? "on" : ""} ${t.off ? "off" : ""}" data-act="${esc(t.id)}" title="${esc(t.label + ": " + t.hint)}">${icon(t.icon)}</button>`).join("");
+    const bar1 = `<div class="bar1">${menus}` +
+      `<div class="quick">${quick}</div><span class="spacer"></span><div class="doc" title="${esc(S.doc.path)}${S.doc.unsaved === false ? "" : " · unsaved changes"}">${S.doc.unsaved === false ? "" : `<span class="dot"></span>`}${esc(S.doc.name)}</div>${S.right.map(control).join("")}</div>`;
+    const titlebar = S.mac_titlebar;
     const html =
-      `<div class="bar1"><button class="brand menubtn ${S.popup === S.app.key ? "open" : ""}" data-popup="${esc(S.app.key)}" data-menubar="1" title="About, updates, settings and exit"><span class="logo">${mark(true)}</span><span class="name">${esc(S.app.label)}</span>${icon("chevron-down", "chev")}</button>${menus}<span class="vsep"></span>` +
-      `<div class="quick">${quick}</div><span class="spacer"></span><div class="doc" title="${esc(S.doc.path)}${S.doc.unsaved === false ? "" : " · unsaved changes"}">${S.doc.unsaved === false ? "" : `<span class="dot"></span>`}${esc(S.doc.name)}</div>${S.right.map(control).join("")}</div>` +
+      (titlebar ? `<div class="mac-titlebar${titlebar.right ? " right" : ""}" style="--titlebar-inset:${Number(titlebar.inset)}px">${bar1}</div>` : bar1) +
       `<div class="bar2"><div class="ttabs">${tabs}</div><div class="tools">${tools}</div><span class="spacer"></span></div>` +
       // the tool options strip: the tool in use and what it can be set to,
       // then the active view's own settings at the right. What doesn't fit
@@ -243,6 +248,11 @@
       edges(r);
     });
     measureBar();
+    // Keep the native hit region disabled until the matching padding is laid out.
+    if (titlebar && titlebar.revision !== local.titlebar) {
+      local.titlebar = titlebar.revision;
+      post({ t: "mac-titlebar", revision: titlebar.revision });
+    }
   }
 
   // The menu and tool rows. In a narrow window they scroll sideways, with

@@ -77,6 +77,9 @@ mod likeui;
 #[cfg(feature = "live-mcp")]
 #[path = "live_wall.rs"]
 mod live_wall;
+#[cfg(target_os = "macos")]
+#[path = "mac_menu.rs"]
+mod mac_menu;
 #[path = "markcard.rs"]
 mod markcard;
 #[path = "markplaced.rs"]
@@ -392,6 +395,8 @@ pub struct CreaBimApp {
     recent: crate::files::Recent,
     /// The web interface round the views.
     shell: shell::Shell,
+    #[cfg(target_os = "macos")]
+    mac_menu: Option<mac_menu::MacMenu>,
     /// The material browser.
     mat: materials::MaterialsUi,
     /// The Patterns window.
@@ -634,7 +639,20 @@ impl CreaBimApp {
                 eprintln!("{}", app.status);
             }
         }
+        #[cfg(target_os = "macos")]
+        app.refresh_mac_menu(&cc.egui_ctx);
         app
+    }
+
+    pub(super) fn uses_native_menu(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.mac_menu.is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
     }
 
     /// The app round an empty document, with default settings and no
@@ -742,6 +760,8 @@ impl CreaBimApp {
             clipboard: vec![],
             recent: crate::files::Recent::load(),
             shell: Default::default(),
+            #[cfg(target_os = "macos")]
+            mac_menu: None,
             mat: Default::default(),
             asm: Default::default(),
             types: Default::default(),
@@ -2453,6 +2473,11 @@ impl CreaBimApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        // AppKit can pass disabled menu shortcuts on to the focused view.
+        #[cfg(target_os = "macos")]
+        if self.uses_native_menu() && self.mac_menu_blocked() {
+            return;
+        }
         // a length typed into a grip's drag takes the keys
         if ctx.egui_wants_keyboard_input() || self.plan.grips.typing {
             return;
@@ -15745,7 +15770,31 @@ impl Drop for Perf {
     }
 }
 
+impl CreaBimApp {
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|input| input.viewport().close_requested()) {
+            return;
+        }
+        self.time_store();
+        if !self.close_ok && (self.unsaved() || self.save_as_dialog.is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.save_as_dialog.is_none() {
+                self.close_ask = true;
+                #[cfg(target_os = "macos")]
+                mac_menu::reveal_window_if_hidden(ctx);
+            }
+        }
+    }
+}
+
 impl eframe::App for CreaBimApp {
+    #[cfg(target_os = "macos")]
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Native menu commands and close requests also arrive while window painting is paused.
+        self.handle_close_request(ctx);
+        self.dispatch_mac_menu(ctx);
+    }
+
     /// Keys typed while a web pane had the keyboard reach the views.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if self.shell.feed_keys(raw_input) {
@@ -15969,21 +16018,8 @@ impl eframe::App for CreaBimApp {
         // how the project reads its site levels, for the Site tools' strip
         self.plan.parts.level_shift = creabim_core::units::level_shift(self.doc.model());
         self.plan.parts.level_unit = creabim_core::units::level_unit(self.doc.model());
-        // the project's time is kept on every close
-        if ui.ctx().input(|i| i.viewport().close_requested()) {
-            self.time_store();
-        }
-        // never lose work to a close: unsaved changes ask first
-        if ui.ctx().input(|i| i.viewport().close_requested())
-            && !self.close_ok
-            && (self.unsaved() || self.save_as_dialog.is_some())
-        {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if self.save_as_dialog.is_none() {
-                self.close_ask = true;
-            }
-        }
+        #[cfg(not(target_os = "macos"))]
+        self.handle_close_request(ui.ctx());
         let ctx = ui.ctx().clone();
         // on the drawing area a bar's tooltip goes: the bar never hears the
         // pointer leave it. Back from a bar (or after a pause in the moves
@@ -16524,6 +16560,8 @@ impl eframe::App for CreaBimApp {
                 self.placement = PlanPlacement::Docked;
             }
         }
+        #[cfg(target_os = "macos")]
+        self.refresh_mac_menu(&ctx);
     }
 }
 

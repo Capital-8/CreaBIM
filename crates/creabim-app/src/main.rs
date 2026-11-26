@@ -34,6 +34,8 @@ mod kindpick;
 mod library;
 #[cfg(feature = "live-mcp")]
 mod live_mcp;
+#[cfg(target_os = "macos")]
+mod mac_drag;
 mod matcard;
 mod memberstool;
 mod modal;
@@ -101,16 +103,18 @@ fn main() -> eframe::Result {
     }));
     #[cfg(target_os = "linux")]
     linux_setup();
+    let viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("CreaBIM")
+        // The size the window returns to after leaving its initial maximized state.
+        .with_inner_size([1200.0, 760.0])
+        .with_icon(app_icon());
+    #[cfg(target_os = "macos")]
+    let viewport = viewport
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("CreaBIM")
-            // the size it comes back to when un-maximised. It is maximised
-            // on its first frame (see CreaBimApp::ui), not here: asked for
-            // at creation on a scaled Windows display, the window came up
-            // flagged maximised but at the wrong size, its foot under the
-            // taskbar (MU102: 1768 × 1122 on a 1938 × 1038 work area)
-            .with_inner_size([1200.0, 760.0])
-            .with_icon(app_icon()),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         #[cfg(target_os = "linux")]
         event_loop_builder: Some(Box::new(|b| {

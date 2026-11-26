@@ -23,6 +23,14 @@ thread_local! {
 
 pub(super) struct Shell {
     pub web: Option<WebUi>,
+    #[cfg(target_os = "macos")]
+    mac_drag: Option<crate::mac_drag::MacDrag>,
+    #[cfg(target_os = "macos")]
+    mac_titlebar: Option<crate::mac_drag::Layout>,
+    #[cfg(target_os = "macos")]
+    mac_titlebar_revision: u64,
+    #[cfg(target_os = "macos")]
+    mac_titlebar_rendered: Option<u64>,
     /// Why the web interface couldn't start, when it couldn't.
     pub failed: Option<String>,
     /// The classic egui panels, by choice.
@@ -69,6 +77,14 @@ impl Default for Shell {
     fn default() -> Self {
         Self {
             web: None,
+            #[cfg(target_os = "macos")]
+            mac_drag: None,
+            #[cfg(target_os = "macos")]
+            mac_titlebar: None,
+            #[cfg(target_os = "macos")]
+            mac_titlebar_revision: 0,
+            #[cfg(target_os = "macos")]
+            mac_titlebar_rendered: None,
             failed: None,
             classic: std::env::var_os("CREABIM_CLASSIC_UI").is_some(),
             theme: Theme::default(),
@@ -3966,9 +3982,21 @@ impl CreaBimApp {
             .map(|(i, t)| json!({"id": format!("tab:{i}"), "label": t, "on": i == tab}))
             .collect();
         let (tool_head, tool_options, options, more) = self.option_strip(ctx);
+        #[cfg(target_os = "macos")]
+        let mac_titlebar = self.shell.mac_titlebar.map(|layout| {
+            json!({
+                "right": layout.right,
+                "inset": layout.inset(),
+                "revision": self.shell.mac_titlebar_revision,
+            })
+        });
+        #[cfg(not(target_os = "macos"))]
+        let mac_titlebar = Option::<Value>::None;
         json!({
             "theme": self.theme(),
             "popup": self.popup_key(),
+            "native_menu": self.uses_native_menu(),
+            "mac_titlebar": mac_titlebar,
             "menus": (["File", "Edit", "View", "Create", "Materials", "Help"].map(|m| json!({"name": m, "key": format!("menu:{m}")}))),
             "quick": quick,
             "open_kinds": self.shell.open_kinds,
@@ -4995,6 +5023,10 @@ impl CreaBimApp {
                 }
             }
             "down" if msg.pane != Pane::Popup => self.close_popup(),
+            #[cfg(target_os = "macos")]
+            "mac-titlebar" if msg.pane == Pane::Top => {
+                self.shell.mac_titlebar_rendered = b["revision"].as_u64();
+            }
             "focus" => {
                 if let Some(web) = &mut self.shell.web {
                     web.focus_views();
@@ -5307,10 +5339,51 @@ impl CreaBimApp {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn place_mac_drag(
+        &mut self,
+        frame: &eframe::Frame,
+        ctx: &egui::Context,
+        web_top: Option<egui::Rect>,
+    ) {
+        if !self.uses_native_menu() {
+            return;
+        }
+        let titlebar = web_top.unwrap_or_else(|| {
+            let viewport = ctx.viewport_rect();
+            egui::Rect::from_min_size(
+                viewport.min,
+                egui::vec2(viewport.width(), crate::mac_drag::TITLEBAR_HEIGHT),
+            )
+        });
+        let allowed = crate::app::clear_of_card(ctx, titlebar) == Some(titlebar)
+            && !self.mac_menu_blocked()
+            && self.shell.popup.is_none();
+        if self.shell.mac_drag.is_none() {
+            self.shell.mac_drag = crate::mac_drag::MacDrag::new(frame);
+        }
+        let Some(drag) = &self.shell.mac_drag else {
+            return;
+        };
+        let layout = drag.layout(ctx.zoom_factor());
+        if layout != self.shell.mac_titlebar {
+            self.shell.mac_titlebar = layout;
+            self.shell.mac_titlebar_revision += 1;
+        }
+        if let Some(layout) = layout {
+            // WebKit applies interface-scale changes asynchronously.
+            let ready = web_top.is_none()
+                || self.shell.mac_titlebar_rendered == Some(self.shell.mac_titlebar_revision);
+            drag.place(layout, allowed && ready);
+        }
+    }
+
     /// Lay out the web panes round the views. Returns false when there is
     /// no web interface, and the classic panels are drawn instead.
     pub(super) fn web_panels(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame) -> bool {
         if self.shell.classic || self.shell.failed.is_some() {
+            #[cfg(target_os = "macos")]
+            self.place_mac_drag(frame, ui.ctx(), None);
             WebUi::pump();
             if let Some(web) = &self.shell.web {
                 for m in web.take() {
@@ -5320,11 +5393,19 @@ impl CreaBimApp {
             return false;
         }
         if self.shell.web.is_none() {
+            #[cfg(target_os = "macos")]
+            {
+                // Place the hit region after the newly attached WKWebView.
+                self.shell.mac_drag = None;
+                self.shell.mac_titlebar_rendered = None;
+            }
             match WebUi::new(frame, ui.ctx()) {
                 Ok(w) => self.shell.web = Some(w),
                 Err(e) => {
                     self.status = format!("Using the classic panels: {e}");
                     self.shell.failed = Some(e);
+                    #[cfg(target_os = "macos")]
+                    self.place_mac_drag(frame, ui.ctx(), None);
                     return false;
                 }
             }
@@ -5593,6 +5674,8 @@ impl CreaBimApp {
                     })
                 })
             });
+        #[cfg(target_os = "macos")]
+        self.place_mac_drag(frame, &ctx, Some(top));
         let states = [
             (Pane::Top, top, {
                 let _p = crate::app::Perf::new("top_state");
@@ -5939,6 +6022,30 @@ impl CreaBimApp {
 
     /// The classic egui menu bar, drawn from the same items as the web one.
     pub(super) fn classic_menu(&mut self, ui: &mut egui::Ui) {
+        #[cfg(target_os = "macos")]
+        if self.uses_native_menu() {
+            let (_, mut rect) = ui.allocate_space(egui::vec2(
+                ui.available_width(),
+                crate::mac_drag::TITLEBAR_HEIGHT,
+            ));
+            if let Some(layout) = self.shell.mac_titlebar {
+                let inset = (layout.inset() as f32).min(rect.width());
+                if layout.right {
+                    rect.max.x -= inset;
+                } else {
+                    rect.min.x += inset;
+                }
+            }
+            let mut row = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            row.shrink_clip_rect(rect);
+            row.label("File:");
+            crate::props::text_field(&mut row, egui::TextEdit::singleline(&mut self.path), 220.0);
+            return;
+        }
         let mut picked = None;
         egui::MenuBar::new().ui(ui, |ui| {
             for m in ["File", "Edit", "View", "Materials", "Help"] {
