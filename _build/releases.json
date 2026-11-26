@@ -1,5 +1,48 @@
 [
  {
+  "tag": "v1.2.0",
+  "name": "CreaBIM 1.2.0 \u00b7 2026-11-26",
+  "date": "2026-11-26",
+  "url": "https://github.com/chopinregis/CreaBIM/releases/tag/v1.2.0",
+  "assets": [
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-linux-x64.deb",
+    "size": 28972376,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-linux-x64.deb"
+   },
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-linux-x64.rpm",
+    "size": 36964267,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-linux-x64.rpm"
+   },
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-linux-x64.tar.gz",
+    "size": 37174410,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-linux-x64.tar.gz"
+   },
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-macos-universal.dmg",
+    "size": 72341238,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-macos-universal.dmg"
+   },
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-windows-x64-setup.exe",
+    "size": 26788220,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-windows-x64-setup.exe"
+   },
+   {
+    "name": "CreaBIM-1.2.0-2026-11-26-windows-x64.zip",
+    "size": 35081535,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/CreaBIM-1.2.0-2026-11-26-windows-x64.zip"
+   },
+   {
+    "name": "SHA256SUMS.txt",
+    "size": 649,
+    "url": "https://github.com/chopinregis/CreaBIM/releases/download/v1.2.0/SHA256SUMS.txt"
+   }
+  ]
+ },
+ {
   "tag": "v1.1.1",
   "name": "CreaBIM 1.1.1 \u00b7 2026-11-11",
   "date": "2026-11-12",
