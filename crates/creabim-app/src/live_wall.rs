@@ -57,13 +57,49 @@ impl CreaBimApp {
         };
         let view = view
             .filter(|id| self.view(*id).is_some())
-            .ok_or("Activate a model view in CreaBIM to choose the wall's phase")?;
+            .ok_or("Activate a model view in CreaBIM to choose the editing phase")?;
         // A docked area can show the same drawing at a phase of its own.
         if self.placement == PlanPlacement::Docked {
             crate::phaselens::set_lens(self.area_phase(focus).map(|p| (view, p)));
         }
         self.work_in_phase(PhaseOf::View(view));
         crate::phaselens::set_lens(None);
+        Ok(())
+    }
+
+    fn guard_live_edit(
+        &self,
+        document_id: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> Result<(), String> {
+        if document_id != Some(self.live_document_id.as_str()) {
+            return Err("The active document changed; inspect it before editing".into());
+        }
+        if expected_revision != Some(self.doc.model().revision()) {
+            return Err("The document revision changed; inspect it before editing".into());
+        }
+        if self.close_ask
+            || self.save_as_dialog.is_some()
+            || self.plan.has_input()
+            || self.plan.busy()
+            || self.plan.gripping()
+            || self.plan.grips.busy()
+            || self.plan.edit.is_some()
+            || self.plan.point_pick
+            || self.plan.calibrate.is_some()
+            || self.plan.align_ref.is_some()
+            || !self.plan.parts.path.is_empty()
+            || self.handle_drag.is_some()
+            || self.pending_3d.is_some()
+            || self.beam_face.is_some()
+            || self.plane_pick.is_some()
+            || self.guide_from.is_some()
+            || self.box_armed
+            || self.split.is_some()
+            || self.crop_pick.is_some()
+        {
+            return Err("Finish the current operation in CreaBIM before editing".into());
+        }
         Ok(())
     }
 
@@ -82,7 +118,8 @@ impl CreaBimApp {
                 || !self.shell.keys.is_empty()
                 || self.shell.web.as_ref().is_some_and(|web| web.has_pending())
         };
-        let result = if request.command == "create_wall" && interacting() {
+        let read_only = matches!(request.command.as_str(), "inspect_document" | "get_element");
+        let result = if !read_only && interacting() {
             Err("Finish the current interaction in CreaBIM before editing".into())
         } else {
             self.live_command(
@@ -110,6 +147,14 @@ impl CreaBimApp {
         expected_revision: Option<u64>,
     ) -> Result<Value, String> {
         let model = self.doc.model();
+        if live_structure::handles(command) {
+            self.guard_live_edit(document_id, expected_revision)?;
+            self.use_active_wall_phase()?;
+            let mut result = live_structure::execute(&mut self.doc, command, args)?;
+            result["document_id"] = json!(self.live_document_id);
+            result["revision"] = json!(self.doc.model().revision());
+            return Ok(result);
+        }
         if command == "inspect_document" {
             let mut levels = Vec::new();
             let mut wall_types = Vec::new();
@@ -132,33 +177,7 @@ impl CreaBimApp {
         if command != "create_wall" {
             return Err("Unknown live MCP command".into());
         }
-        if document_id != Some(self.live_document_id.as_str()) {
-            return Err("The active document changed; inspect it before editing".into());
-        }
-        if expected_revision != Some(model.revision()) {
-            return Err("The document revision changed; inspect it before editing".into());
-        }
-        if self.close_ask
-            || self.plan.has_input()
-            || self.plan.busy()
-            || self.plan.gripping()
-            || self.plan.grips.busy()
-            || self.plan.edit.is_some()
-            || self.plan.point_pick
-            || self.plan.calibrate.is_some()
-            || self.plan.align_ref.is_some()
-            || !self.plan.parts.path.is_empty()
-            || self.handle_drag.is_some()
-            || self.pending_3d.is_some()
-            || self.beam_face.is_some()
-            || self.plane_pick.is_some()
-            || self.guide_from.is_some()
-            || self.box_armed
-            || self.split.is_some()
-            || self.crop_pick.is_some()
-        {
-            return Err("Finish the current operation in CreaBIM before editing".into());
-        }
+        self.guard_live_edit(document_id, expected_revision)?;
 
         let wall: WallRequest = serde_json::from_value(args).map_err(|e| e.to_string())?;
         if model.level(wall.level_id).is_none() {
@@ -207,6 +226,9 @@ impl CreaBimApp {
         )
     }
 }
+
+#[path = "live_structure.rs"]
+mod live_structure;
 
 #[cfg(test)]
 mod tests {

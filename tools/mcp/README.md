@@ -54,6 +54,9 @@ cargo run --locked -p creabim-app --features live-mcp &
 Start your MCP host from the same shell so its server inherits both environment variables, and use the configuration above. Keep the token private; do not add it to committed configuration. Both variables must be set when the MCP server starts to expose the live tools. The bridge accepts connections only on `127.0.0.1`; use it only with trusted local clients. Close the app and host to end the session.
 
 - `live_inspect()`: get the open document ID, revision, project path, levels and wall types. Use these IDs and the current revision for the next edit.
+- `live_create_level`: create a level and its plan with a name, elevation and height.
+- `live_create_column`: add a rectangular column to a level, with an XY position, width, depth and height.
+- `live_create_beam`: add a rectangular beam to a level, with XY endpoints, width and depth. The optional top offset is measured below the top of its level.
 - `live_create_wall(document_id, expected_revision, level_id, start, end, wall_type_id, thickness, location)`: create a straight wall in the open document. Positions and thickness are in metres. Choose a wall type to use its defaults, or omit it and optionally specify thickness and location; a type cannot be combined with those overrides. Untyped walls default to 0.20 m thickness and Centre location, with the height of the level.
 
 For an untyped wall, use `Centre`, `ExteriorFace`, `InteriorFace`, `CoreCentre`, `CoreExterior` or `CoreInterior` as the location. The two input points lie along that line.

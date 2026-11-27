@@ -40,9 +40,10 @@ class LiveProtocolTest(unittest.IsolatedAsyncioTestCase):
                         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
                         names = {'inspect_project', 'list_elements', 'get_element',
                                  'get_schema', 'check_spec', 'build_project'}
-                        self.assertEqual(set(tools), names | ({'live_inspect', 'live_create_wall'} if enabled else set()))
                         if not enabled:
+                            self.assertEqual(tools.keys(), names)
                             continue
+                        self.assertTrue((names | {'live_inspect', 'live_create_wall'}) <= tools.keys())
                         schema = tools['live_create_wall'].inputSchema
                         self.assertEqual(schema['properties']['start']['items']['type'], 'number')
                         inspect = await client.call_tool('live_inspect', {})

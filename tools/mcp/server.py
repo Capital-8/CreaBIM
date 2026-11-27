@@ -142,6 +142,31 @@ if os.environ.get('CREABIM_MCP_PORT') and os.environ.get('CREABIM_MCP_TOKEN'):
         return live_call('inspect_document', {})
 
     @mcp.tool(annotations=CREATE, structured_output=True)
+    def live_create_level(document_id: str, expected_revision: int, name: str,
+                          elevation: float, height: float) -> dict[str, Any]:
+        """Create a level and its plan in the open document, with dimensions in metres."""
+        args = {'name': name, 'elevation': elevation, 'height': height}
+        return live_call('create_level', args, document_id, expected_revision)
+
+    @mcp.tool(annotations=CREATE, structured_output=True)
+    def live_create_column(document_id: str, expected_revision: int, level_id: str,
+                           name: str, position: list[float], width: float,
+                           depth: float, height: float) -> dict[str, Any]:
+        """Create a rectangular column on a level, with XY position and dimensions in metres."""
+        args = {'level_id': level_id, 'name': name, 'position': position,
+                'width': width, 'depth': depth, 'height': height}
+        return live_call('create_column', args, document_id, expected_revision)
+
+    @mcp.tool(annotations=CREATE, structured_output=True)
+    def live_create_beam(document_id: str, expected_revision: int, level_id: str,
+                         name: str, start: list[float], end: list[float],
+                         width: float, depth: float, top_offset: float = 0) -> dict[str, Any]:
+        """Create a rectangular beam on a level, with XY endpoints and dimensions in metres."""
+        args = {'level_id': level_id, 'name': name, 'start': start, 'end': end,
+                'width': width, 'depth': depth, 'top_offset': top_offset}
+        return live_call('create_beam', args, document_id, expected_revision)
+
+    @mcp.tool(annotations=CREATE, structured_output=True)
     def live_create_wall(document_id: str, expected_revision: int, level_id: str,
                          start: list[float], end: list[float], wall_type_id: str | None = None,
                          thickness: float | None = None, location: str | None = None) -> dict[str, Any]:
