@@ -17,6 +17,7 @@ import project
 mcp = FastMCP('CreaBIM')
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
 CREATE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 
 def run_cli(*args: str) -> tuple[str, str]:
@@ -137,9 +138,36 @@ if os.environ.get('CREABIM_MCP_PORT') and os.environ.get('CREABIM_MCP_TOKEN'):
         return response['result']
 
     @mcp.tool(annotations=READ_ONLY, structured_output=True)
-    def live_inspect() -> dict[str, Any]:
-        """Inspect the open document, revision, project path, levels and wall types."""
-        return live_call('inspect_document', {})
+    def live_get_element(document_id: str, element_id: str) -> dict[str, Any]:
+        """Read an element from the open document by UUID. Find IDs with live_inspect."""
+        return live_call('get_element', {'element_id': element_id}, document_id)
+
+    @mcp.tool(annotations=DESTRUCTIVE, structured_output=True)
+    def live_move_element(document_id: str, expected_revision: int, element_id: str,
+                          delta: list[float]) -> dict[str, Any]:
+        """Move a wall, slab, column or beam by an XYZ displacement in metres."""
+        return live_call('move_element', {'element_id': element_id, 'delta': delta},
+                         document_id, expected_revision)
+
+    @mcp.tool(annotations=DESTRUCTIVE, structured_output=True)
+    def live_delete_element(document_id: str, expected_revision: int,
+                            element_id: str) -> dict[str, Any]:
+        """Delete a wall, opening, column or beam with no dependent elements."""
+        return live_call('delete_element', {'element_id': element_id},
+                         document_id, expected_revision)
+
+    @mcp.tool(annotations=DESTRUCTIVE, structured_output=True)
+    def live_undo(document_id: str, expected_revision: int) -> dict[str, Any]:
+        """Undo the most recent edit to the open document, including edits made in the app."""
+        return live_call('undo', {}, document_id, expected_revision)
+
+    @mcp.tool(annotations=READ_ONLY, structured_output=True)
+    def live_inspect(offset: int | None = None, limit: int | None = None,
+                     kind: str | None = None) -> dict[str, Any]:
+        """Inspect the open document, levels, wall types and a page of element IDs."""
+        args = {key: value for key, value in {'offset': offset, 'limit': limit, 'kind': kind}.items()
+                if value is not None}
+        return live_call('inspect_document', args)
 
     @mcp.tool(annotations=CREATE, structured_output=True)
     def live_create_wall(document_id: str, expected_revision: int, level_id: str,
