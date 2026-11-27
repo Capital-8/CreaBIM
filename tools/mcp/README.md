@@ -73,6 +73,16 @@ Use IDs from `live_inspect` and the latest revision for each edit. Live edits us
 
 The wall uses the application's native editing and undo history. Save in CreaBIM before opening or creating another project. If the document changes, inspect again before editing. A stale revision is rejected. If a connection fails after sending a command, check the model in the app before retrying because the edit may already have completed.
 
+### Doors, windows, slabs, stairs and railings
+
+- `live_create_door` and `live_create_window` take a host `wall_id`. Choose a door or window type from `live_inspect` and pass the center measured from the wall start. For explicit dimensions, pass `name`, `offset` to the near edge from the wall start, `width`, `height` and `sill`.
+- `live_update_door` and `live_update_window` edit material, frame and orientation settings. Windows also support editing the pane grid.
+- `live_create_slab` takes a level and an XY boundary, with optional name and thickness. `live_update_slab` sets thickness or top offset.
+- `live_create_stair` takes a level, starting point and direction point. `live_update_stair` sets a straight stair's width.
+- `live_create_railing` takes a level and an XY path. `live_update_railing` sets the height.
+
+Each command uses the active modeling pane's phase and expects the current document ID and revision. Coordinates and sizes are in metres.
+
 ## Test
 
 ```sh

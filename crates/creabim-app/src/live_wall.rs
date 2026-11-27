@@ -7,6 +7,9 @@ use glam::DVec2;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[path = "live_openings.rs"]
+mod live_openings;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WallRequest {
@@ -149,6 +152,19 @@ impl CreaBimApp {
         document_id: Option<&str>,
         expected_revision: Option<u64>,
     ) -> Result<Value, String> {
+        if let Some(edit) = live_openings::operation(command) {
+            self.guard_live_edit(document_id, expected_revision)?;
+            self.use_active_wall_phase()?;
+            let id = edit(self, args)?;
+            self.drop_stale_selection();
+            self.status = format!("MCP: {command}");
+            let model = self.doc.model();
+            return Ok(json!({
+                "id": id, "element": model.get(id), "document_id": self.live_document_id,
+                "revision": model.revision(),
+            }));
+        }
+
         let model = self.doc.model();
         if live_structure::handles(command) {
             self.guard_live_edit(document_id, expected_revision)?;
@@ -161,6 +177,8 @@ impl CreaBimApp {
         if command == "inspect_document" {
             let mut levels = Vec::new();
             let mut wall_types = Vec::new();
+            let mut door_types = Vec::new();
+            let mut window_types = Vec::new();
             for element in model.iter() {
                 match &element.kind {
                     ElementKind::Level(_) => {
@@ -169,11 +187,18 @@ impl CreaBimApp {
                     ElementKind::ElementType(t) if t.category() == TypeCategory::Wall => {
                         wall_types.push(json!({"id": element.id, "name": element.name}));
                     }
+                    ElementKind::ElementType(t) if t.category() == TypeCategory::Door => {
+                        door_types.push(json!({"id": element.id, "name": element.name}));
+                    }
+                    ElementKind::ElementType(t) if t.category() == TypeCategory::Window => {
+                        window_types.push(json!({"id": element.id, "name": element.name}));
+                    }
                     _ => {}
                 }
             }
             return Ok(
                 json!({"document_id": self.live_document_id, "revision": model.revision(),
+                "door_types": door_types, "window_types": window_types,
                 "project_path": self.path, "levels": levels, "wall_types": wall_types}),
             )
             .and_then(|mut result| {
