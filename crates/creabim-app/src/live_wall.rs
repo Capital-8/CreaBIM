@@ -60,7 +60,7 @@ impl CreaBimApp {
         };
         let view = view
             .filter(|id| self.view(*id).is_some())
-            .ok_or("Activate a model view in CreaBIM to choose the wall's phase")?;
+            .ok_or("Activate a model view in CreaBIM to choose the editing phase")?;
         // A docked area can show the same drawing at a phase of its own.
         if self.placement == PlanPlacement::Docked {
             crate::phaselens::set_lens(self.area_phase(focus).map(|p| (view, p)));
@@ -150,6 +150,14 @@ impl CreaBimApp {
         expected_revision: Option<u64>,
     ) -> Result<Value, String> {
         let model = self.doc.model();
+        if live_structure::handles(command) {
+            self.guard_live_edit(document_id, expected_revision)?;
+            self.use_active_wall_phase()?;
+            let mut result = live_structure::execute(&mut self.doc, command, args)?;
+            result["document_id"] = json!(self.live_document_id);
+            result["revision"] = json!(self.doc.model().revision());
+            return Ok(result);
+        }
         if command == "inspect_document" {
             let mut levels = Vec::new();
             let mut wall_types = Vec::new();
@@ -254,6 +262,9 @@ impl CreaBimApp {
         )
     }
 }
+
+#[path = "live_structure.rs"]
+mod live_structure;
 
 #[cfg(test)]
 mod tests {
