@@ -18,6 +18,9 @@ struct WallRequest {
     location: Option<LocationLine>,
 }
 
+#[path = "live_edit.rs"]
+mod live_edit;
+
 impl CreaBimApp {
     pub(super) fn track_live_pane(&mut self, ui: &egui::Ui, rect: egui::Rect, plan: bool) {
         let activated = match self.placement {
@@ -67,6 +70,42 @@ impl CreaBimApp {
         Ok(())
     }
 
+    fn guard_live_edit(
+        &self,
+        document_id: Option<&str>,
+        expected_revision: Option<u64>,
+    ) -> Result<(), String> {
+        if document_id != Some(self.live_document_id.as_str()) {
+            return Err("The active document changed; inspect it before editing".into());
+        }
+        if expected_revision != Some(self.doc.model().revision()) {
+            return Err("The document revision changed; inspect it before editing".into());
+        }
+        if self.close_ask
+            || self.save_as_dialog.is_some()
+            || self.plan.has_input()
+            || self.plan.busy()
+            || self.plan.gripping()
+            || self.plan.grips.busy()
+            || self.plan.edit.is_some()
+            || self.plan.point_pick
+            || self.plan.calibrate.is_some()
+            || self.plan.align_ref.is_some()
+            || !self.plan.parts.path.is_empty()
+            || self.handle_drag.is_some()
+            || self.pending_3d.is_some()
+            || self.beam_face.is_some()
+            || self.plane_pick.is_some()
+            || self.guide_from.is_some()
+            || self.box_armed
+            || self.split.is_some()
+            || self.crop_pick.is_some()
+        {
+            return Err("Finish the current operation in CreaBIM before editing".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn poll_live_mcp(&mut self, ctx: &egui::Context) {
         let Some(request) = self
             .live_bridge
@@ -82,7 +121,8 @@ impl CreaBimApp {
                 || !self.shell.keys.is_empty()
                 || self.shell.web.as_ref().is_some_and(|web| web.has_pending())
         };
-        let result = if request.command == "create_wall" && interacting() {
+        let read_only = matches!(request.command.as_str(), "inspect_document" | "get_element");
+        let result = if !read_only && interacting() {
             Err("Finish the current interaction in CreaBIM before editing".into())
         } else {
             self.live_command(
@@ -127,38 +167,45 @@ impl CreaBimApp {
             return Ok(
                 json!({"document_id": self.live_document_id, "revision": model.revision(),
                 "project_path": self.path, "levels": levels, "wall_types": wall_types}),
-            );
+            )
+            .and_then(|mut result| {
+                let fields = result.as_object_mut().ok_or("Invalid inspection result")?;
+                fields.extend(live_edit::inspect_page(&self.doc, args)?);
+                Ok(result)
+            });
+        }
+        if matches!(
+            command,
+            "get_element" | "move_element" | "delete_element" | "undo"
+        ) {
+            if command == "get_element" {
+                if document_id != Some(self.live_document_id.as_str()) {
+                    return Err("The active document changed; inspect it before continuing".into());
+                }
+            } else {
+                self.guard_live_edit(document_id, expected_revision)?;
+                if command != "undo" {
+                    self.use_active_wall_phase()?;
+                }
+            }
+            let mut result = live_edit::execute(&mut self.doc, command, args)?;
+            if command != "get_element" {
+                self.drop_stale_selection();
+                self.status = format!("MCP: {command}");
+            }
+            let result_fields = result.as_object_mut().ok_or("Invalid command result")?;
+            result_fields.extend([
+                ("document_id".into(), json!(self.live_document_id)),
+                ("revision".into(), json!(self.doc.model().revision())),
+                ("project_path".into(), json!(self.path)),
+                ("unsaved".into(), json!(self.unsaved())),
+            ]);
+            return Ok(result);
         }
         if command != "create_wall" {
             return Err("Unknown live MCP command".into());
         }
-        if document_id != Some(self.live_document_id.as_str()) {
-            return Err("The active document changed; inspect it before editing".into());
-        }
-        if expected_revision != Some(model.revision()) {
-            return Err("The document revision changed; inspect it before editing".into());
-        }
-        if self.close_ask
-            || self.plan.has_input()
-            || self.plan.busy()
-            || self.plan.gripping()
-            || self.plan.grips.busy()
-            || self.plan.edit.is_some()
-            || self.plan.point_pick
-            || self.plan.calibrate.is_some()
-            || self.plan.align_ref.is_some()
-            || !self.plan.parts.path.is_empty()
-            || self.handle_drag.is_some()
-            || self.pending_3d.is_some()
-            || self.beam_face.is_some()
-            || self.plane_pick.is_some()
-            || self.guide_from.is_some()
-            || self.box_armed
-            || self.split.is_some()
-            || self.crop_pick.is_some()
-        {
-            return Err("Finish the current operation in CreaBIM before editing".into());
-        }
+        self.guard_live_edit(document_id, expected_revision)?;
 
         let wall: WallRequest = serde_json::from_value(args).map_err(|e| e.to_string())?;
         if model.level(wall.level_id).is_none() {

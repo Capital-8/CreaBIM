@@ -58,6 +58,16 @@ Start your MCP host from the same shell so its server inherits both environment 
 
 For an untyped wall, use `Centre`, `ExteriorFace`, `InteriorFace`, `CoreCentre`, `CoreExterior` or `CoreInterior` as the location. The two input points lie along that line.
 
+### Element queries and edits
+
+- `live_inspect(offset, limit, kind)` also returns a page of elements. All filters are optional. Use `kind` to match an element type, `offset` to start at a different position and `limit` to retrieve up to 200 entries. The default page contains up to 50 results.
+- `live_get_element(document_id, element_id)` reads one element in the open document.
+- `live_move_element(document_id, expected_revision, element_id, delta)` applies an XYZ displacement in metres to a wall, slab, column or beam.
+- `live_delete_element(document_id, expected_revision, element_id)` deletes a wall, opening, column or beam that has no dependent elements.
+- `live_undo(document_id, expected_revision)` undoes the most recent edit, including edits made in the app.
+
+Use IDs from `live_inspect` and the latest revision for each edit. Live edits use the document's undo history. Save in CreaBIM to write edits to disk.
+
 The wall uses the application's native editing and undo history. Save in CreaBIM before opening or creating another project. If the document changes, inspect again before editing. A stale revision is rejected. If a connection fails after sending a command, check the model in the app before retrying because the edit may already have completed.
 
 ## Test
